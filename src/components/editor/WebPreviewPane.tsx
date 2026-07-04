@@ -1,8 +1,12 @@
-import { useState } from 'react';
-import { RefreshCw, ExternalLink, ArrowLeft, ArrowRight, Globe, PictureInPicture2, X, Smartphone, Tablet, Monitor } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { RefreshCw, ExternalLink, ArrowLeft, ArrowRight, Globe, PictureInPicture2, X, Smartphone, Tablet, Monitor, Loader2 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { invoke } from '@tauri-apps/api/core';
 import { Tooltip } from '../ui/Tooltip';
+
+// Stable label for the single embedded preview webview.
+const PREVIEW_PANEL_ID = 'origin-web-preview';
 
 const COMMON_PORTS = [
   { port: 5173, label: 'Vite' },
@@ -16,6 +20,19 @@ function normalize(raw: string): string {
   if (/^\d+$/.test(trimmed)) return `http://localhost:${trimmed}`;
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
   return `http://${trimmed}`;
+}
+
+function sameUrl(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    const pa = ua.pathname.replace(/\/$/, '') || '/';
+    const pb = ub.pathname.replace(/\/$/, '') || '/';
+    return ua.origin === ub.origin && pa === pb && ua.search === ub.search && ua.hash === ub.hash;
+  } catch {
+    return false;
+  }
 }
 
 // ── Empty state shown before user picks a URL ──────────────────────────────
@@ -262,15 +279,31 @@ export default function WebPreviewPane() {
   const [reloadKey, setReloadKey] = useState(0);
   const [viewW, setViewW] = useState<number | null>(null);
   const [viewH, setViewH] = useState<number | null>(null);
+  const [iframeLoading, setIframeLoading] = useState(false);
+
+  // Container that reserves layout space for the native embedded webview.
+  const containerRef    = useRef<HTMLDivElement | null>(null);
+  // Outer scrollable wrapper — used to clip the native webview so it never
+  // overflows the pane into other UI (title bar, status bar, etc.) in
+  // constrained (tablet / mobile) viewport modes.
+  const outerWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Tracks whether the URL input is focused so the poller doesn't overwrite
+  // text the user is currently editing.
+  const urlBarFocusedRef = useRef(false);
+  // Set to the URL we're about to load programmatically so the poller skips
+  // the first "new URL" it sees after our own navigation (avoids false-positive
+  // flicker between the old URL and the new one during page load).
+  const expectedNavUrlRef = useRef<string | null>(null);
 
   const activePreset = detectPreset(viewW, viewH);
-
   const url = index >= 0 ? history[index] : null;
   const canGoBack = index > 0;
   const canGoForward = index < history.length - 1;
 
   // Push a new entry, truncating any forward history (standard browser behaviour).
   function pushEntry(to: string) {
+    expectedNavUrlRef.current = to;
     setHistory(prev => [...prev.slice(0, index + 1), to]);
     setIndex(index + 1);
     setInputUrl(to);
@@ -279,6 +312,8 @@ export default function WebPreviewPane() {
 
   // Open a fresh URL from the empty-state picker — resets the stack.
   function navigateFresh(to: string) {
+    expectedNavUrlRef.current = to;
+    setIframeLoading(true);
     setHistory([to]);
     setIndex(0);
     setInputUrl(to);
@@ -286,8 +321,10 @@ export default function WebPreviewPane() {
   }
 
   function moveTo(nextIndex: number) {
+    const to = history[nextIndex] ?? '';
+    expectedNavUrlRef.current = to;
+    setIframeLoading(true);
     setIndex(nextIndex);
-    const to = history[nextIndex];
     setInputUrl(to);
     localStorage.setItem(LS_PREVIEW_URL, to);
   }
@@ -295,9 +332,9 @@ export default function WebPreviewPane() {
   function handleUrlBarNavigate(raw: string) {
     const next = normalize(raw);
     if (!next) return;
-    // Same URL as current → treat Enter as a reload rather than pushing
-    // a duplicate history entry.
+    setIframeLoading(true);
     if (next === url) {
+      expectedNavUrlRef.current = next;
       setReloadKey(k => k + 1);
       setInputUrl(next);
       return;
@@ -331,6 +368,118 @@ export default function WebPreviewPane() {
     });
   }
 
+  // Push the current container geometry to the native webview, clipped to the
+  // visible bounds of the outer wrapper so the panel never overflows into the
+  // title bar / status bar in constrained (tablet / mobile) viewport modes.
+  const syncBounds = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const outer = outerWrapperRef.current;
+    let x = r.left, y = r.top, w = r.width, h = r.height;
+    if (outer) {
+      const o = outer.getBoundingClientRect();
+      x = Math.max(r.left, o.left);
+      y = Math.max(r.top,  o.top);
+      w = Math.max(0, Math.min(r.right,  o.right)  - x);
+      h = Math.max(0, Math.min(r.bottom, o.bottom) - y);
+    }
+    void invoke('resize_ide_panel', {
+      panelId: PREVIEW_PANEL_ID, x, y, width: w, height: h,
+    }).catch(() => {});
+  }, []);
+
+  // Embed / re-embed the native webview whenever the URL or reload key changes.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!url || !el) return;
+
+    let cancelled = false;
+    setIframeLoading(true);
+
+    const r = el.getBoundingClientRect();
+    const outer = outerWrapperRef.current;
+    let x = r.left, y = r.top, w = r.width, h = r.height;
+    if (outer) {
+      const o = outer.getBoundingClientRect();
+      x = Math.max(r.left, o.left);
+      y = Math.max(r.top,  o.top);
+      w = Math.max(0, Math.min(r.right,  o.right)  - x);
+      h = Math.max(0, Math.min(r.bottom, o.bottom) - y);
+    }
+    void invoke('embed_ide_panel', {
+      panelId: PREVIEW_PANEL_ID, url, x, y, width: w, height: h,
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setIframeLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      void invoke('destroy_ide_panel', { panelId: PREVIEW_PANEL_ID }).catch(() => {});
+    };
+  }, [url, reloadKey]);
+
+  // Keep the native webview aligned with the placeholder as it resizes.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!url || !el) return;
+
+    const ro = new ResizeObserver(() => syncBounds());
+    ro.observe(el);
+    window.addEventListener('resize', syncBounds);
+    window.addEventListener('scroll', syncBounds, true);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', syncBounds);
+      window.removeEventListener('scroll', syncBounds, true);
+    };
+  }, [url, viewW, viewH, syncBounds]);
+
+  // Re-sync after preset/dimension changes so the webview tracks the new box.
+  useEffect(() => {
+    if (!url) return;
+    syncBounds();
+  }, [viewW, viewH, url, syncBounds]);
+
+  // Poll the native webview's current URL every 500ms to keep the URL bar in
+  // sync when the user clicks links inside the preview (including SPA pushState
+  // navigations that do not trigger Tauri's on_navigation callback).
+  //
+  // We only update inputUrl here, NOT history/index. In-webview navigation
+  // (app routing, link clicks) is handled by the webview's own history; our
+  // Back/Forward buttons only track explicit navigations triggered from this
+  // toolbar. Updating history here would change `url`, which would re-trigger
+  // the embed effect and reload the page unnecessarily.
+  useEffect(() => {
+    if (!url) return;
+
+    const poll = async () => {
+      try {
+        const current: string = await invoke('get_ide_panel_url', { panelId: PREVIEW_PANEL_ID });
+        if (!current || current === 'about:blank') return;
+
+        // Wait for our own programmatic navigation to land before tracking changes.
+        if (expectedNavUrlRef.current !== null) {
+          if (sameUrl(current, expectedNavUrlRef.current)) {
+            expectedNavUrlRef.current = null;
+          }
+          return;
+        }
+
+        // Update the URL bar display; don't touch history so embed isn't re-triggered.
+        if (!urlBarFocusedRef.current) setInputUrl(current);
+      } catch {
+        // Panel not yet created or already destroyed — silently ignore.
+      }
+    };
+
+    const id = setInterval(poll, 500);
+    return () => clearInterval(id);
+  }, [url]); // only restart when an explicit navigation changes the base URL
+
   // No URL yet — show picker
   if (url === null) {
     return (
@@ -358,7 +507,7 @@ export default function WebPreviewPane() {
         <div style={{ width: 1, height: 16, background: 'var(--origin-border-default)', flexShrink: 0 }} />
         <NavBtn onClick={handleBack} title="Back" disabled={!canGoBack}><ArrowLeft size={14} /></NavBtn>
         <NavBtn onClick={handleForward} title="Forward" disabled={!canGoForward}><ArrowRight size={14} /></NavBtn>
-        <NavBtn onClick={() => setReloadKey(k => k + 1)} title="Refresh">
+        <NavBtn onClick={() => { setIframeLoading(true); setReloadKey(k => k + 1); }} title="Refresh">
           <RefreshCw size={14} />
         </NavBtn>
 
@@ -382,8 +531,8 @@ export default function WebPreviewPane() {
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            onFocus={e => e.currentTarget.select()}
-            onBlur={() => setInputUrl(url)}
+            onFocus={e => { urlBarFocusedRef.current = true; e.currentTarget.select(); }}
+            onBlur={() => { urlBarFocusedRef.current = false; setInputUrl(url); }}
             spellCheck={false}
             style={{
               flex: 1, background: 'transparent', border: 'none', outline: 'none',
@@ -451,28 +600,40 @@ export default function WebPreviewPane() {
         </NavBtn>
       </div>
 
-      {/* Iframe wrapper */}
-      <div style={{
-        flex: 1, overflow: 'auto',
+      {/* Native embedded webview wrapper. The container below is a transparent
+          placeholder that reserves layout space; the real content is a native
+          Tauri webview positioned over it at viewport-relative coordinates.
+          overflow:hidden ensures the webview is clipped to this div's bounds
+          in constrained viewport modes so it never overlaps adjacent UI. */}
+      <div ref={outerWrapperRef} style={{
+        flex: 1, overflow: 'hidden',
         display: 'flex', justifyContent: 'center',
         alignItems: viewH !== null ? 'flex-start' : 'stretch',
         backgroundColor: viewW !== null ? 'var(--origin-bg-base)' : 'transparent',
         padding: viewH !== null ? '16px' : 0,
       }}>
-        <iframe
-          key={`${url}-${reloadKey}`}
-          src={url}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-          style={{
-            border: viewW !== null ? '1px solid var(--origin-border-default)' : 'none',
-            width: viewW !== null ? `${viewW}px` : '100%',
-            height: viewH !== null ? `${viewH}px` : '100%',
-            display: 'block',
-            flexShrink: 0,
-            borderRadius: viewW !== null ? '4px' : 0,
-          }}
-          title="Live Preview"
-        />
+        <div style={{
+          position: 'relative',
+          width: viewW !== null ? `${viewW}px` : '100%',
+          height: viewH !== null ? `${viewH}px` : '100%',
+          flexShrink: 0,
+          border: viewW !== null ? '1px solid var(--origin-border-default)' : 'none',
+          borderRadius: viewW !== null ? '4px' : 0,
+          overflow: 'hidden',
+        }}>
+          {/* Placeholder the native webview is anchored to. */}
+          <div ref={containerRef} style={{ width: '100%', height: '100%', background: 'transparent' }} />
+
+          {iframeLoading && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 1,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              backgroundColor: 'var(--origin-bg-editor)',
+            }}>
+              <Loader2 size={28} className="animate-spin" style={{ color: 'var(--origin-fg-muted)' }} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
