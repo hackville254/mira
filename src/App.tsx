@@ -497,6 +497,7 @@ function App() {
           setActiveTab={setActiveTab}
           handleEditorChange={handleEditorChange}
           handleSave={handleSave}
+          handleNewFile={handleNewFile}
           setPinnedContext={setPinnedContext}
           setCursorPositions={setCursorPositions}
           openAiDiffTab={openAiDiffTab}

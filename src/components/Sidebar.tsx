@@ -14,6 +14,7 @@ interface Props {
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
   fileTreeKey?: number;
+  defaultCollapsed?: boolean;
 }
 
 function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
@@ -32,10 +33,10 @@ function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
   }
 }
 
-export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: Props) {
+export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey, defaultCollapsed = false }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [active, setActive] = useState("explorer");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const isResizing = useRef(false);
 
   const handleSelect = useCallback((id: string) => {
