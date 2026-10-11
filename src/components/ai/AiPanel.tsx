@@ -281,8 +281,8 @@ const DEFAULT_WIDTH = 520;
 const MIN_WIDTH    = 520;
 const MAX_WIDTH    = 900;
 // Agent mode: the surface is slimmer because the task rail + tool panels live beside it.
-const AGENT_DEFAULT_WIDTH = 350;
-const AGENT_MIN_WIDTH     = 350;
+const AGENT_DEFAULT_WIDTH = 380;
+const AGENT_MIN_WIDTH     = 380;
 const AGENT_MAX_WIDTH     = 520;
 const CTX_MIN     = 160;
 const CTX_MAX     = 480;

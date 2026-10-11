@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { Icon } from "@iconify/react";
 import AiPanel, { type AiDiffTabInput } from "./AiPanel";
 import TaskRail from "./TaskRail";
 import Sidebar from "../Sidebar";
@@ -9,9 +10,27 @@ import EditorWelcome from "../editor/EditorWelcome";
 import AiDiffPane, { type AiDiffTabData } from "../editor/AiDiffPane";
 import WebPreviewPane from "../editor/WebPreviewPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../terminal/TerminalPanel";
+import SettingsPanel from "../settings/SettingsPanel";
 import type { AiCompletionFn } from "../../lib/aiAutocomplete";
 
-type ToolTab = "editor" | "browser" | "terminal";
+type ToolTabId =
+  | "terminal" | "editor" | "docview" | "settings" | "diffview" | "agents" | "browser";
+
+interface ToolTabDef {
+  id: ToolTabId;
+  label: string;
+  icon: string;
+}
+
+const TOOL_TABS: ToolTabDef[] = [
+  { id: "terminal", label: "Terminal",  icon: "lucide:terminal" },
+  { id: "editor",   label: "Editor",   icon: "lucide:code-2" },
+  { id: "docview", label: "DocView", icon: "lucide:file-text" },
+  { id: "settings", label: "Settings", icon: "lucide:settings" },
+  { id: "diffview", label: "DiffView", icon: "lucide:git-compare" },
+  { id: "agents",  label: "Agents",  icon: "lucide:bot" },
+  { id: "browser", label: "Browser", icon: "lucide:globe" },
+];
 
 interface AgentModeViewProps {
   folderPath: string | null;
@@ -68,8 +87,24 @@ export default function AgentModeView(props: AgentModeViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [newChatNonce, setNewChatNonce] = useState(0);
 
-  // Tool panel tabs. Always open in Agent mode.
-  const [toolTab, setToolTab] = useState<ToolTab>("editor");
+  // Open tool tabs (top bar). User can add/remove tabs via + and × buttons.
+  const [openTabs, setOpenTabs] = useState<ToolTabId[]>(["editor", "browser", "terminal"]);
+  const [activeToolTab, setActiveToolTab] = useState<ToolTabId>("editor");
+
+  const openToolTab = useCallback((id: ToolTabId) => {
+    setOpenTabs(prev => prev.includes(id) ? prev : [...prev, id]);
+    setActiveToolTab(id);
+  }, []);
+
+  const closeToolTab = useCallback((id: ToolTabId) => {
+    setOpenTabs(prev => {
+      const next = prev.filter(t => t !== id);
+      if (id === activeToolTab && next.length > 0) {
+        setActiveToolTab(next[next.length - 1]);
+      }
+      return next;
+    });
+  }, [activeToolTab]);
 
   const handleSelectTask = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
@@ -119,7 +154,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
 
       {/* Tool panels (center) — always open */}
       <div className="flex flex-1 flex-col overflow-hidden gap-1">
-        {/* Tool tabs */}
+        {/* Tool tab bar */}
         <div
           style={{
             display: "flex", alignItems: "center",
@@ -128,27 +163,101 @@ export default function AgentModeView(props: AgentModeViewProps) {
             borderBottom: "1px solid var(--origin-border-default)",
           }}
         >
-          {(["editor", "browser", "terminal"] as ToolTab[]).map(t => (
+          {openTabs.map(tabId => {
+            const def = TOOL_TABS.find(t => t.id === tabId);
+            if (!def) return null;
+            const active = activeToolTab === tabId;
+            return (
+              <div
+                key={tabId}
+                onClick={() => setActiveToolTab(tabId)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  height: "100%", padding: "0 8px 0 12px",
+                  background: active ? "var(--origin-bg-editor)" : "transparent",
+                  color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                  cursor: "pointer", fontSize: "12px", fontWeight: 500,
+                  borderRight: "1px solid var(--origin-border-default)",
+                  userSelect: "none",
+                }}
+              >
+                <Icon icon={def.icon} width={14} />
+                <span>{def.label}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); closeToolTab(tabId); }}
+                  title="Close"
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 16, height: 16, borderRadius: 3,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    color: "var(--origin-fg-subtle)", marginLeft: 4, padding: 0,
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-subtle)"; }}
+                >
+                  <Icon icon="lucide:x" width={12} />
+                </button>
+              </div>
+            );
+          })}
+
+          {/* Add tab button */}
+          <div style={{ position: "relative" }}>
             <button
-              key={t}
-              onClick={() => setToolTab(t)}
-              style={{
-                padding: "0 16px", height: "100%",
-                background: toolTab === t ? "var(--origin-bg-editor)" : "transparent",
-                border: "none",
-                color: toolTab === t ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
-                cursor: "pointer", fontSize: "12px", fontWeight: 600,
-                textTransform: "capitalize",
+              onClick={() => {
+                const closed = TOOL_TABS.find(t => !openTabs.includes(t.id));
+                if (closed) openToolTab(closed.id);
               }}
+              title="Open tab"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 28, height: "100%",
+                background: "transparent", border: "none", cursor: "pointer",
+                color: "var(--origin-fg-muted)",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+              onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
             >
-              {t}
+              <Icon icon="lucide:plus" width={15} />
             </button>
-          ))}
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          {/* Right side controls */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4, paddingRight: 8 }}>
+            <button
+              title="Split"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 24, height: 24, borderRadius: 4,
+                background: "transparent", border: "none", cursor: "pointer",
+                color: "var(--origin-fg-muted)",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+              onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+            >
+              <Icon icon="lucide:square-split-horizontal" width={15} />
+            </button>
+            <button
+              title="Maximize"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 24, height: 24, borderRadius: 4,
+                background: "transparent", border: "none", cursor: "pointer",
+                color: "var(--origin-fg-muted)",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+              onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+            >
+              <Icon icon="lucide:maximize-2" width={15} />
+            </button>
+          </div>
         </div>
 
         {/* Tool content */}
         <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--origin-bg-editor)" }}>
-          {toolTab === "editor" && (
+          {activeToolTab === "editor" && (
             <>
               <TabBar
                 tabs={tabs}
@@ -214,9 +323,9 @@ export default function AgentModeView(props: AgentModeViewProps) {
             </>
           )}
 
-          {toolTab === "browser" && <WebPreviewPane />}
+          {activeToolTab === "browser" && <WebPreviewPane />}
 
-          {toolTab === "terminal" && (
+          {activeToolTab === "terminal" && (
             <TerminalPanel
               ref={terminalRef}
               cwd={folderPath ?? "."}
@@ -225,6 +334,20 @@ export default function AgentModeView(props: AgentModeViewProps) {
               onClose={() => setTerminalOpen(false)}
               hidden={false}
             />
+          )}
+
+          {activeToolTab === "settings" && (
+            <div className="flex-1 overflow-auto" style={{ backgroundColor: "var(--origin-bg-editor)" }}>
+              <SettingsPanel onClose={() => {}} />
+            </div>
+          )}
+
+          {(activeToolTab === "docview" || activeToolTab === "diffview" || activeToolTab === "agents") && (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2" style={{ color: "var(--origin-fg-subtle)" }}>
+              <Icon icon={TOOL_TABS.find(t => t.id === activeToolTab)?.icon ?? "lucide:file"} width={32} />
+              <p className="text-sm font-medium">{TOOL_TABS.find(t => t.id === activeToolTab)?.label}</p>
+              <p className="text-xs">Coming soon</p>
+            </div>
           )}
         </div>
       </div>
