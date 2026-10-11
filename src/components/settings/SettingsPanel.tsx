@@ -964,59 +964,47 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 10000,
-        backgroundColor: "var(--origin-bg-base)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 16,
+        backgroundColor: "var(--origin-bg-sidebar)",
+        display: "flex", flexDirection: "column",
         overflow: "hidden",
       }}
     >
-      <div style={{
-        position: "relative",
-        width: "100%", maxWidth: 1180, height: "100%", maxHeight: 780,
-        backgroundColor: "var(--origin-bg-sidebar)",
-        border: "1px solid var(--origin-border-default)",
-        borderRadius: 12,
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        boxShadow: "0 24px 64px rgba(0,0,0,0.45)",
-      }}>
-        {/* Floating close button */}
-        <button
-          onClick={onClose}
-          title="Close (Esc)"
-          style={{
-            position: "absolute", top: 12, right: 14, zIndex: 10,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            width: 28, height: 28,
-            borderRadius: "6px",
-            border: "none",
-            background: "none",
-            cursor: "pointer",
-            color: "var(--origin-fg-muted)",
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-            e.currentTarget.style.color = "var(--origin-fg-default)";
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.backgroundColor = "transparent";
-            e.currentTarget.style.color = "var(--origin-fg-muted)";
-          }}
-        >
-          <X size={16} />
-        </button>
+      {/* Floating close button */}
+      <button
+        onClick={onClose}
+        title="Close (Esc)"
+        style={{
+          position: "absolute", top: 12, right: 14, zIndex: 10,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          width: 28, height: 28,
+          borderRadius: "6px",
+          border: "none",
+          background: "none",
+          cursor: "pointer",
+          color: "var(--origin-fg-muted)",
+        }}
+        onMouseEnter={e => {
+          e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
+          e.currentTarget.style.color = "var(--origin-fg-default)";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.backgroundColor = "transparent";
+          e.currentTarget.style.color = "var(--origin-fg-muted)";
+        }}
+      >
+        <X size={16} />
+      </button>
 
-        {/* Body */}
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          {/* Left nav */}
-          <div style={{
-            width: 264,
-            flexShrink: 0,
-            borderRight: "1px solid var(--origin-border-default)",
-            padding: "16px 12px",
-            overflowY: "auto",
-          }}>
+      {/* Body */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Left nav */}
+        <div style={{
+          width: 264,
+          flexShrink: 0,
+          borderRight: "1px solid var(--origin-border-default)",
+          padding: "16px 12px",
+          overflowY: "auto",
+        }}>
           {/* Account header */}
           <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "6px 8px 16px" }}>
             <div style={{
@@ -1113,7 +1101,6 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>
-        </div>
         </div>
       </div>
     </div>,
