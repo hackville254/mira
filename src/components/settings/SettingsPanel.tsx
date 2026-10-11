@@ -186,29 +186,29 @@ function ComingSoonSection({ label }: { label: string }) {
 // ── Development Environment ─────────────────────────────────────────────────
 
 function DevEnvironmentSection() {
-  const cardBg = "color-mix(in srgb, var(--origin-bg-base) 70%, transparent)";
+  const cardBg = "color-mix(in srgb, var(--origin-fg-default) 3%, transparent)";
+  const rowStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", padding: "14px 16px",
+  };
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <div style={{ fontSize: "18px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 24 }}>
+    <div>
+      <div style={{ fontSize: "20px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 28 }}>
         Development Environment
       </div>
 
       {/* Python */}
-      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 8 }}>
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 10 }}>
         Python
       </div>
       <div style={{
         border: "1px solid var(--origin-border-default)",
-        borderRadius: 8,
+        borderRadius: 10,
         overflow: "hidden",
-        marginBottom: 28,
+        marginBottom: 32,
         backgroundColor: cardBg,
       }}>
-        <div style={{
-          display: "flex", alignItems: "center", padding: "11px 14px",
-          borderBottom: "1px solid var(--origin-border-default)",
-        }}>
+        <div style={{ ...rowStyle, borderBottom: "1px solid var(--origin-border-default)" }}>
           <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Interpreter</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
@@ -225,19 +225,19 @@ function DevEnvironmentSection() {
             </div>
             <button style={{
               display: "flex", alignItems: "center", justifyContent: "center",
-              width: 28, height: 28, borderRadius: 6,
+              width: 30, height: 30, borderRadius: 6,
               border: "1px solid var(--origin-border-default)",
               backgroundColor: "var(--origin-bg-base)",
               color: "var(--origin-fg-muted)", cursor: "pointer",
             }}>
-              <Plus size={14} />
+              <Plus size={15} />
             </button>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", padding: "11px 14px" }}>
+        <div style={rowStyle}>
           <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Extension Configuration</span>
           <button style={{
-            padding: "6px 14px", borderRadius: 6,
+            padding: "6px 16px", borderRadius: 6,
             border: "1px solid var(--origin-border-default)",
             backgroundColor: "var(--origin-bg-base)",
             fontSize: "12px", fontWeight: 500, color: "var(--origin-fg-default)",
@@ -249,16 +249,16 @@ function DevEnvironmentSection() {
       </div>
 
       {/* Node.js */}
-      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 8 }}>
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 10 }}>
         Node.js
       </div>
       <div style={{
         border: "1px solid var(--origin-border-default)",
-        borderRadius: 8,
+        borderRadius: 10,
         overflow: "hidden",
         backgroundColor: cardBg,
       }}>
-        <div style={{ display: "flex", alignItems: "center", padding: "11px 14px" }}>
+        <div style={rowStyle}>
           <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Node Version</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
@@ -275,12 +275,12 @@ function DevEnvironmentSection() {
             </div>
             <button style={{
               display: "flex", alignItems: "center", justifyContent: "center",
-              width: 28, height: 28, borderRadius: 6,
+              width: 30, height: 30, borderRadius: 6,
               border: "1px solid var(--origin-border-default)",
               backgroundColor: "var(--origin-bg-base)",
               color: "var(--origin-fg-muted)", cursor: "pointer",
             }}>
-              <Plus size={14} />
+              <Plus size={15} />
             </button>
           </div>
         </div>
@@ -964,66 +964,78 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 10000,
-        backgroundColor: "var(--origin-bg-sidebar)",
-        display: "flex", flexDirection: "column",
+        backgroundColor: "var(--origin-bg-base)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16,
         overflow: "hidden",
       }}
     >
-      {/* Floating close button */}
-      <button
-        onClick={onClose}
-        title="Close (Esc)"
-        style={{
-          position: "absolute", top: 10, right: 12, zIndex: 10,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          width: 26, height: 26,
-          borderRadius: "6px",
-          border: "none",
-          background: "none",
-          cursor: "pointer",
-          color: "var(--origin-fg-muted)",
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-          e.currentTarget.style.color = "var(--origin-fg-default)";
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.backgroundColor = "transparent";
-          e.currentTarget.style.color = "var(--origin-fg-muted)";
-        }}
-      >
-        <X size={15} />
-      </button>
+      <div style={{
+        position: "relative",
+        width: "100%", maxWidth: 1180, height: "100%", maxHeight: 780,
+        backgroundColor: "var(--origin-bg-sidebar)",
+        border: "1px solid var(--origin-border-default)",
+        borderRadius: 12,
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        boxShadow: "0 24px 64px rgba(0,0,0,0.45)",
+      }}>
+        {/* Floating close button */}
+        <button
+          onClick={onClose}
+          title="Close (Esc)"
+          style={{
+            position: "absolute", top: 12, right: 14, zIndex: 10,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 28, height: 28,
+            borderRadius: "6px",
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            color: "var(--origin-fg-muted)",
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
+            e.currentTarget.style.color = "var(--origin-fg-default)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.backgroundColor = "transparent";
+            e.currentTarget.style.color = "var(--origin-fg-muted)";
+          }}
+        >
+          <X size={16} />
+        </button>
 
-      {/* Body */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Left nav */}
-        <div style={{
-          width: "220px",
-          flexShrink: 0,
-          borderRight: "1px solid var(--origin-border-default)",
-          padding: "10px 8px",
-          overflowY: "auto",
-        }}>
+        {/* Body */}
+        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+          {/* Left nav */}
+          <div style={{
+            width: 264,
+            flexShrink: 0,
+            borderRight: "1px solid var(--origin-border-default)",
+            padding: "16px 12px",
+            overflowY: "auto",
+          }}>
           {/* Account header */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "4px 10px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "6px 8px 16px" }}>
             <div style={{
-              width: 36, height: 36, borderRadius: "8px",
+              width: 40, height: 40, borderRadius: "10px",
               backgroundColor: "var(--origin-accent-blue)",
               display: "flex", alignItems: "center", justifyContent: "center",
-              color: "#fff", fontSize: "15px", fontWeight: 700, flexShrink: 0,
+              color: "#fff", fontSize: "17px", fontWeight: 700, flexShrink: 0,
             }}>
               f
             </div>
             <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-              <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 franklin DZUKAM
               </span>
               <span style={{
                 fontSize: "10px", fontWeight: 600, color: "#10b981",
                 backgroundColor: "rgba(16,185,129,0.12)",
                 padding: "1px 6px", borderRadius: "4px", alignSelf: "flex-start",
-                marginTop: 2,
+                marginTop: 3,
               }}>
                 Pro+
               </span>
@@ -1031,7 +1043,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
           </div>
 
           {/* Search */}
-          <div style={{ position: "relative", padding: "0 6px 10px" }}>
+          <div style={{ position: "relative", padding: "0 6px 12px" }}>
             <Search size={12} style={{
               position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
               color: "var(--origin-fg-subtle)", pointerEvents: "none",
@@ -1090,15 +1102,18 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
-          {section === "dev-env"     && <DevEnvironmentSection />}
-          {section === "models"      && <AIProvidersSection />}
-          {section === "appearance"  && <AppearanceSection />}
-          {section === "general"     && <GeneralSection />}
-          {section === "skills"      && <KeybindingsSection />}
-          {!["dev-env", "models", "appearance", "general", "skills"].includes(section) && (
-            <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
-          )}
+        <div style={{ flex: 1, overflowY: "auto", padding: "28px 40px" }}>
+          <div style={{ maxWidth: 860, margin: "0 auto" }}>
+            {section === "dev-env"     && <DevEnvironmentSection />}
+            {section === "models"      && <AIProvidersSection />}
+            {section === "appearance"  && <AppearanceSection />}
+            {section === "general"     && <GeneralSection />}
+            {section === "skills"      && <KeybindingsSection />}
+            {!["dev-env", "models", "appearance", "general", "skills"].includes(section) && (
+              <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
+            )}
+          </div>
+        </div>
         </div>
       </div>
     </div>,
