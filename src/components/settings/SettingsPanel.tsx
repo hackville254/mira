@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Bot, Palette, Check, SlidersHorizontal, Terminal, Copy, Keyboard, Search } from "lucide-react";
+import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Plus, Palette } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
 import FileIcon from "../FileIcon";
 import { PROVIDERS } from "../ai/providers";
@@ -13,15 +13,49 @@ import type { OriginTheme } from "../../themes/types";
 const LOCAL_IDS = new Set(["ollama", "lmstudio", "vllm"]);
 const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
-type Section = "general" | "ai" | "appearance" | "terminal" | "keybindings";
+type Section =
+  | "account" | "general" | "trae-mobile" | "dev-env" | "permission"
+  | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "browser"
+  | "indexing" | "skills" | "rules" | "hooks" | "beta" | "about";
+
+interface NavDef {
+  id: Section;
+  label: string;
+  icon: React.ReactNode;
+  external?: boolean;
+  keywords: string;
+  dividerAfter?: boolean;
+}
+
+const NAV_ITEMS: NavDef[] = [
+  { id: "account",      label: "Account",                 icon: <User size={14} />,               keywords: "account profile user" },
+  { id: "general",      label: "General",                 icon: <SlidersHorizontal size={14} />,   keywords: "general settings" },
+  { id: "trae-mobile",  label: "TRAE Mobile",             icon: <Smartphone size={14} />,          keywords: "mobile phone", dividerAfter: true },
+  { id: "dev-env",      label: "Development Environment", icon: <Code2 size={14} />,              keywords: "python node interpreter environment" },
+  { id: "permission",   label: "Permission Approval",      icon: <ShieldCheck size={14} />,         keywords: "permission approval security" },
+  { id: "agent",        label: "Agent",                   icon: <Wrench size={14} />,              keywords: "agent tools" },
+  { id: "mcp",          label: "MCP",                     icon: <Plug size={14} />,                keywords: "mcp server" },
+  { id: "cue",          label: "CUE",                     icon: <Zap size={14} />,                 keywords: "cue" },
+  { id: "models",       label: "Models",                  icon: <Cpu size={14} />,                 keywords: "models ai provider api key openai anthropic gemini" },
+  { id: "appearance",   label: "Appearance",              icon: <Palette size={14} />,             keywords: "appearance theme color" },
+  { id: "conversation", label: "Conversation",            icon: <MessageSquare size={14} />,       keywords: "conversation chat" },
+  { id: "browser",      label: "Browser",                 icon: <Globe size={14} />,               keywords: "browser web preview", dividerAfter: true },
+  { id: "indexing",     label: "Indexing & Docs",         icon: <Database size={14} />,            keywords: "indexing docs" },
+  { id: "skills",       label: "Skills & Commands",       icon: <Command size={14} />,             keywords: "skills commands keyboard" },
+  { id: "rules",        label: "Rules & Memories",        icon: <ScrollText size={14} />,          keywords: "rules memories" },
+  { id: "hooks",        label: "Hooks",                   icon: <Anchor size={14} />,              keywords: "hooks", dividerAfter: true },
+  { id: "beta",         label: "Beta",                    icon: <FlaskConical size={14} />,        keywords: "beta experimental", dividerAfter: true },
+  { id: "about",        label: "About TraeCode",          icon: <Info size={14} />,                keywords: "about" },
+];
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 
-function NavItem({ active, icon, label, onClick }: {
+function NavItem({ active, icon, label, onClick, external }: {
   active: boolean;
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  external?: boolean;
 }) {
   return (
     <button
@@ -50,7 +84,8 @@ function NavItem({ active, icon, label, onClick }: {
       }}
     >
       <span style={{ opacity: active ? 1 : 0.7, display: "flex" }}>{icon}</span>
-      {label}
+      <span style={{ flex: 1 }}>{label}</span>
+      {external && <ExternalLink size={11} style={{ opacity: 0.5 }} />}
     </button>
   );
 }
@@ -138,6 +173,121 @@ type KeyState = {
   saving: boolean;
   justSaved: boolean;
 };
+
+function ComingSoonSection({ label }: { label: string }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "40px 0", color: "var(--origin-fg-subtle)" }}>
+      <span style={{ fontSize: "15px", fontWeight: 500, color: "var(--origin-fg-default)" }}>{label}</span>
+      <span style={{ fontSize: "12px" }}>Coming soon</span>
+    </div>
+  );
+}
+
+// ── Development Environment ─────────────────────────────────────────────────
+
+function DevEnvironmentSection() {
+  const cardBg = "color-mix(in srgb, var(--origin-bg-base) 70%, transparent)";
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div style={{ fontSize: "18px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 24 }}>
+        Development Environment
+      </div>
+
+      {/* Python */}
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 8 }}>
+        Python
+      </div>
+      <div style={{
+        border: "1px solid var(--origin-border-default)",
+        borderRadius: 8,
+        overflow: "hidden",
+        marginBottom: 28,
+        backgroundColor: cardBg,
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", padding: "11px 14px",
+          borderBottom: "1px solid var(--origin-border-default)",
+        }}>
+          <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Interpreter</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "5px 10px", borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              fontSize: "12px", color: "var(--origin-fg-default)",
+              cursor: "pointer",
+            }}>
+              <span style={{ fontSize: 13 }}>🐍</span>
+              <span>Python 3.13.15 ('venv': venv)</span>
+              <ChevronDown size={12} style={{ color: "var(--origin-fg-muted)" }} />
+            </div>
+            <button style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 28, height: 28, borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              color: "var(--origin-fg-muted)", cursor: "pointer",
+            }}>
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", padding: "11px 14px" }}>
+          <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Extension Configuration</span>
+          <button style={{
+            padding: "6px 14px", borderRadius: 6,
+            border: "1px solid var(--origin-border-default)",
+            backgroundColor: "var(--origin-bg-base)",
+            fontSize: "12px", fontWeight: 500, color: "var(--origin-fg-default)",
+            cursor: "pointer",
+          }}>
+            Go to Settings
+          </button>
+        </div>
+      </div>
+
+      {/* Node.js */}
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 8 }}>
+        Node.js
+      </div>
+      <div style={{
+        border: "1px solid var(--origin-border-default)",
+        borderRadius: 8,
+        overflow: "hidden",
+        backgroundColor: cardBg,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "11px 14px" }}>
+          <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Node Version</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "5px 10px", borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              fontSize: "12px", color: "var(--origin-fg-default)",
+              cursor: "pointer",
+            }}>
+              <span style={{ fontSize: 13 }}>⬢</span>
+              <span>Node.js 24.21.0</span>
+              <ChevronDown size={12} style={{ color: "var(--origin-fg-muted)" }} />
+            </div>
+            <button style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 28, height: 28, borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              color: "var(--origin-fg-muted)", cursor: "pointer",
+            }}>
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AIProvidersSection() {
   const { theme } = useTheme();
@@ -782,6 +932,7 @@ function TerminalSection() {
     </div>
   );
 }
+void TerminalSection;
 
 // ── Settings Panel ───────────────────────────────────────────────────────────
 
@@ -789,16 +940,8 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-const SECTIONS: { id: Section; label: string; icon: React.ReactNode; keywords: string }[] = [
-  { id: "general",      label: "General",           icon: <SlidersHorizontal size={14} />, keywords: "autocomplete inline ghost text delay completions" },
-  { id: "ai",           label: "AI Providers",      icon: <Bot size={14} />,               keywords: "api key openai anthropic gemini provider model" },
-  { id: "appearance",   label: "Appearance",        icon: <Palette size={14} />,           keywords: "theme color dark light" },
-  { id: "terminal",     label: "Terminal",          icon: <Terminal size={14} />,          keywords: "shell integration bash zsh powershell" },
-  { id: "keybindings",  label: "Keyboard Shortcuts",icon: <Keyboard size={14} />,          keywords: "keybinding shortcut keys" },
-];
-
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>("dev-env");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -811,8 +954,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const filteredSections = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return SECTIONS;
-    return SECTIONS.filter(
+    if (!q) return NAV_ITEMS;
+    return NAV_ITEMS.filter(
       s => s.label.toLowerCase().includes(q) || s.keywords.includes(q)
     );
   }, [query]);
@@ -826,100 +969,118 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         overflow: "hidden",
       }}
     >
-      {/* Header */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "12px",
-        padding: "0 16px",
-        height: "48px",
-        borderBottom: "1px solid var(--origin-border-default)",
-        flexShrink: 0,
-      }}>
-        <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap" }}>
-          Settings
-        </span>
-
-        {/* Search */}
-        <div style={{ position: "relative", flex: 1, maxWidth: "360px" }}>
-          <Search size={13} style={{
-            position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)",
-            color: "var(--origin-fg-subtle)", pointerEvents: "none",
-          }} />
-          <input
-            value={query}
-            onChange={e => {
-              const v = e.target.value;
-              setQuery(v);
-              const q = v.trim().toLowerCase();
-              if (q) {
-                const first = SECTIONS.find(s => s.label.toLowerCase().includes(q) || s.keywords.includes(q));
-                if (first) setSection(first.id);
-              }
-            }}
-            placeholder="Search settings"
-            style={{
-              width: "100%",
-              padding: "5px 9px 5px 28px",
-              borderRadius: "6px",
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: "var(--origin-bg-base)",
-              color: "var(--origin-fg-default)",
-              fontSize: "12px",
-              outline: "none",
-              boxSizing: "border-box",
-            }}
-            onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
-            onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; }}
-          />
-        </div>
-
-        <button
-          onClick={onClose}
-          style={{
-            marginLeft: "auto",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            width: 26, height: 26,
-            borderRadius: "6px",
-            border: "none",
-            background: "none",
-            cursor: "pointer",
-            color: "var(--origin-fg-muted)",
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-            e.currentTarget.style.color = "var(--origin-fg-default)";
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.backgroundColor = "transparent";
-            e.currentTarget.style.color = "var(--origin-fg-muted)";
-          }}
-        >
-          <X size={15} />
-        </button>
-      </div>
+      {/* Floating close button */}
+      <button
+        onClick={onClose}
+        title="Close (Esc)"
+        style={{
+          position: "absolute", top: 10, right: 12, zIndex: 10,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          width: 26, height: 26,
+          borderRadius: "6px",
+          border: "none",
+          background: "none",
+          cursor: "pointer",
+          color: "var(--origin-fg-muted)",
+        }}
+        onMouseEnter={e => {
+          e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
+          e.currentTarget.style.color = "var(--origin-fg-default)";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.backgroundColor = "transparent";
+          e.currentTarget.style.color = "var(--origin-fg-muted)";
+        }}
+      >
+        <X size={15} />
+      </button>
 
       {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* Left nav */}
         <div style={{
-          width: "196px",
+          width: "220px",
           flexShrink: 0,
           borderRight: "1px solid var(--origin-border-default)",
           padding: "10px 8px",
           overflowY: "auto",
         }}>
-          <div style={{ fontSize: "10px", fontWeight: 600, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.07em", padding: "4px 10px 6px" }}>
-            Settings
+          {/* Account header */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "4px 10px 14px" }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: "8px",
+              backgroundColor: "var(--origin-accent-blue)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: "#fff", fontSize: "15px", fontWeight: 700, flexShrink: 0,
+            }}>
+              f
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                franklin DZUKAM
+              </span>
+              <span style={{
+                fontSize: "10px", fontWeight: 600, color: "#10b981",
+                backgroundColor: "rgba(16,185,129,0.12)",
+                padding: "1px 6px", borderRadius: "4px", alignSelf: "flex-start",
+                marginTop: 2,
+              }}>
+                Pro+
+              </span>
+            </div>
           </div>
-          {filteredSections.map(s => (
-            <NavItem
-              key={s.id}
-              active={section === s.id}
-              icon={s.icon}
-              label={s.label}
-              onClick={() => setSection(s.id)}
+
+          {/* Search */}
+          <div style={{ position: "relative", padding: "0 6px 10px" }}>
+            <Search size={12} style={{
+              position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
+              color: "var(--origin-fg-subtle)", pointerEvents: "none",
+            }} />
+            <input
+              value={query}
+              onChange={e => {
+                const v = e.target.value;
+                setQuery(v);
+                const q = v.trim().toLowerCase();
+                if (q) {
+                  const first = NAV_ITEMS.find(s => s.label.toLowerCase().includes(q) || s.keywords.includes(q));
+                  if (first) setSection(first.id);
+                }
+              }}
+              placeholder="⌘F to search"
+              style={{
+                width: "100%",
+                padding: "5px 9px 5px 28px",
+                borderRadius: "6px",
+                border: "1px solid var(--origin-border-default)",
+                backgroundColor: "var(--origin-bg-base)",
+                color: "var(--origin-fg-default)",
+                fontSize: "12px",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+              onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
+              onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; }}
             />
+          </div>
+
+          {filteredSections.map(s => (
+            <div key={s.id}>
+              <NavItem
+                active={section === s.id}
+                icon={s.icon}
+                label={s.label}
+                external={s.external}
+                onClick={() => setSection(s.id)}
+              />
+              {s.dividerAfter && (
+                <div style={{
+                  height: 1,
+                  margin: "6px 8px",
+                  backgroundColor: "var(--origin-border-default)",
+                }} />
+              )}
+            </div>
           ))}
           {filteredSections.length === 0 && (
             <div style={{ fontSize: "12px", color: "var(--origin-fg-subtle)", padding: "8px 10px" }}>
@@ -929,17 +1090,15 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px 32px" }}>
-          <div style={{ maxWidth: "760px" }}>
-            <div style={{ fontSize: "16px", fontWeight: 600, color: "var(--origin-fg-default)" }}>
-              {SECTIONS.find(s => s.id === section)?.label}
-            </div>
-            {section === "general"     && <GeneralSection />}
-            {section === "ai"          && <AIProvidersSection />}
-            {section === "appearance"  && <AppearanceSection />}
-            {section === "terminal"    && <TerminalSection />}
-            {section === "keybindings" && <KeybindingsSection />}
-          </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
+          {section === "dev-env"     && <DevEnvironmentSection />}
+          {section === "models"      && <AIProvidersSection />}
+          {section === "appearance"  && <AppearanceSection />}
+          {section === "general"     && <GeneralSection />}
+          {section === "skills"      && <KeybindingsSection />}
+          {!["dev-env", "models", "appearance", "general", "skills"].includes(section) && (
+            <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
+          )}
         </div>
       </div>
     </div>,

@@ -20,16 +20,17 @@ interface ToolTabDef {
   id: ToolTabId;
   label: string;
   icon: string;
+  color?: string;
 }
 
 const TOOL_TABS: ToolTabDef[] = [
-  { id: "terminal", label: "Terminal",  icon: "lucide:terminal" },
-  { id: "editor",   label: "Editor",   icon: "lucide:code-2" },
-  { id: "docview", label: "DocView", icon: "lucide:file-text" },
-  { id: "settings", label: "Settings", icon: "lucide:settings" },
-  { id: "diffview", label: "DiffView", icon: "lucide:git-compare" },
-  { id: "agents",  label: "Agents",  icon: "lucide:bot" },
-  { id: "browser", label: "Browser", icon: "lucide:globe" },
+  { id: "terminal", label: "Terminal",  icon: "lucide:terminal", color: "var(--origin-fg-muted)" },
+  { id: "editor",   label: "Editor",   icon: "lucide:code-2",   color: "#34d399" },
+  { id: "docview", label: "DocView", icon: "lucide:file-text", color: "#a78bfa" },
+  { id: "settings", label: "Settings", icon: "lucide:settings", color: "var(--origin-fg-muted)" },
+  { id: "diffview", label: "DiffView", icon: "lucide:git-compare", color: "#34d399" },
+  { id: "agents",  label: "Agents",  icon: "lucide:bot",       color: "var(--origin-fg-default)" },
+  { id: "browser", label: "Browser", icon: "lucide:globe",     color: "#60a5fa" },
 ];
 
 interface AgentModeViewProps {
@@ -89,18 +90,20 @@ export default function AgentModeView(props: AgentModeViewProps) {
 
   // Open tool tabs (top bar). User can add/remove tabs via + and × buttons.
   const [openTabs, setOpenTabs] = useState<ToolTabId[]>(["editor", "browser", "terminal"]);
-  const [activeToolTab, setActiveToolTab] = useState<ToolTabId>("editor");
+  const [activeToolTab, setActiveToolTab] = useState<ToolTabId | null>("editor");
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
 
   const openToolTab = useCallback((id: ToolTabId) => {
     setOpenTabs(prev => prev.includes(id) ? prev : [...prev, id]);
     setActiveToolTab(id);
+    setAddMenuOpen(false);
   }, []);
 
   const closeToolTab = useCallback((id: ToolTabId) => {
     setOpenTabs(prev => {
       const next = prev.filter(t => t !== id);
-      if (id === activeToolTab && next.length > 0) {
-        setActiveToolTab(next[next.length - 1]);
+      if (id === activeToolTab) {
+        setActiveToolTab(next.length > 0 ? next[next.length - 1] : null);
       }
       return next;
     });
@@ -173,15 +176,18 @@ export default function AgentModeView(props: AgentModeViewProps) {
                 onClick={() => setActiveToolTab(tabId)}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
-                  height: "100%", padding: "0 8px 0 12px",
-                  background: active ? "var(--origin-bg-editor)" : "transparent",
+                  height: 28, margin: "0 3px", padding: "0 10px 0 12px",
+                  borderRadius: 6,
+                  background: active ? "rgba(96, 165, 250, 0.12)" : "transparent",
+                  border: active ? "1px solid rgba(96, 165, 250, 0.3)" : "1px solid transparent",
                   color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
                   cursor: "pointer", fontSize: "12px", fontWeight: 500,
-                  borderRight: "1px solid var(--origin-border-default)",
                   userSelect: "none",
                 }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = "transparent"; }}
               >
-                <Icon icon={def.icon} width={14} />
+                <Icon icon={def.icon} width={14} style={{ color: def.color }} />
                 <span>{def.label}</span>
                 <button
                   onClick={(e) => { e.stopPropagation(); closeToolTab(tabId); }}
@@ -190,7 +196,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
                     display: "flex", alignItems: "center", justifyContent: "center",
                     width: 16, height: 16, borderRadius: 3,
                     background: "transparent", border: "none", cursor: "pointer",
-                    color: "var(--origin-fg-subtle)", marginLeft: 4, padding: 0,
+                    color: "var(--origin-fg-subtle)", marginLeft: 2, padding: 0,
                   }}
                   onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; e.currentTarget.style.color = "var(--origin-fg-default)"; }}
                   onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-subtle)"; }}
@@ -201,25 +207,76 @@ export default function AgentModeView(props: AgentModeViewProps) {
             );
           })}
 
-          {/* Add tab button */}
+          {/* Add tab button with dropdown */}
           <div style={{ position: "relative" }}>
             <button
-              onClick={() => {
-                const closed = TOOL_TABS.find(t => !openTabs.includes(t.id));
-                if (closed) openToolTab(closed.id);
-              }}
+              onClick={() => setAddMenuOpen(o => !o)}
               title="Open tab"
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                width: 28, height: "100%",
-                background: "transparent", border: "none", cursor: "pointer",
-                color: "var(--origin-fg-muted)",
+                width: 28, height: 28, borderRadius: 6,
+                background: addMenuOpen ? "var(--origin-bg-hover)" : "transparent",
+                border: "none", cursor: "pointer",
+                color: addMenuOpen ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
               }}
-              onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; }}
-              onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
+              onMouseEnter={e => { if (!addMenuOpen) e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+              onMouseLeave={e => { if (!addMenuOpen) e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
             >
               <Icon icon="lucide:plus" width={15} />
             </button>
+
+            {addMenuOpen && (
+              <>
+                {/* Click-away overlay */}
+                <div
+                  onClick={() => setAddMenuOpen(false)}
+                  style={{
+                    position: "fixed", inset: 0, zIndex: 50,
+                  }}
+                />
+                {/* Dropdown menu */}
+                <div style={{
+                  position: "absolute", top: 32, left: 0, zIndex: 60,
+                  minWidth: 200, padding: 6,
+                  backgroundColor: "var(--origin-bg-panel)",
+                  border: "1px solid var(--origin-border-default)",
+                  borderRadius: 8,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 600, color: "var(--origin-fg-subtle)",
+                    textTransform: "uppercase", letterSpacing: "0.05em",
+                    padding: "4px 8px 8px",
+                  }}>
+                    Open tab
+                  </div>
+                  {TOOL_TABS.filter(t => !openTabs.includes(t.id)).length === 0 ? (
+                    <div style={{ fontSize: 12, color: "var(--origin-fg-subtle)", padding: "8px" }}>
+                      All tabs are open
+                    </div>
+                  ) : (
+                    TOOL_TABS.filter(t => !openTabs.includes(t.id)).map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => openToolTab(t.id)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          width: "100%", padding: "6px 8px",
+                          background: "transparent", border: "none", borderRadius: 6,
+                          cursor: "pointer", textAlign: "left",
+                          fontSize: 12, color: "var(--origin-fg-default)",
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"}
+                        onMouseLeave={e => e.currentTarget.style.backgroundColor = "transparent"}
+                      >
+                        <Icon icon={t.icon} width={14} style={{ color: t.color }} />
+                        <span>{t.label}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <div style={{ flex: 1 }} />
@@ -257,7 +314,45 @@ export default function AgentModeView(props: AgentModeViewProps) {
 
         {/* Tool content */}
         <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--origin-bg-editor)" }}>
-          {activeToolTab === "editor" && (
+          {activeToolTab === null ? (
+            <div
+              style={{
+                flex: 1, display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                gap: 14, color: "var(--origin-fg-subtle)",
+              }}
+              onDoubleClick={() => openToolTab("editor")}
+            >
+              <Icon icon="lucide:layout-panel-top" width={36} style={{ opacity: 0.4 }} />
+              <div style={{ fontSize: 13, textAlign: "center" }}>
+                No tabs open
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: 320 }}>
+                {TOOL_TABS.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => openToolTab(t.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "6px 10px", borderRadius: 6,
+                      border: "1px solid var(--origin-border-default)",
+                      backgroundColor: "var(--origin-bg-panel)",
+                      color: "var(--origin-fg-default)",
+                      fontSize: 12, cursor: "pointer",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"}
+                    onMouseLeave={e => e.currentTarget.style.backgroundColor = "var(--origin-bg-panel)"}
+                  >
+                    <Icon icon={t.icon} width={13} style={{ color: t.color }} />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, opacity: 0.6 }}>
+                Double-click to open Editor
+              </div>
+            </div>
+          ) : activeToolTab === "editor" && (
             <>
               <TabBar
                 tabs={tabs}

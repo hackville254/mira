@@ -479,8 +479,10 @@ function App() {
       {onboardingDone && <TitleBar />}
       {!onboardingDone ? (
         <Onboarding onComplete={completeOnboarding} />
-      ) : appMode === 'ai' ? (
-        <AgentModeView
+      ) : (
+        <>
+        {appMode === 'ai' ? (
+          <AgentModeView
           folderPath={folderPath}
           tabs={tabs}
           activeTab={activeTab}
@@ -511,8 +513,7 @@ function App() {
           setTerminalOpen={setTerminalOpen}
         />
       ) : (
-        <>
-          <div className="flex flex-1 overflow-hidden gap-1">
+        <div className="flex flex-1 overflow-hidden gap-1">
             {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} fileTreeKey={fileTreeVersion} />}
             <div className="flex flex-1 overflow-hidden gap-1">
               <div className="flex-1 flex flex-col overflow-hidden gap-1">
@@ -623,17 +624,18 @@ function App() {
               )}
             </div>
           </div>
-          <StatusBar
-            language={languageLabel(activeTab)}
-            line={cursorPositions[activeTab ?? '']?.line ?? 1}
-            col={cursorPositions[activeTab ?? '']?.col ?? 1}
-            branch={gitBranch}
-            debugStatus={
-              debugCtx.session.status === 'paused' ? 'paused' :
-              debugCtx.session.status === 'running' ? 'running' : null
-            }
-          />
-        </>
+      )}
+      <StatusBar
+        language={languageLabel(activeTab)}
+        line={cursorPositions[activeTab ?? '']?.line ?? 1}
+        col={cursorPositions[activeTab ?? '']?.col ?? 1}
+        branch={gitBranch}
+        debugStatus={
+          debugCtx.session.status === 'paused' ? 'paused' :
+          debugCtx.session.status === 'running' ? 'running' : null
+        }
+      />
+      </>
       )}
       {paletteOpen && (
         <CommandPalette

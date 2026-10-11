@@ -7,6 +7,10 @@ interface Props {
   col: number;
   branch: string | null;
   debugStatus?: 'paused' | 'running' | null;
+  errors?: number;
+  warnings?: number;
+  spaces?: number;
+  lineEnding?: 'LF' | 'CRLF';
 }
 
 function StatusItem({ children, onClick, title }: { children: React.ReactNode; onClick?: () => void; title?: string }) {
@@ -34,7 +38,10 @@ function StatusItem({ children, onClick, title }: { children: React.ReactNode; o
   );
 }
 
-export default function StatusBar({ language, line, col, branch, debugStatus }: Props) {
+export default function StatusBar({
+  language, line, col, branch, debugStatus,
+  errors = 0, warnings = 0, spaces = 2, lineEnding = 'LF',
+}: Props) {
   const { theme, themes, setTheme } = useTheme();
   const isDark = theme.type === 'dark';
 
@@ -82,6 +89,24 @@ export default function StatusBar({ language, line, col, branch, debugStatus }: 
             <span>{debugStatus === 'paused' ? 'Paused' : 'Running'}</span>
           </StatusItem>
         )}
+
+        {/* Launchpad */}
+        <StatusItem title="Launchpad">
+          <Icon icon="lucide:rocket" width={11} />
+          <span>Launchpad</span>
+        </StatusItem>
+
+        {/* Errors & Warnings */}
+        <StatusItem title="Problems">
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: errors > 0 ? 'var(--origin-semantic-error)' : undefined }}>
+            <Icon icon="lucide:x-circle" width={11} />
+            {errors}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: warnings > 0 ? 'var(--origin-accent-yellow)' : undefined }}>
+            <Icon icon="lucide:triangle-alert" width={11} />
+            {warnings}
+          </span>
+        </StatusItem>
       </div>
 
       {/* Right */}
@@ -91,6 +116,12 @@ export default function StatusBar({ language, line, col, branch, debugStatus }: 
         </StatusItem>
         <StatusItem>
           <span>Ln {line}, Col {col}</span>
+        </StatusItem>
+        <StatusItem>
+          <span>Spaces: {spaces}</span>
+        </StatusItem>
+        <StatusItem>
+          <span>{lineEnding}</span>
         </StatusItem>
         <StatusItem>
           <span>UTF-8</span>
