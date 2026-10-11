@@ -280,6 +280,10 @@ function toWorkspaceRelPath(fullPath: string, folderPath: string): string {
 const DEFAULT_WIDTH = 520;
 const MIN_WIDTH    = 520;
 const MAX_WIDTH    = 900;
+// Agent mode: the surface is slimmer because the task rail + tool panels live beside it.
+const AGENT_DEFAULT_WIDTH = 380;
+const AGENT_MIN_WIDTH     = 320;
+const AGENT_MAX_WIDTH     = 560;
 const CTX_MIN     = 160;
 const CTX_MAX     = 480;
 const CTX_DEFAULT = 200;
@@ -305,6 +309,14 @@ interface AiPanelProps {
   getOpenTabPaths?: () => string[];
   getFileContents?: () => Record<string, string>;
   onOpenDiffTab?: (data: AiDiffTabInput) => void;
+  /** When set (and changed), the panel loads the given session id. Driven by the Agent mode task rail. */
+  openSessionId?: string | null;
+  /** Incrementing counter that triggers a fresh chat (Agent mode "New Task"). */
+  newChatNonce?: number;
+  /** Notifies the host when the active session changes (created, selected, cleared). */
+  onActiveSessionChange?: (sessionId: string | null) => void;
+  /** 'sidebar' (IDE right panel) or 'agent' (full Agent mode surface, no resize handle). */
+  renderMode?: "sidebar" | "agent";
 }
 
 function buildModelHistory(messages: DisplayMessage[]): ModelMessage[] {
@@ -348,12 +360,22 @@ function buildModelHistory(messages: DisplayMessage[]): ModelMessage[] {
 export default function AiPanel({
   getEditorContext, getActiveFilePath, forcedContext, onForcedContextConsumed,
   onApplyCode, getOpenTabPaths, getFileContents, onOpenDiffTab,
+  openSessionId = null,
+  newChatNonce = 0,
+  onActiveSessionChange,
+  renderMode = "sidebar",
 }: AiPanelProps) {
   const { folderPath } = useWorkspace();
+  const onActiveSessionChangeRef = useRef(onActiveSessionChange);
+  useEffect(() => { onActiveSessionChangeRef.current = onActiveSessionChange; }, [onActiveSessionChange]);
 
+  const isAgent = renderMode === "agent";
+  const effMin = isAgent ? AGENT_MIN_WIDTH : MIN_WIDTH;
+  const effMax = isAgent ? AGENT_MAX_WIDTH : MAX_WIDTH;
+  const effDefault = isAgent ? AGENT_DEFAULT_WIDTH : DEFAULT_WIDTH;
   const [width, setWidth] = useState(() => {
     const n = parseInt(localStorage.getItem("origin-ai-panel-width") ?? "", 10);
-    return isNaN(n) ? DEFAULT_WIDTH : Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, n));
+    return isNaN(n) ? effDefault : Math.min(effMax, Math.max(effMin, n));
   });
   const [contextOpen, setContextOpen] = useState(false);
   const [chatView, setChatView] = useState<"new" | "chat" | "history">(() => {
@@ -451,6 +473,7 @@ export default function AiPanel({
       }
       setMessages([]);
       activeSessionIdRef.current = null;
+      onActiveSessionChangeRef.current?.(null);
       setChatView("new");
       localStorage.setItem("origin-ai-chat-view", "new");
     }
@@ -492,6 +515,7 @@ export default function AiPanel({
     activeSessionIdRef.current = sessionId;
     const fp = folderPathRef.current ?? "";
     localStorage.setItem(activeSessionKey(fp), sessionId);
+    onActiveSessionChangeRef.current?.(sessionId);
     setMessages([]);
     setChatView("chat");
     localStorage.setItem("origin-ai-chat-view", "chat");
@@ -555,6 +579,7 @@ export default function AiPanel({
       sessionId = crypto.randomUUID();
       activeSessionIdRef.current = sessionId;
       localStorage.setItem(activeSessionKey(fp), sessionId);
+      onActiveSessionChangeRef.current?.(sessionId);
       lsPush({ id: sessionId, title: text, workspace_path: fp, updated_at: Date.now() });
       createSession(fp, text, modelId, providerId, sessionId)
         .catch(err => console.error("[AiPanel] DB createSession failed:", err));
@@ -913,10 +938,26 @@ export default function AiPanel({
     activeSessionIdRef.current = null;
     const fp = folderPathRef.current ?? "";
     localStorage.removeItem(activeSessionKey(fp));
+    onActiveSessionChangeRef.current?.(null);
     setChatView("new");
     localStorage.removeItem("origin-ai-chat-view");
     setSessions(lsForPath(fp));
   }, []);
+
+  // External drivers from the Agent mode task rail.
+  const lastOpenSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openSessionId || openSessionId === lastOpenSessionRef.current) return;
+    lastOpenSessionRef.current = openSessionId;
+    if (openSessionId !== activeSessionIdRef.current) void handleSessionSelect(openSessionId);
+  }, [openSessionId, handleSessionSelect]);
+
+  const lastNewChatNonceRef = useRef(newChatNonce);
+  useEffect(() => {
+    if (newChatNonce === lastNewChatNonceRef.current) return;
+    lastNewChatNonceRef.current = newChatNonce;
+    handleNewChat();
+  }, [newChatNonce, handleNewChat]);
 
   const handlePlanApprove = useCallback(async () => {
     setMessages(prev => {
@@ -1005,6 +1046,7 @@ export default function AiPanel({
     if (activeSessionIdRef.current === sessionId) {
       activeSessionIdRef.current = null;
       localStorage.removeItem(activeSessionKey(fp));
+      onActiveSessionChangeRef.current?.(null);
     }
     deleteSession(sessionId).catch(err => console.error("[AiPanel] Failed to delete session:", err));
   }, []);
@@ -1018,14 +1060,14 @@ export default function AiPanel({
     dragging.current = true; startX.current = e.clientX; startW.current = width;
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startW.current + (startX.current - ev.clientX)));
+      const next = Math.min(effMax, Math.max(effMin, startW.current + (startX.current - ev.clientX)));
       setWidth(next);
       localStorage.setItem("origin-ai-panel-width", String(next));
     };
     const onUp = () => { dragging.current = false; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [width]);
+  }, [width, effMin, effMax]);
 
   const onCtxMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1052,13 +1094,15 @@ export default function AiPanel({
         className="relative flex flex-col shrink-0 overflow-hidden"
         style={{ width, backgroundColor: "var(--origin-bg-sidebar)" }}
       >
-        <div
-          onMouseDown={onMouseDown}
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10"
-          style={{ backgroundColor: "transparent" }}
-          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-border-default)"; }}
-          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
-        />
+        {renderMode !== "agent" && (
+          <div
+            onMouseDown={onMouseDown}
+            className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10"
+            style={{ backgroundColor: "transparent" }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-border-default)"; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          />
+        )}
 
         {/* Header */}
         <div className="flex items-center px-3 shrink-0" style={{ height: "36px" }}>
@@ -1099,13 +1143,13 @@ export default function AiPanel({
                 <span style={{ fontSize: "26px", fontWeight: 700, color: "var(--origin-fg-default)" }}>Agent</span>
               </div>
               <div style={{ fontSize: "13px", color: "var(--origin-fg-muted)", textAlign: "center" }}>
-                Your coding agent for the whole project
+                Deep understanding of complex tasks
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px", maxWidth: 300 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px", maxWidth: 360 }}>
                 {[
-                  { icon: "lucide:check", text: "Reads and edits files across your workspace" },
-                  { icon: "lucide:check", text: "Plans multi-step changes and runs them for you" },
-                  { icon: "lucide:check", text: "Keeps context from your editor, terminal and open tabs" },
+                  { icon: "lucide:check", text: "Handles iterations, bug fixes, and refactoring in large projects" },
+                  { icon: "lucide:check", text: "Plans tasks intelligently and drives execution with precision" },
+                  { icon: "lucide:check", text: "Orchestrates intelligent multi-agent collaboration" },
                 ].map((f, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
                     <Icon icon={f.icon} width={14} style={{ color: "var(--origin-semantic-success)", flexShrink: 0, marginTop: "2px" }} />

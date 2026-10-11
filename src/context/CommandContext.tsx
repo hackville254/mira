@@ -5,6 +5,8 @@ export interface AppCommands {
   sidebarOpen: boolean;
   terminalOpen: boolean;
   aiPanelOpen: boolean;
+  appMode: 'ide' | 'ai';
+  onSetAppMode: (mode: 'ide' | 'ai') => void;
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
   onToggleAiPanel: () => void;
@@ -59,6 +61,7 @@ const noop = () => {};
 
 const defaults: AppCommands = {
   sidebarOpen: false, terminalOpen: false, aiPanelOpen: false,
+  appMode: 'ide', onSetAppMode: noop,
   onToggleSidebar: noop, onToggleTerminal: noop, onToggleAiPanel: noop, onSetAiPanel: noop,
   isFullscreen: false, onToggleFullscreen: noop,
   onOpenFolder: noop, onOpenFile: noop, onNewFile: noop, onNewWindow: noop, onOpenPalette: noop, onOpenSettings: noop,

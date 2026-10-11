@@ -15,6 +15,7 @@ import StatusBar from "./components/StatusBar";
 import TerminalPanel, { type TerminalPanelHandle } from "./components/terminal/TerminalPanel";
 import CommandPalette from "./components/palette/CommandPalette";
 import AiPanel from "./components/ai/AiPanel";
+import AgentModeView from "./components/ai/AgentModeView";
 import SettingsPanel from "./components/settings/SettingsPanel";
 import DebugToolbar from "./components/DebugToolbar";
 import { setSetting, pushRecentProject } from "./lib/settings";
@@ -62,6 +63,7 @@ function App() {
     aiPanelOpen, setAiPanelOpen,
     terminalOpen, setTerminalOpen,
     terminalHeight, setTerminalHeight,
+    appMode, setAppMode,
   } = useWorkspacePersistence();
 
   // Once the terminal has been opened, keep it mounted so PTY sessions survive toggle.
@@ -419,6 +421,7 @@ function App() {
     terminalOpen, onToggleTerminal: () => setTerminalOpen(v => !v),
     aiPanelOpen, onToggleAiPanel: () => setAiPanelOpen(v => !v),
     onSetAiPanel: (open: boolean) => setAiPanelOpen(open),
+    appMode, onSetAppMode: (mode: 'ide' | 'ai') => setAppMode(mode),
     isFullscreen, onToggleFullscreen: toggleFullscreen,
     onOpenFolder: handleOpenFolder,
     onOpenFile: handleOpenFile,
@@ -476,6 +479,36 @@ function App() {
       {onboardingDone && <TitleBar />}
       {!onboardingDone ? (
         <Onboarding onComplete={completeOnboarding} />
+      ) : appMode === 'ai' ? (
+        <AgentModeView
+          folderPath={folderPath}
+          tabs={tabs}
+          activeTab={activeTab}
+          fileContents={fileContents}
+          fileErrors={fileErrors}
+          jumpRequest={jumpRequest}
+          fileTreeVersion={fileTreeVersion}
+          editorRef={editorRef}
+          cursorPositions={cursorPositions}
+          pinnedContext={pinnedContext}
+          openTab={openTab}
+          openTabAtLine={openTabAtLine}
+          closeTab={closeTab}
+          setActiveTab={setActiveTab}
+          handleEditorChange={handleEditorChange}
+          handleSave={handleSave}
+          setPinnedContext={setPinnedContext}
+          setCursorPositions={setCursorPositions}
+          openAiDiffTab={openAiDiffTab}
+          getAiCompletion={getAiCompletion}
+          handleMissingServer={handleMissingServer}
+          onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
+          terminalRef={terminalRef}
+          terminalHeight={terminalHeight}
+          setTerminalHeight={setTerminalHeight}
+          terminalOpen={terminalOpen}
+          setTerminalOpen={setTerminalOpen}
+        />
       ) : (
         <>
           <div className="flex flex-1 overflow-hidden gap-1">

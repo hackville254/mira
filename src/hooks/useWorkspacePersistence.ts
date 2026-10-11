@@ -11,20 +11,17 @@ export function useWorkspacePersistence() {
   const { setFolderPath } = useWorkspace();
 
   const [sidebarOpen,    setSidebarOpen]    = useState(() => ls.get('origin-sidebar-open') === 'true');
-  const [aiPanelOpen,    setAiPanelOpen]    = useState(() => {
-    // Réouverture forcée une seule fois (bug de persistance corrigé) : on ignore
-    // la valeur sauvegardée tant que le flag n'est pas posé.
-    if (ls.get('origin-ai-panel-open-forced') !== 'true') {
-      ls.set('origin-ai-panel-open-forced', 'true');
-      return true;
-    }
-    return ls.get('origin-ai-panel-open') !== 'false';
-  });
+  // Agent panel: open by default unless the user explicitly closed it.
+  const [aiPanelOpen,    setAiPanelOpen]    = useState(() => ls.get('origin-ai-panel-open') !== 'false');
   const [terminalOpen,   setTerminalOpen]   = useState(() => ls.get('origin-terminal-open') === 'true');
   const [terminalHeight, setTerminalHeight] = useState(() => {
     const n = parseInt(ls.get('origin-terminal-height') ?? '', 10);
     return isNaN(n) ? 240 : n;
   });
+  // Global application mode: "ide" (full editor layout) or "ai" (Agent-centric layout).
+  const [appMode, setAppMode] = useState<'ide' | 'ai'>(
+    () => (ls.get('origin-app-mode') === 'ai' ? 'ai' : 'ide')
+  );
 
   // Hydrate from Tauri store on mount (overwrites localStorage defaults if store has values)
   useEffect(() => {
@@ -69,10 +66,15 @@ export function useWorkspacePersistence() {
     ls.set('origin-ai-panel-open', String(aiPanelOpen));
   }, [aiPanelOpen]);
 
+  useEffect(() => {
+    ls.set('origin-app-mode', appMode);
+  }, [appMode]);
+
   return {
     sidebarOpen,    setSidebarOpen,
     aiPanelOpen,    setAiPanelOpen,
     terminalOpen,   setTerminalOpen,
     terminalHeight, setTerminalHeight,
+    appMode,        setAppMode,
   };
 }

@@ -53,11 +53,11 @@ function IconBtn({
  * active one is highlighted, and the thumb holds the mode icon.
  */
 function ModeSwitch({
-  aiPanelOpen,
-  onSetAiPanel,
+  aiMode,
+  onSetMode,
 }: {
-  aiPanelOpen: boolean;
-  onSetAiPanel: (open: boolean) => void;
+  aiMode: boolean;
+  onSetMode: (open: boolean) => void;
 }) {
   const ideRef = useRef<HTMLButtonElement>(null);
   const aiRef = useRef<HTMLButtonElement>(null);
@@ -65,10 +65,10 @@ function ModeSwitch({
 
   // Recompute the thumb geometry from the active segment's box.
   useEffect(() => {
-    const el = aiPanelOpen ? aiRef.current : ideRef.current;
+    const el = aiMode ? aiRef.current : ideRef.current;
     if (!el) return;
     setThumb({ left: el.offsetLeft, width: el.offsetWidth });
-  }, [aiPanelOpen]);
+  }, [aiMode]);
 
   const segmentStyle = (active: boolean) => ({
     color: active ? "var(--origin-fg-default)" : "var(--origin-fg-subtle)",
@@ -76,57 +76,54 @@ function ModeSwitch({
   });
 
   return (
-    <div className="flex items-center gap-1.5" style={{ color: "var(--origin-fg-muted)" }}>
-      <img src={logoSrc} alt="Origin" style={{ height: "16px", width: "auto" }} />
-      <div
-        role="tablist"
-        aria-label="Editor mode"
-        className="relative flex items-center rounded-lg p-0.5"
-        style={{ backgroundColor: "var(--origin-bg-hover)" }}
+    <div
+      role="tablist"
+      aria-label="Editor mode"
+      className="relative flex items-center rounded-lg p-0.5"
+      style={{ backgroundColor: "var(--origin-bg-hover)" }}
+    >
+      {/* Sliding thumb — holds the Origin logo */}
+      <span
+        aria-hidden
+        className="absolute flex items-center justify-center rounded-md"
+        style={{
+          top: "2px",
+          bottom: "2px",
+          left: 0,
+          width: `${thumb.width}px`,
+          transform: `translateX(${thumb.left}px)`,
+          backgroundColor: "#ffffff",
+          transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
+        }}
       >
-        {/* Sliding thumb — holds the mode glyph */}
-        <span
-          aria-hidden
-          className="absolute flex items-center justify-center rounded-md"
-          style={{
-            top: "2px",
-            bottom: "2px",
-            left: 0,
-            width: `${thumb.width}px`,
-            transform: `translateX(${thumb.left}px)`,
-            backgroundColor: "#ffffff",
-            transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
-          }}
+        <img src={logoSrc} alt="Origin" style={{ height: "14px", width: "auto" }} />
+      </span>
+
+      <Tooltip content={aiMode ? "Switch to IDE Mode" : ""} side="bottom">
+        <button
+          ref={ideRef}
+          role="tab"
+          aria-selected={!aiMode}
+          onClick={() => onSetMode(false)}
+          className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+          style={segmentStyle(!aiMode)}
         >
-          <Icon icon="lucide:square-terminal" width={14} strokeWidth={2.5} style={{ color: "#111111" }} />
-        </span>
+          <span style={{ visibility: !aiMode ? "hidden" : "visible" }}>IDE</span>
+        </button>
+      </Tooltip>
 
-        <Tooltip content={aiPanelOpen ? "Switch to IDE Mode" : ""} side="bottom">
-          <button
-            ref={ideRef}
-            role="tab"
-            aria-selected={!aiPanelOpen}
-            onClick={() => onSetAiPanel(false)}
-            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
-            style={segmentStyle(!aiPanelOpen)}
-          >
-            <span style={{ visibility: !aiPanelOpen ? "hidden" : "visible" }}>IDE</span>
-          </button>
-        </Tooltip>
-
-        <Tooltip content={!aiPanelOpen ? "Switch to AI Mode" : ""} side="bottom">
-          <button
-            ref={aiRef}
-            role="tab"
-            aria-selected={aiPanelOpen}
-            onClick={() => onSetAiPanel(true)}
-            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
-            style={segmentStyle(aiPanelOpen)}
-          >
-            <span style={{ visibility: aiPanelOpen ? "hidden" : "visible", paddingLeft: "2px" }}>AI MODE</span>
-          </button>
-        </Tooltip>
-      </div>
+      <Tooltip content={!aiMode ? "Switch to AI Mode" : ""} side="bottom">
+        <button
+          ref={aiRef}
+          role="tab"
+          aria-selected={aiMode}
+          onClick={() => onSetMode(true)}
+          className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+          style={segmentStyle(aiMode)}
+        >
+          <span style={{ visibility: aiMode ? "hidden" : "visible", paddingLeft: "2px" }}>AI MODE</span>
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -135,7 +132,8 @@ export default function TitleBar() {
   const { folderPath } = useWorkspace();
   const {
     sidebarOpen, terminalOpen, aiPanelOpen,
-    onToggleSidebar, onToggleTerminal, onToggleAiPanel, onSetAiPanel,
+    appMode, onSetAppMode,
+    onToggleSidebar, onToggleTerminal, onToggleAiPanel,
     onOpenFolder, onOpenFile, onNewFile, onNewWindow, onOpenPalette, onOpenSettings,
     dirtyCount, hasActiveTab, hasFolderOpen,
     onSave, onSaveAs, onSaveAll, onCloseEditor, onCloseFolder,
@@ -241,7 +239,7 @@ export default function TitleBar() {
     >
       {/* Left — IDE logo + mode toggle + project name */}
       <div className="flex items-center gap-1 px-2 z-10 shrink-0">
-        <ModeSwitch aiPanelOpen={aiPanelOpen} onSetAiPanel={onSetAiPanel} />
+        <ModeSwitch aiMode={appMode === 'ai'} onSetMode={(on) => onSetAppMode(on ? 'ai' : 'ide')} />
 
         {/* Divider */}
         <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
