@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCommandKeyMap, matchesEvent } from "../lib/keybindings";
+import { getCommand as getRegisteredCommand, executeCommand as runRegisteredCommand } from "../lib/extensions/registry";
 
 export interface GlobalHandlers {
   // Always provided
@@ -85,11 +86,17 @@ export function useGlobalKeybindings(handlers: GlobalHandlers) {
 
       for (const [cmdId, keyStr] of Object.entries(km)) {
         if (!keyStr) continue;
+        // Built-in handlers first; otherwise fall back to an extension command
+        // of the same id (Level 2 commands can be bound exactly like core ones).
         const handler = dispatch[cmdId];
-        if (!handler) continue;
+        const isExtension = !handler && getRegisteredCommand(cmdId) !== undefined;
+        if (!handler && !isExtension) continue;
         if (matchesEvent(e, keyStr)) {
           e.preventDefault();
-          handler();
+          if (handler) handler();
+          else void runRegisteredCommand(cmdId).catch((err: unknown) => {
+            console.error(`[extension] command "${cmdId}" failed:`, err);
+          });
           return;
         }
       }

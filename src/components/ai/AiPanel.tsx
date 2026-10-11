@@ -1,15 +1,13 @@
 import { useRef, useCallback, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import {
-  MessageSquare, History, Plus, Pin, PinOff,
-  ChevronRight, ChevronDown, ArrowUpRight, Trash2,
-} from "lucide-react";
+import { Icon } from "@iconify/react";
 import { Tooltip } from "../ui/Tooltip";
 import { useToast } from "../ui/Toast";
 import ChatBox from "./ChatBox";
 import MessageBubble from "./MessageBubble";
 import MarkdownMessage from "./MarkdownMessage";
 import { PROVIDERS } from "./providers";
+import logoCode from "../../assets/logo-code.svg";
 import {
   DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_LITE,
   DEFAULT_ASK_PROMPT,    DEFAULT_ASK_PROMPT_LITE,
@@ -208,8 +206,9 @@ function PinLabelPopover({ onConfirm, onCancel }: {
 function RecentSessions({ sessions, onSelect, onShowAll }: {
   sessions: DbSession[]; onSelect: (id: string) => void; onShowAll?: () => void;
 }) {
+  if (sessions.length === 0) return null;
   return (
-    <div style={{ padding: "20px 14px 0" }}>
+    <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--origin-border-default)" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
         <span style={{ fontSize: "11px", fontWeight: 500, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
           Recent
@@ -220,32 +219,26 @@ function RecentSessions({ sessions, onSelect, onShowAll }: {
           </button>
         )}
       </div>
-      {sessions.length === 0 ? (
-        <div style={{ fontSize: "12px", color: "var(--origin-fg-subtle)", padding: "6px 0" }}>
-          No sessions for this project yet.
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-          {sessions.slice(0, 5).map(s => (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s.id)}
-              style={{
-                display: "flex", alignItems: "center", width: "100%",
-                padding: "7px 8px", borderRadius: "6px",
-                background: "none", border: "none", cursor: "pointer", gap: "8px",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
-              onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
-            >
-              <span style={{ flex: 1, fontSize: "12px", color: "var(--origin-fg-default)", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {s.title}
-              </span>
-              <ChevronRight size={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
-            </button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+        {sessions.slice(0, 5).map(s => (
+          <button
+            key={s.id}
+            onClick={() => onSelect(s.id)}
+            style={{
+              display: "flex", alignItems: "center", width: "100%",
+              padding: "7px 8px", borderRadius: "6px",
+              background: "none", border: "none", cursor: "pointer", gap: "8px",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          >
+            <span style={{ flex: 1, fontSize: "12px", color: "var(--origin-fg-default)", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {s.title}
+            </span>
+            <Icon icon="lucide:chevron-right" width={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -284,9 +277,9 @@ function toWorkspaceRelPath(fullPath: string, folderPath: string): string {
 
 // ── Panel constants ────────────────────────────────────────────────────────────
 
-const MIN_WIDTH    = 240;
-const MAX_WIDTH    = 600;
-const DEFAULT_WIDTH = 320;
+const DEFAULT_WIDTH = 520;
+const MIN_WIDTH    = 520;
+const MAX_WIDTH    = 900;
 const CTX_MIN     = 160;
 const CTX_MAX     = 480;
 const CTX_DEFAULT = 200;
@@ -1052,12 +1045,12 @@ export default function AiPanel({
 
   return (
     <>
-    <div className="flex shrink-0 h-full">
+    <div className="flex shrink-0 h-full gap-1">
 
       {/* ── Chat section ── */}
       <div
-        className="relative flex flex-col shrink-0"
-        style={{ width, borderLeft: "1px solid var(--origin-border-default)", backgroundColor: "var(--origin-bg-sidebar)" }}
+        className="relative flex flex-col shrink-0 overflow-hidden"
+        style={{ width, backgroundColor: "var(--origin-bg-sidebar)" }}
       >
         <div
           onMouseDown={onMouseDown}
@@ -1068,8 +1061,8 @@ export default function AiPanel({
         />
 
         {/* Header */}
-        <div className="flex items-center px-3 shrink-0" style={{ height: "36px", borderBottom: "1px solid var(--origin-border-default)" }}>
-          <MessageSquare size={14} style={{ color: "var(--origin-fg-muted)" }} />
+        <div className="flex items-center px-3 shrink-0" style={{ height: "36px" }}>
+          <span style={{ fontSize: "12px", fontWeight: 600, letterSpacing: "0.04em", color: "var(--origin-fg-default)" }}>AGENT</span>
           <div className="flex items-center gap-0.5 ml-auto">
             <HeaderBtn
               label="History"
@@ -1082,31 +1075,46 @@ export default function AiPanel({
                   setChatView("history");
                 }
               }}
-            ><History size={14} /></HeaderBtn>
-            <HeaderBtn label="New Chat" onClick={handleNewChat}><Plus size={14} /></HeaderBtn>
+            ><Icon icon="lucide:history" width={14} /></HeaderBtn>
+            <HeaderBtn label="New Chat" onClick={handleNewChat}><Icon icon="lucide:plus" width={14} /></HeaderBtn>
             <Tooltip content="Toggle Pinboard" side="left">
               <HeaderBtn label="Toggle Pinboard" active={contextOpen} onClick={() => setContextOpen(v => !v)}>
-                <Pin size={14} />
+                <Icon icon="lucide:pin" width={14} />
               </HeaderBtn>
             </Tooltip>
           </div>
         </div>
 
-        {/* New chat view */}
+        {/* New chat view — Agent empty state */}
         {chatView === "new" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-            <div style={{ padding: "0 14px 16px" }}>
-              <div style={{ fontSize: "22px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: "4px" }}>Write with AI</div>
-              <div style={{ fontSize: "13px", color: "var(--origin-fg-muted)", lineHeight: "1.5" }}>
-                Ask questions, write code, and fix bugs with AI.
-              </div>
-            </div>
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <RecentSessions
               sessions={sessions}
               onSelect={handleSessionSelect}
               onShowAll={() => { setSessions(lsForPath(folderPath ?? "")); setChatView("history"); }}
             />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 24px", gap: "18px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <img src={logoCode} alt="Origin" style={{ width: 32, height: 32, flexShrink: 0 }} />
+                <span style={{ fontSize: "26px", fontWeight: 700, color: "var(--origin-fg-default)" }}>Agent</span>
+              </div>
+              <div style={{ fontSize: "13px", color: "var(--origin-fg-muted)", textAlign: "center" }}>
+                Your coding agent for the whole project
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px", maxWidth: 300 }}>
+                {[
+                  { icon: "lucide:check", text: "Reads and edits files across your workspace" },
+                  { icon: "lucide:check", text: "Plans multi-step changes and runs them for you" },
+                  { icon: "lucide:check", text: "Keeps context from your editor, terminal and open tabs" },
+                ].map((f, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+                    <Icon icon={f.icon} width={14} style={{ color: "var(--origin-semantic-success)", flexShrink: 0, marginTop: "2px" }} />
+                    <span style={{ fontSize: "13px", color: "var(--origin-fg-muted)", lineHeight: 1.5 }}>{f.text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} />
           </div>
         )}
 
@@ -1167,7 +1175,7 @@ export default function AiPanel({
                         border: "none", cursor: "pointer", gap: "8px", textAlign: "left", minWidth: 0,
                       }}
                     >
-                      <MessageSquare size={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
+                      <Icon icon="lucide:message-square" width={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
                       <span style={{ flex: 1, fontSize: "12px", color: "var(--origin-fg-default)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {s.title}
                       </span>
@@ -1190,7 +1198,7 @@ export default function AiPanel({
                       onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-subtle)"; e.currentTarget.style.backgroundColor = "transparent"; }}
                       aria-label="Delete session"
                     >
-                      <Trash2 size={13} />
+                      <Icon icon="lucide:trash-2" width={13} />
                     </button>
                   </div>
                 ))}
@@ -1203,8 +1211,8 @@ export default function AiPanel({
       {/* ── Pinboard panel ── */}
       {contextOpen && (
         <div
-          className="relative flex flex-col shrink-0"
-          style={{ width: contextWidth, borderLeft: "1px solid var(--origin-border-default)", backgroundColor: "var(--origin-bg-sidebar)" }}
+          className="relative flex flex-col shrink-0 overflow-hidden"
+          style={{ width: contextWidth, backgroundColor: "var(--origin-bg-sidebar)" }}
         >
           <div
             onMouseDown={onCtxMouseDown}
@@ -1214,7 +1222,7 @@ export default function AiPanel({
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
           />
           <div className="flex items-center px-3 shrink-0" style={{ height: "36px", borderBottom: "1px solid var(--origin-border-default)", gap: "6px" }}>
-            <Pin size={13} style={{ color: "var(--origin-fg-muted)" }} />
+            <Icon icon="lucide:pin" width={13} style={{ color: "var(--origin-fg-muted)" }} />
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--origin-fg-default)" }}>Pinboard</span>
           </div>
 
@@ -1237,7 +1245,7 @@ export default function AiPanel({
                         onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.backgroundColor = "transparent"; }}
                       >
                         <span style={{ flexShrink: 0, marginTop: "1px", color: "var(--origin-fg-subtle)" }}>
-                          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          {isExpanded ? <Icon icon="lucide:chevron-down" width={12} /> : <Icon icon="lucide:chevron-right" width={12} />}
                         </span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: "12px", fontWeight: pin.label ? 600 : 400, color: "var(--origin-fg-default)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1249,11 +1257,11 @@ export default function AiPanel({
                         </div>
                         {pin.sessionId && (
                           <button onClick={e => { e.stopPropagation(); handleNavigateToPin(pin); }} title="Go to message" style={{ flexShrink: 0, display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: "2px", borderRadius: "3px", color: "var(--origin-fg-subtle)" }} onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; e.currentTarget.style.backgroundColor = "var(--origin-bg-active)"; }} onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-subtle)"; e.currentTarget.style.backgroundColor = "transparent"; }}>
-                            <ArrowUpRight size={12} />
+                            <Icon icon="lucide:arrow-up-right" width={12} />
                           </button>
                         )}
                         <button onClick={e => { e.stopPropagation(); handleUnpin(pin.id); }} title="Unpin" style={{ flexShrink: 0, display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: "2px", borderRadius: "3px", color: "var(--origin-fg-subtle)" }} onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; e.currentTarget.style.backgroundColor = "var(--origin-bg-active)"; }} onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-subtle)"; e.currentTarget.style.backgroundColor = "transparent"; }}>
-                          <PinOff size={11} />
+                          <Icon icon="lucide:pin-off" width={11} />
                         </button>
                       </div>
                       {isExpanded && (

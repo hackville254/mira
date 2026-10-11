@@ -4,9 +4,9 @@
   "colors": {
     "bg.base":     "#000000",
     "bg.editor":   "#0a0a0a",
-    "bg.sidebar":  "#000000",
-    "bg.panel":    "#000000",
-    "bg.titlebar": "#000000",
+    "bg.sidebar":  "#0a0a0a",
+    "bg.panel":    "#0a0a0a",
+    "bg.titlebar": "#0a0a0a",
     "bg.hover":               "#ffffff1a",
     "bg.active":              "#ffffff1a",
     "bg.input":               "#000000",

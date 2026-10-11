@@ -5,6 +5,10 @@ export function terminalCreate(cwd: string, cols: number, rows: number): Promise
   return invoke("terminal_create", { cwd, cols, rows });
 }
 
+export function terminalShellName(): Promise<string> {
+  return invoke("terminal_shell_name");
+}
+
 export function terminalWrite(id: number, data: string): Promise<void> {
   return invoke("terminal_write", { id, data });
 }

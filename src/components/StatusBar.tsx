@@ -1,4 +1,4 @@
-import { Sun, Moon, GitBranch, Settings } from 'lucide-react';
+import { Icon } from '@iconify/react';
 import { useTheme } from '../themes/ThemeContext';
 
 interface Props {
@@ -6,7 +6,6 @@ interface Props {
   line: number;
   col: number;
   branch: string | null;
-  onOpenSettings?: () => void;
   debugStatus?: 'paused' | 'running' | null;
 }
 
@@ -35,7 +34,7 @@ function StatusItem({ children, onClick, title }: { children: React.ReactNode; o
   );
 }
 
-export default function StatusBar({ language, line, col, branch, onOpenSettings, debugStatus }: Props) {
+export default function StatusBar({ language, line, col, branch, debugStatus }: Props) {
   const { theme, themes, setTheme } = useTheme();
   const isDark = theme.type === 'dark';
 
@@ -48,6 +47,7 @@ export default function StatusBar({ language, line, col, branch, onOpenSettings,
 
   return (
     <div
+      data-origin-statusbar=""
       style={{
         height: '22px',
         flexShrink: 0,
@@ -55,7 +55,6 @@ export default function StatusBar({ language, line, col, branch, onOpenSettings,
         alignItems: 'center',
         justifyContent: 'space-between',
         backgroundColor: 'var(--origin-bg-base)',
-        borderTop: '1px solid var(--origin-border-default)',
         fontFamily: 'var(--font-mono)',
         fontSize: '11px',
         color: 'var(--origin-fg-subtle)',
@@ -68,7 +67,7 @@ export default function StatusBar({ language, line, col, branch, onOpenSettings,
       <div style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
         {branch && (
           <StatusItem>
-            <GitBranch size={11} />
+            <Icon icon="lucide:git-branch" width={11} />
             <span>{branch}</span>
           </StatusItem>
         )}
@@ -97,18 +96,12 @@ export default function StatusBar({ language, line, col, branch, onOpenSettings,
           <span>UTF-8</span>
         </StatusItem>
         <StatusItem
-          onClick={onOpenSettings}
-          title="Settings (Ctrl+,)"
-        >
-          <Settings size={11} />
-        </StatusItem>
-        <StatusItem
           onClick={toggleTheme}
           title={isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
         >
           {isDark
-            ? <Sun size={11} />
-            : <Moon size={11} />
+            ? <Icon icon="lucide:sun" width={11} />
+            : <Icon icon="lucide:moon" width={11} />
           }
         </StatusItem>
       </div>

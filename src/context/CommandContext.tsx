@@ -8,6 +8,8 @@ export interface AppCommands {
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
   onToggleAiPanel: () => void;
+  /** Explicitly open/close the AI panel (IDE ↔ AI MODE switch). */
+  onSetAiPanel: (open: boolean) => void;
   // Window
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -17,6 +19,7 @@ export interface AppCommands {
   onNewFile: () => void;
   onNewWindow: () => void;
   onOpenPalette: () => void;
+  onOpenSettings: () => void;
   // Status
   gitBranch: string | null;
   dirtyCount: number;
@@ -31,6 +34,8 @@ export interface AppCommands {
   // Editor actions
   onEditorUndo: () => void;
   onEditorRedo: () => void;
+  onEditorPrevFile: () => void;
+  onEditorNextFile: () => void;
   onEditorCut: () => void;
   onEditorCopy: () => void;
   onEditorPaste: () => void;
@@ -44,8 +49,6 @@ export interface AppCommands {
   onNewTerminalTab: () => void;
   onClearTerminal: () => void;
   onKillTerminal: () => void;
-  // Help
-  onAbout: () => void;
   // Debug
   onStartDebugging: () => void;
   onStopDebugging: () => void;
@@ -56,16 +59,15 @@ const noop = () => {};
 
 const defaults: AppCommands = {
   sidebarOpen: false, terminalOpen: false, aiPanelOpen: false,
-  onToggleSidebar: noop, onToggleTerminal: noop, onToggleAiPanel: noop,
+  onToggleSidebar: noop, onToggleTerminal: noop, onToggleAiPanel: noop, onSetAiPanel: noop,
   isFullscreen: false, onToggleFullscreen: noop,
-  onOpenFolder: noop, onOpenFile: noop, onNewFile: noop, onNewWindow: noop, onOpenPalette: noop,
+  onOpenFolder: noop, onOpenFile: noop, onNewFile: noop, onNewWindow: noop, onOpenPalette: noop, onOpenSettings: noop,
   gitBranch: null, dirtyCount: 0, hasActiveTab: false, hasFolderOpen: false,
   onSave: noop, onSaveAs: noop, onSaveAll: noop, onCloseEditor: noop, onCloseFolder: noop,
-  onEditorUndo: noop, onEditorRedo: noop, onEditorCut: noop, onEditorCopy: noop,
+  onEditorUndo: noop, onEditorRedo: noop, onEditorPrevFile: noop, onEditorNextFile: noop, onEditorCut: noop, onEditorCopy: noop,
   onEditorPaste: noop, onEditorSelectAll: noop, onEditorFind: noop,
   onZoomIn: noop, onZoomOut: noop, onZoomReset: noop,
   onNewTerminalTab: noop, onClearTerminal: noop, onKillTerminal: noop,
-  onAbout: noop,
   onStartDebugging: noop, onStopDebugging: noop, isDebugActive: false,
 };
 

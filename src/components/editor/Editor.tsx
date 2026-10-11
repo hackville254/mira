@@ -16,6 +16,7 @@ import { tags as t } from '@lezer/highlight';
 import { unifiedMergeView } from '@codemirror/merge';
 import { createHunkControls } from '../../lib/hunkControls';
 import { getLanguageExtension, languageLabel } from './languageSupport';
+import { useExtensions } from '../../context/ExtensionsContext';
 import { createLspExtension } from '../../lib/lspCm6';
 import { getLspLanguage } from '../../lib/lsp';
 import { useToast } from '../ui/Toast';
@@ -277,6 +278,13 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   onMissingServerRef.current = onMissingServer;
 
   const { showToast } = useToast();
+  const { getGrammarForPath, grammars } = useExtensions();
+
+  // Dynamic grammar from an installed extension (Level 1). Recomputed when the
+  // set of installed grammars changes so the editor re-configures itself.
+  const dynLangCompartment = useRef(new Compartment());
+  const dynLang = getGrammarForPath(path);
+  const grammarCount = grammars.length;
 
   // Keep onAcceptDiff prop current so the hunk plugin callback never goes stale.
   const onAcceptDiffRef = useRef(onAcceptDiff);
@@ -455,6 +463,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         search({ top: false }),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, ...searchKeymap]),
         getLanguageExtension(path),
+        dynLangCompartment.current.of(dynLang ?? []),
         mergeCompartment.current.of([]),
         lspCompartment.current.of([]),
         dapCompartment.current.of([]),
@@ -497,6 +506,17 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  // Apply extension-provided grammars as they finish loading, without recreating
+  // the whole editor view.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: dynLangCompartment.current.reconfigure(getGrammarForPath(path) ?? []),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grammarCount, path]);
 
   // Jump to line when triggered from search results
   useEffect(() => {

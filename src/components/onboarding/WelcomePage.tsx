@@ -3,9 +3,7 @@ import { ArrowRight } from 'lucide-react';
 import onboarding1 from '../../assets/onboarding-1.png';
 import onboarding2 from '../../assets/onboarding-2.png';
 import onboarding3 from '../../assets/onboarding-3.png';
-import wordmarkWhite from '../../assets/origin_wordmark_white_color.svg';
-import wordmarkBlack from '../../assets/origin_wordmark_black_color.svg';
-import { useTheme } from '../../themes/ThemeContext';
+import logoCode from '../../assets/logo-code.svg';
 
 interface Props { onStart: () => void; onSkip: () => void; }
 
@@ -14,7 +12,6 @@ const SLIDES = [onboarding1, onboarding2, onboarding3];
 export default function WelcomePage({ onStart, onSkip }: Props) {
   const [slideIdx, setSlideIdx] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { theme } = useTheme();
 
   function startInterval() {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -30,11 +27,11 @@ export default function WelcomePage({ onStart, onSkip }: Props) {
 
       {/* Hero */}
       <div className="flex flex-col items-center" style={{ gap: '12px', marginBottom: '20px' }}>
-        <img src={theme.type === 'dark' ? wordmarkWhite : wordmarkBlack} alt="Origin" style={{ height: '42px' }} />
+        <img src={logoCode} alt="Origin" style={{ height: '56px', width: 'auto' }} />
         <p style={{ fontSize: '21px', fontWeight: 600, color: 'var(--origin-fg-default)', letterSpacing: '-0.3px', textAlign: 'center', lineHeight: 1.3 }}>
           Open-source AI coding without lock-in.
         </p>
-        <p style={{ fontSize: '14px', color: '#888', textAlign: 'center', lineHeight: 1.5, maxWidth: '460px' }}>
+        <p style={{ fontSize: '14px', color: 'var(--origin-fg-subtle)', textAlign: 'center', lineHeight: 1.5, maxWidth: '460px' }}>
           Connect Claude, GPT, Gemini, OpenRouter, Ollama, or your own infrastructure.
         </p>
       </div>
@@ -60,7 +57,7 @@ export default function WelcomePage({ onStart, onSkip }: Props) {
             <button key={i} onClick={() => goTo(i)} style={{
               height: '5px', width: i === slideIdx ? '22px' : '6px',
               borderRadius: '3px', border: 'none', padding: 0, cursor: 'pointer',
-              background: i === slideIdx ? 'var(--origin-fg-default)' : '#2a2a2a',
+              background: i === slideIdx ? 'var(--origin-fg-default)' : 'var(--origin-border-default)',
               transition: 'all 0.3s ease',
             }} />
           ))}
@@ -79,9 +76,9 @@ export default function WelcomePage({ onStart, onSkip }: Props) {
         </button>
         <button
           onClick={onSkip}
-          style={{ background: 'none', border: 'none', color: '#555', fontSize: '12px', cursor: 'pointer', padding: '4px 10px', fontFamily: 'inherit', letterSpacing: '0.1px' }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#888'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#555'; }}
+          style={{ background: 'none', border: 'none', color: 'var(--origin-fg-muted)', fontSize: '12px', cursor: 'pointer', padding: '4px 10px', fontFamily: 'inherit', letterSpacing: '0.1px' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--origin-fg-default)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--origin-fg-muted)'; }}
         >
           Skip setup
         </button>

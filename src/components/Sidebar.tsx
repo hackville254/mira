@@ -4,6 +4,7 @@ import FileTree from "./FileTree";
 import SearchPanel from "./SearchPanel";
 import SourceTreePanel from "./SourceTreePanel";
 import DebugPanel from "./DebugPanel";
+import ExtensionsPanel from "./ExtensionsPanel";
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 500;
@@ -13,14 +14,6 @@ interface Props {
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
   fileTreeKey?: number;
-}
-
-function PanelPlaceholder({ label }: { label: string }) {
-  return (
-    <div className="flex-1 flex items-center justify-center">
-      <p className="text-xs" style={{ color: "var(--origin-fg-subtle)" }}>{label}</p>
-    </div>
-  );
 }
 
 function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
@@ -34,7 +27,7 @@ function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
     case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} />;
     case "sourcetree": return <SourceTreePanel />;
     case "debug":      return <DebugPanel onFileOpenAtLine={onFileOpenAtLine} />;
-    case "extensions": return <PanelPlaceholder label="Extensions" />;
+    case "extensions": return <ExtensionsPanel />;
     default:           return null;
   }
 }
@@ -42,7 +35,18 @@ function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
 export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [active, setActive] = useState("explorer");
+  const [collapsed, setCollapsed] = useState(false);
   const isResizing = useRef(false);
+
+  const handleSelect = useCallback((id: string) => {
+    if (id === active) {
+      // Same item clicked → toggle collapse (VSCode behaviour).
+      setCollapsed((c) => !c);
+    } else {
+      setActive(id);
+      setCollapsed(false);
+    }
+  }, [active]);
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -64,15 +68,15 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: P
   }, []);
 
   return (
-    <div
-      className="relative flex flex-col shrink-0 border-r"
-      style={{
-        width,
-        backgroundColor: "var(--origin-bg-sidebar)",
-        borderColor: "var(--origin-border-default)",
-      }}
-    >
-      <ActivityBar active={active} onSelect={setActive} />
+    <div className="relative flex shrink-0 gap-1" style={{ width: collapsed ? 44 : width + 44 + 4 }}>
+      <ActivityBar active={collapsed ? "" : active} onSelect={handleSelect} />
+      <div
+        className="relative flex flex-col shrink-0 overflow-hidden"
+        style={{
+          width: collapsed ? 0 : width,
+          backgroundColor: "var(--origin-bg-sidebar)",
+        }}
+      >
       <ActivePanel
         id={active}
         onFileOpen={onFileOpen}
@@ -88,6 +92,7 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: P
         onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-border-default)"; }}
         onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
       />
+      </div>
     </div>
   );
 }

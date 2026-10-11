@@ -31,6 +31,26 @@ export default function DropdownMenu({ entries, anchorEl, onClose }: Props) {
     setPos({ top: r.bottom + 2, left: r.left });
   }, [anchorEl]);
 
+  // Clamp the menu inside the viewport once its real height is known.
+  useEffect(() => {
+    const el = menuRef.current;
+    if (!el || !anchorEl) return;
+    const r = anchorEl.getBoundingClientRect();
+    const margin = 8;
+    const maxH = window.innerHeight - margin * 2;
+    el.style.maxHeight = `${maxH}px`;
+    const h = Math.min(el.scrollHeight, maxH);
+    let top = r.bottom + 2;
+    if (top + h > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - margin - h);
+    }
+    let left = r.left;
+    if (left + el.offsetWidth > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - margin - el.offsetWidth);
+    }
+    setPos({ top, left });
+  }, [anchorEl]);
+
   useEffect(() => {
     function onDown(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
@@ -56,6 +76,9 @@ export default function DropdownMenu({ entries, anchorEl, onClose }: Props) {
         top: pos.top,
         left: pos.left,
         minWidth: '280px',
+        maxHeight: 'calc(100vh - 16px)',
+        overflowY: 'auto',
+        overscrollBehavior: 'contain',
         background: 'color-mix(in srgb, var(--origin-bg-base) 50%, transparent)',
         backdropFilter: 'blur(16px)',
         WebkitBackdropFilter: 'blur(16px)',

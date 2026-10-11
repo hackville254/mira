@@ -1,13 +1,11 @@
-import { useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Minus, Square, X, PanelLeft, PanelBottom, PanelRight } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Icon } from "@iconify/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Tooltip } from "./ui/Tooltip";
 import DropdownMenu, { type MenuEntry } from "./ui/DropdownMenu";
-import StatusIsland from "./StatusIsland";
-import { useTheme } from "../themes/ThemeContext";
 import { useCommands } from "../context/CommandContext";
-import logoSrc from "../assets/origin-logo.svg";
+import { useWorkspace } from "../context/WorkspaceContext";
+import logoSrc from "../assets/logo-code.svg";
 
 const win = getCurrentWindow();
 
@@ -28,7 +26,7 @@ function IconBtn({
     <button
       onClick={onClick}
       aria-label={label}
-      className="p-2 rounded transition-colors"
+      className="p-1.5 rounded transition-colors"
       style={{ color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)" }}
       onMouseEnter={(e) => {
         e.currentTarget.style.color = "var(--origin-fg-default)";
@@ -48,69 +46,113 @@ function IconBtn({
   ) : btn;
 }
 
-function MenuButton({
-  label,
-  anchorRef,
-  isOpen,
-  onClick,
+/**
+ * Segmented switch between IDE and AI MODE.
+ * A single sliding white "thumb" carries the robot glyph and animates between the
+ * two segments, mirroring the Trae/SOLO style: inactive labels are muted, the
+ * active one is highlighted, and the thumb holds the mode icon.
+ */
+function ModeSwitch({
+  aiPanelOpen,
+  onSetAiPanel,
 }: {
-  label: string;
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
-  isOpen: boolean;
-  onClick: () => void;
+  aiPanelOpen: boolean;
+  onSetAiPanel: (open: boolean) => void;
 }) {
+  const ideRef = useRef<HTMLButtonElement>(null);
+  const aiRef = useRef<HTMLButtonElement>(null);
+  const [thumb, setThumb] = useState({ left: 0, width: 0 });
+
+  // Recompute the thumb geometry from the active segment's box.
+  useEffect(() => {
+    const el = aiPanelOpen ? aiRef.current : ideRef.current;
+    if (!el) return;
+    setThumb({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [aiPanelOpen]);
+
+  const segmentStyle = (active: boolean) => ({
+    color: active ? "var(--origin-fg-default)" : "var(--origin-fg-subtle)",
+    transition: "color 220ms ease",
+  });
+
   return (
-    <button
-      ref={anchorRef}
-      onClick={onClick}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.color = "var(--origin-fg-default)";
-        e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-      }}
-      onMouseLeave={(e) => {
-        if (!isOpen) {
-          e.currentTarget.style.color = "var(--origin-fg-muted)";
-          e.currentTarget.style.backgroundColor = "transparent";
-        }
-      }}
-      className="text-xs px-2 py-1 rounded transition-colors"
-      style={{
-        color: isOpen ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
-        backgroundColor: isOpen ? "var(--origin-bg-hover)" : "transparent",
-      }}
-    >
-      {label}
-    </button>
+    <div className="flex items-center gap-1.5" style={{ color: "var(--origin-fg-muted)" }}>
+      <img src={logoSrc} alt="Origin" style={{ height: "16px", width: "auto" }} />
+      <div
+        role="tablist"
+        aria-label="Editor mode"
+        className="relative flex items-center rounded-lg p-0.5"
+        style={{ backgroundColor: "var(--origin-bg-hover)" }}
+      >
+        {/* Sliding thumb — holds the mode glyph */}
+        <span
+          aria-hidden
+          className="absolute flex items-center justify-center rounded-md"
+          style={{
+            top: "2px",
+            bottom: "2px",
+            left: 0,
+            width: `${thumb.width}px`,
+            transform: `translateX(${thumb.left}px)`,
+            backgroundColor: "#ffffff",
+            transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
+          }}
+        >
+          <Icon icon="lucide:square-terminal" width={14} strokeWidth={2.5} style={{ color: "#111111" }} />
+        </span>
+
+        <Tooltip content={aiPanelOpen ? "Switch to IDE Mode" : ""} side="bottom">
+          <button
+            ref={ideRef}
+            role="tab"
+            aria-selected={!aiPanelOpen}
+            onClick={() => onSetAiPanel(false)}
+            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+            style={segmentStyle(!aiPanelOpen)}
+          >
+            <span style={{ visibility: !aiPanelOpen ? "hidden" : "visible" }}>IDE</span>
+          </button>
+        </Tooltip>
+
+        <Tooltip content={!aiPanelOpen ? "Switch to AI Mode" : ""} side="bottom">
+          <button
+            ref={aiRef}
+            role="tab"
+            aria-selected={aiPanelOpen}
+            onClick={() => onSetAiPanel(true)}
+            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+            style={segmentStyle(aiPanelOpen)}
+          >
+            <span style={{ visibility: aiPanelOpen ? "hidden" : "visible", paddingLeft: "2px" }}>AI MODE</span>
+          </button>
+        </Tooltip>
+      </div>
+    </div>
   );
 }
 
-
 export default function TitleBar() {
-  const { theme } = useTheme();
+  const { folderPath } = useWorkspace();
   const {
     sidebarOpen, terminalOpen, aiPanelOpen,
-    onToggleSidebar, onToggleTerminal, onToggleAiPanel,
-    isFullscreen, onToggleFullscreen,
-    onOpenFolder, onOpenFile, onNewFile, onNewWindow, onOpenPalette,
-    gitBranch, dirtyCount, hasActiveTab, hasFolderOpen,
+    onToggleSidebar, onToggleTerminal, onToggleAiPanel, onSetAiPanel,
+    onOpenFolder, onOpenFile, onNewFile, onNewWindow, onOpenPalette, onOpenSettings,
+    dirtyCount, hasActiveTab, hasFolderOpen,
     onSave, onSaveAs, onSaveAll, onCloseEditor, onCloseFolder,
-    onEditorUndo, onEditorRedo, onEditorCut, onEditorCopy, onEditorPaste, onEditorSelectAll, onEditorFind,
+    onEditorUndo, onEditorRedo, onEditorPrevFile, onEditorNextFile, onEditorCut, onEditorCopy, onEditorPaste, onEditorSelectAll, onEditorFind,
     onZoomIn, onZoomOut, onZoomReset,
     onNewTerminalTab, onClearTerminal, onKillTerminal,
-    onAbout,
     onStartDebugging, onStopDebugging, isDebugActive,
   } = useCommands();
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const fileRef     = useRef<HTMLButtonElement>(null);
-  const editRef     = useRef<HTMLButtonElement>(null);
-  const viewRef     = useRef<HTMLButtonElement>(null);
-  const termRef     = useRef<HTMLButtonElement>(null);
-  const runRef      = useRef<HTMLButtonElement>(null);
-  const helpRef     = useRef<HTMLButtonElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
 
-  const close = () => setOpenMenu(null);
-  const toggle = (id: string) => () => setOpenMenu(prev => prev === id ? null : id);
-
+  const close = () => { setMenuOpen(false); setMenuAnchor(null); };
+  const toggleMenu = () => {
+    setMenuOpen(open => !open);
+    setMenuAnchor(menuBtnRef.current);
+  };
   const fileEntries: MenuEntry[] = [
     { type: 'item', label: 'New File',      shortcut: 'Ctrl+N',        onClick: onNewFile },
     { type: 'item', label: 'New Window',    shortcut: 'Ctrl+Shift+N',  onClick: onNewWindow },
@@ -147,7 +189,7 @@ export default function TitleBar() {
     { type: 'separator' },
     { type: 'item', label: sidebarOpen ? 'Hide Sidebar' : 'Show Sidebar', onClick: () => { close(); onToggleSidebar(); } },
     { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: 'Ctrl+`', onClick: () => { close(); onToggleTerminal(); } },
-    { type: 'item', label: isFullscreen ? 'Exit Full Screen' : 'Enter Full Screen', shortcut: 'F11', onClick: () => { close(); onToggleFullscreen(); } },
+    { type: 'item', label: aiPanelOpen ? 'Hide AI Panel' : 'Show AI Panel', onClick: () => { close(); onToggleAiPanel(); } },
     { type: 'separator' },
     { type: 'item', label: 'Zoom In',    shortcut: 'Ctrl+=', onClick: () => { close(); onZoomIn?.(); } },
     { type: 'item', label: 'Zoom Out',   shortcut: 'Ctrl+-', onClick: () => { close(); onZoomOut?.(); } },
@@ -167,134 +209,163 @@ export default function TitleBar() {
     { type: 'item', label: 'Kill Terminal',    disabled: !terminalOpen, onClick: () => { close(); onKillTerminal?.(); } },
   ];
 
-  const repo = 'https://github.com/Origin-AI-IDE/origin';
   const helpEntries: MenuEntry[] = [
     { type: 'item', label: 'Keyboard Shortcuts', shortcut: 'Ctrl+P', onClick: () => { close(); onOpenPalette(); } },
-    { type: 'separator' },
-    { type: 'item', label: 'Documentation',    onClick: () => { close(); openUrl(`${repo}#readme`); } },
-    { type: 'item', label: 'Report an Issue',  onClick: () => { close(); openUrl(`${repo}/issues/new`); } },
-    { type: 'item', label: 'View on GitHub',   onClick: () => { close(); openUrl(repo); } },
-    { type: 'separator' },
-    { type: 'item', label: 'View License',     onClick: () => { close(); openUrl(`${repo}/blob/main/LICENSE`); } },
-    { type: 'item', label: 'Release Notes',    onClick: () => { close(); openUrl(`${repo}/releases`); } },
-    { type: 'separator' },
-    { type: 'item', label: 'About Origin',     onClick: () => { close(); onAbout?.(); } },
   ];
 
-  const menus: Array<{ id: string; label: string; ref: React.RefObject<HTMLButtonElement | null>; entries: MenuEntry[] }> = [
-    { id: 'file',     label: 'File',     ref: fileRef, entries: fileEntries },
-    { id: 'edit',     label: 'Edit',     ref: editRef, entries: editEntries },
-    { id: 'view',     label: 'View',     ref: viewRef, entries: viewEntries },
-    { id: 'run',      label: 'Run',      ref: runRef,  entries: runEntries },
-    { id: 'terminal', label: 'Terminal', ref: termRef, entries: terminalEntries },
-    { id: 'help',     label: 'Help',     ref: helpRef, entries: helpEntries },
+  const projectName = folderPath
+    ? (folderPath.split(/[\\/]/).filter(Boolean).pop() ?? folderPath)
+    : 'No project';
+
+  // Single merged menu anchored to the IDE button.
+  const combinedEntries: MenuEntry[] = [
+    ...fileEntries,
+    { type: 'separator' },
+    ...editEntries,
+    { type: 'separator' },
+    ...viewEntries,
+    { type: 'separator' },
+    ...runEntries,
+    { type: 'separator' },
+    ...terminalEntries,
+    { type: 'separator' },
+    ...helpEntries,
   ];
 
   return (
     <div
-      className="relative z-10 flex items-center h-9 shrink-0 select-none border-b"
+      className="relative z-10 flex items-center h-9 shrink-0 select-none rounded-md"
       style={{
         backgroundColor: "var(--origin-bg-titlebar)",
-        borderColor: "var(--origin-border-default)",
       }}
     >
-      {/* Left — menus */}
-      <div className="flex items-center gap-1 px-3 z-10 shrink-0">
-        <img
-          src={logoSrc}
-          alt="Origin"
-          style={{
-            height: "16px",
-            width: "auto",
-            marginRight: "10px",
-            filter: theme.type === "light" ? "invert(1)" : "none",
-          }}
-        />
+      {/* Left — IDE logo + mode toggle + project name */}
+      <div className="flex items-center gap-1 px-2 z-10 shrink-0">
+        <ModeSwitch aiPanelOpen={aiPanelOpen} onSetAiPanel={onSetAiPanel} />
 
-        {/* eslint-disable-next-line react-hooks/refs -- each menu's ref is the anchor passed to its portal-positioned button */}
-        {menus.map(({ id, label, ref, entries }) => (
-          <span key={id} onMouseEnter={() => setOpenMenu(id)}>
-            <MenuButton
-              label={label}
-              anchorRef={ref}
-              isOpen={openMenu === id}
-              onClick={toggle(id)}
-            />
-            {openMenu === id && (
-              <DropdownMenu
-                entries={entries}
-                anchorEl={ref.current}
-                onClose={close}
-              />
-            )}
-          </span>
-        ))}
-      </div>
+        {/* Divider */}
+        <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
 
-      {/* Center — drag region behind island */}
-      <div data-tauri-drag-region className="flex-1 h-full" />
-
-      {/* Status Island — top pinned so card expands downward */}
-      <div
-        className="absolute left-1/2 z-20"
-        style={{ top: "7px", transform: "translateX(-50%)" }}
-      >
-        <StatusIsland gitBranch={gitBranch} dirtyCount={dirtyCount} />
-      </div>
-
-      {/* Right — panel toggles + window controls */}
-      <div className="flex items-center z-10 pr-2 shrink-0">
-        <IconBtn
-          label="Toggle Left Sidebar"
-          tooltip="Toggle Left Sidebar"
-          active={sidebarOpen}
-          onClick={onToggleSidebar}
-        >
-          <PanelLeft size={14} />
-        </IconBtn>
-        <IconBtn
-          label="Toggle Bottom Panel"
-          tooltip="Toggle Terminal (Ctrl+`)"
-          active={terminalOpen}
-          onClick={onToggleTerminal}
-        >
-          <PanelBottom size={14} />
-        </IconBtn>
-        <IconBtn
-          label="Toggle AI Panel"
-          tooltip="Toggle AI Panel"
-          active={aiPanelOpen}
-          onClick={onToggleAiPanel}
-        >
-          <PanelRight size={14} />
-        </IconBtn>
-
-        <div
-          className="w-px h-4 mx-1"
-          style={{ backgroundColor: "var(--origin-border-default)" }}
-        />
-
-        <IconBtn label="Minimize" onClick={() => win.minimize()}>
-          <Minus size={13} />
-        </IconBtn>
-        <IconBtn label="Maximize" onClick={() => win.toggleMaximize()}>
-          <Square size={11} />
-        </IconBtn>
+        {/* Project selector */}
         <button
-          onClick={() => win.close()}
-          aria-label="Close"
-          className="p-2 rounded transition-colors"
-          style={{ color: "var(--origin-fg-muted)" }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = "var(--origin-accent-red)";
-            e.currentTarget.style.backgroundColor = "var(--origin-accent-red)1a";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = "var(--origin-fg-muted)";
-            e.currentTarget.style.backgroundColor = "transparent";
-          }}
+          onClick={onOpenPalette}
+          className="flex items-center gap-1.5 px-2 py-1 rounded transition-colors text-xs"
+          style={{ color: "var(--origin-fg-default)", backgroundColor: "transparent" }}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          title="Switch project"
         >
-          <X size={13} />
+          <span className="font-medium">{projectName}</span>
+          <Icon icon="lucide:chevron-down" width={12} style={{ color: "var(--origin-fg-subtle)" }} />
+        </button>
+      </div>
+
+      {/* Center — Search */}
+      <div className="flex-1 flex justify-start pl-2">
+        <button
+          onClick={onOpenPalette}
+          className="flex items-center gap-2 px-3 py-1 rounded text-xs transition-colors"
+          style={{ color: "var(--origin-fg-muted)", backgroundColor: "var(--origin-bg-hover)" }}
+          onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
+          title="Search (Ctrl+P)"
+        >
+          <Icon icon="lucide:search" width={13} />
+          <span>Search</span>
+        </button>
+      </div>
+
+      {/* Right — history + layout toggles + menu + window controls */}
+      <div className="flex items-center gap-0.5 pr-1 z-10 shrink-0" data-tauri-drag-region>
+        <div data-no-drag>
+          <IconBtn label="Previous File" tooltip="Previous File" onClick={() => onEditorPrevFile?.()}>
+            <Icon icon="lucide:arrow-left" width={15} />
+          </IconBtn>
+        </div>
+        <div data-no-drag>
+          <IconBtn label="Next File" tooltip="Next File" onClick={() => onEditorNextFile?.()}>
+            <Icon icon="lucide:arrow-right" width={15} />
+          </IconBtn>
+        </div>
+        <div data-no-drag>
+          <IconBtn label="Toggle Sidebar" tooltip="Toggle Sidebar" active={sidebarOpen} onClick={onToggleSidebar}>
+            <Icon icon="lucide:panel-left" width={15} />
+          </IconBtn>
+        </div>
+        <div data-no-drag>
+          <IconBtn label="Toggle Bottom Panel" tooltip="Toggle Terminal" active={terminalOpen} onClick={onToggleTerminal}>
+            <Icon icon="lucide:panel-bottom" width={15} />
+          </IconBtn>
+        </div>
+        <div data-no-drag>
+          <IconBtn label="Toggle AI Panel" tooltip="Toggle AI Panel" active={aiPanelOpen} onClick={onToggleAiPanel}>
+            <Icon icon="lucide:panel-right" width={15} />
+          </IconBtn>
+        </div>
+
+        <div className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
+
+        {/* Settings */}
+        <div data-no-drag>
+          <IconBtn label="Settings" tooltip="Settings (Ctrl+,)" onClick={onOpenSettings}>
+            <Icon icon="lucide:settings" width={15} />
+          </IconBtn>
+        </div>
+
+        {/* Menu dédié (ex-bouton IDE) — à l'extrémité droite */}
+        <div data-no-drag className="relative">
+          <button
+            ref={menuBtnRef}
+            onClick={() => toggleMenu()}
+            aria-label="Menu"
+            className="p-1.5 rounded transition-colors"
+            style={{
+              color: menuOpen ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+              backgroundColor: menuOpen ? "var(--origin-bg-hover)" : "transparent",
+            }}
+            onMouseEnter={e => { if (!menuOpen) { e.currentTarget.style.color = "var(--origin-fg-default)"; e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; } }}
+            onMouseLeave={e => { if (!menuOpen) { e.currentTarget.style.color = "var(--origin-fg-muted)"; e.currentTarget.style.backgroundColor = "transparent"; } }}
+          >
+            <Icon icon="lucide:menu" width={15} />
+          </button>
+          {menuOpen && menuAnchor && (
+            <DropdownMenu entries={combinedEntries} anchorEl={menuAnchor} onClose={close} />
+          )}
+        </div>
+
+        <div className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
+        <button
+          data-no-drag
+          aria-label="Minimize"
+          className="p-2 transition-colors"
+          style={{ color: "var(--origin-fg-muted)" }}
+          onClick={() => win.minimize()}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
+        >
+          <Icon icon="lucide:minus" width={15} />
+        </button>
+        <button
+          data-no-drag
+          aria-label="Maximize"
+          className="p-2 transition-colors"
+          style={{ color: "var(--origin-fg-muted)" }}
+          onClick={() => win.toggleMaximize()}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; e.currentTarget.style.color = "var(--origin-fg-default)"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
+        >
+          <Icon icon="lucide:square" width={13} />
+        </button>
+        <button
+          data-no-drag
+          aria-label="Close"
+          className="p-2 transition-colors"
+          style={{ color: "var(--origin-fg-muted)" }}
+          onClick={() => win.close()}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#e81123"; e.currentTarget.style.color = "#fff"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
+        >
+          <Icon icon="lucide:x" width={15} />
         </button>
       </div>
     </div>

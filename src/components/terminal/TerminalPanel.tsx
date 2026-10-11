@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Plus, Terminal, X } from "lucide-react";
+import { Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
+import { terminalShellName } from "../../lib/terminal";
 import TerminalInstance from "./Terminal";
 
 const MIN_HEIGHT = 120;
@@ -40,16 +41,24 @@ function initCounter(tabs: TermTab[]): number {
   return tabs.length + 1;
 }
 
-function nextTabName(currentTabs: TermTab[]): string {
-  const used = new Set(
-    currentTabs.map(t => parseInt(t.name, 10)).filter(n => Number.isInteger(n) && n > 0)
-  );
-  let n = 1;
-  while (used.has(n)) n++;
-  return String(n);
+function folderName(cwd: string): string {
+  const parts = cwd.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || cwd;
 }
 
-function loadSavedTabs(defaultCwd: string): TermTab[] {
+function defaultTabName(shell: string, cwd: string): string {
+  return `${shell} ${folderName(cwd)}`;
+}
+
+function nextTabName(currentTabs: TermTab[], shell: string, cwd: string): string {
+  const base = defaultTabName(shell, cwd);
+  if (!currentTabs.some((t) => t.name === base)) return base;
+  let n = 2;
+  while (currentTabs.some((t) => t.name === `${base} (${n})`)) n++;
+  return `${base} (${n})`;
+}
+
+function loadSavedTabs(defaultCwd: string, shell: string): TermTab[] {
   try {
     const raw = localStorage.getItem(LS_TABS);
     if (raw) {
@@ -59,7 +68,7 @@ function loadSavedTabs(defaultCwd: string): TermTab[] {
       }
     }
   } catch { /* stored tab state is missing or malformed — start fresh */ }
-  return [{ id: 1, name: "1", cwd: defaultCwd }];
+  return [{ id: 1, name: defaultTabName(shell, defaultCwd), cwd: defaultCwd }];
 }
 
 function loadSavedActiveIndex(tabCount: number): number {
@@ -149,22 +158,19 @@ function ShellDot({ info }: { info: TabShellInfo | undefined }) {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden }, ref) {
-  const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd));
+  const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd, "bash"));
   const [activeId, setActiveId] = useState<number>(() => {
     const idx = loadSavedActiveIndex(tabs.length);
     return tabs[idx]?.id ?? tabs[0].id;
   });
+  const shellRef = useRef("bash");
   const nextId = useRef(initCounter(tabs));
   const prevCwdRef = useRef(cwd);
   const [clearKeys, setClearKeys] = useState<Record<number, number>>({});
   const [pendingInputs, setPendingInputs] = useState<Record<number, string>>({});
   const [shellInfos, setShellInfos] = useState<Record<number, TabShellInfo>>({});
+  const [hoveredTab, setHoveredTab] = useState<number | null>(null);
   const exitClearTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
-
-  // Rename state
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
 
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
@@ -178,25 +184,40 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     },
     runInNewTab(command: string) {
       const id = nextId.current++;
-      const name = nextTabName(tabs);
+      const name = nextTabName(tabs, shellRef.current, cwd);
       setTabs((prev) => [...prev, { id, name, cwd }]);
       setActiveId(id);
       setPendingInputs(prev => ({ ...prev, [id]: command }));
     },
   }));
 
-  // ── Restore from durable store on first mount ────────────────────────────
+  // ── Resolve the real shell name, then restore/create the initial tab ─────
   useEffect(() => {
-    Promise.all([getSetting("terminal.tabs"), getSetting("terminal.activeIndex")]).then(
-      ([savedTabs, savedIdx]) => {
-        if (savedTabs.length > 0) {
-          const restored = savedTabs.map((t, i) => ({ id: i + 1, name: t.name, cwd }));
-          setTabs(restored);
-          nextId.current = initCounter(restored);
-          setActiveId(restored[savedIdx]?.id ?? restored[0].id);
-        }
-      },
-    );
+    let cancelled = false;
+    Promise.all([
+      terminalShellName().catch(() => "bash"),
+      getSetting("terminal.tabs"),
+      getSetting("terminal.activeIndex"),
+    ]).then(([shell, savedTabs, savedIdx]) => {
+      if (cancelled) return;
+      shellRef.current = shell;
+      if (savedTabs.length > 0) {
+        // Migrate legacy numeric tab names ("1", "2"…) to "<shell> <folder>".
+        const restored = savedTabs.map((t, i) => ({
+          id: i + 1,
+          name: /^\d+$/.test(t.name) ? defaultTabName(shell, cwd) : t.name,
+          cwd,
+        }));
+        setTabs(restored);
+        nextId.current = initCounter(restored);
+        setActiveId(restored[savedIdx]?.id ?? restored[0].id);
+      } else {
+        const fresh: TermTab[] = [{ id: 1, name: defaultTabName(shell, cwd), cwd }];
+        setTabs(fresh);
+        setActiveId(fresh[0].id);
+      }
+    });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once on mount; cwd is intentionally the initial value
   }, []);
 
@@ -238,7 +259,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     if (cwd === prevCwdRef.current) return;
     prevCwdRef.current = cwd;
     const newId = nextId.current++;
-    const fresh: TermTab[] = [{ id: newId, name: "1", cwd }];
+    const fresh: TermTab[] = [{ id: newId, name: defaultTabName(shellRef.current, cwd), cwd }];
     setTabs(fresh);
     setActiveId(newId);
   }, [cwd]);
@@ -246,7 +267,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   // ── Tab management ───────────────────────────────────────────────────────
   function addTab() {
     const id = nextId.current++;
-    const name = nextTabName(tabs);
+    const name = nextTabName(tabs, shellRef.current, cwd);
     setTabs((prev) => [...prev, { id, name, cwd }]);
     setActiveId(id);
   }
@@ -270,26 +291,6 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       }
       return next;
     });
-  }
-
-  // ── Rename ───────────────────────────────────────────────────────────────
-  function startEdit(tab: TermTab) {
-    setEditingId(tab.id);
-    setEditValue(tab.name);
-    // Input auto-focuses via autoFocus prop
-  }
-
-  function commitEdit() {
-    if (editingId === null) return;
-    const trimmed = editValue.trim();
-    if (trimmed) {
-      setTabs((prev) => prev.map((t) => (t.id === editingId ? { ...t, name: trimmed } : t)));
-    }
-    setEditingId(null);
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
   }
 
   function handleCwdChange(tabId: number, cwd: string) {
@@ -325,7 +326,6 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         flexShrink: 0,
         display: hidden ? "none" : "flex",
         flexDirection: "column",
-        borderTop: "1px solid var(--origin-border-default)",
         backgroundColor: "var(--origin-bg-panel)",
       }}
     >
@@ -355,109 +355,20 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           userSelect: "none",
         }}
       >
-        {/* Panel icon */}
-        <Terminal
-          size={14}
-          style={{ color: "var(--origin-fg-muted)", flexShrink: 0, marginRight: 4 }}
-        />
-
-        {/* Tab strip */}
-        <div style={{ display: "flex", alignItems: "center", gap: 2, flex: 1, overflow: "hidden" }}>
-          {tabs.map((tab) => {
-            const isActive = tab.id === activeId;
-            const isEditing = tab.id === editingId;
-
-            return (
-              <div
-                key={tab.id}
-                onClick={() => setActiveId(tab.id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  paddingLeft: 8,
-                  paddingRight: tabs.length > 1 ? 4 : 8,
-                  height: 22,
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  flexShrink: 0,
-                  fontSize: 12,
-                  fontFamily: "var(--font-mono)",
-                  color: isActive ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
-                  backgroundColor: isActive ? "var(--origin-bg-active)" : "transparent",
-                  transition: "background 0.1s, color 0.1s",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive)
-                    (e.currentTarget as HTMLElement).style.backgroundColor =
-                      "var(--origin-bg-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive)
-                    (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-                }}
-              >
-                <ShellDot info={shellInfos[tab.id]} />
-                {isEditing ? (
-                  <input
-                    ref={editInputRef}
-                    autoFocus
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitEdit();
-                      if (e.key === "Escape") cancelEdit();
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    style={{
-                      width: Math.max(40, editValue.length * 7 + 8),
-                      background: "transparent",
-                      border: "none",
-                      outline: "1px solid var(--origin-accent-blue)",
-                      borderRadius: 2,
-                      color: "var(--origin-fg-default)",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 12,
-                      padding: "0 2px",
-                    }}
-                  />
-                ) : (
-                  <span onDoubleClick={(e) => { e.stopPropagation(); startEdit(tab); }}>
-                    {tab.name}
-                  </span>
-                )}
-
-                {tabs.length > 1 && !isEditing && (
-                  <span
-                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 14,
-                      height: 14,
-                      borderRadius: 2,
-                      color: "var(--origin-fg-subtle)",
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-default)";
-                      (e.currentTarget as HTMLElement).style.backgroundColor =
-                        "var(--origin-bg-hover)";
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-subtle)";
-                      (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-                    }}
-                  >
-                    <X size={10} />
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        {/* Panel title */}
+        <span
+          style={{
+            flex: 1,
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--origin-fg-default)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Terminal
+        </span>
 
         {/* New terminal */}
         <PanelBtn onClick={addTab} title="New Terminal">
@@ -470,29 +381,107 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         </PanelBtn>
       </div>
 
-      {/* Terminal instances — all mounted, only active is visible */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+      {/* Body: terminal on the left, tab list on the right */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            style={{
-              position: "absolute",
-              inset: 0,
-              opacity: tab.id === activeId ? 1 : 0,
-              pointerEvents: tab.id === activeId ? "auto" : "none",
-            }}
-          >
-            <TerminalInstance
-              cwd={tab.cwd}
-              active={tab.id === activeId}
-              clearKey={clearKeys[tab.id] ?? 0}
-              pendingInput={pendingInputs[tab.id]}
-              onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
-              onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}
-            />
-          </div>
-        ))}
+        {/* Terminal instances — all mounted, only active is visible */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              style={{
+                position: "absolute",
+                inset: 0,
+                opacity: tab.id === activeId ? 1 : 0,
+                pointerEvents: tab.id === activeId ? "auto" : "none",
+              }}
+            >
+              <TerminalInstance
+                cwd={tab.cwd}
+                active={tab.id === activeId}
+                clearKey={clearKeys[tab.id] ?? 0}
+                pendingInput={pendingInputs[tab.id]}
+                onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
+                onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Right-side tab list */}
+        <div
+          style={{
+            width: 170,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflowY: "auto",
+            paddingTop: 6,
+            gap: 1,
+          }}
+        >
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeId;
+            return (
+              <div
+                key={tab.id}
+                onClick={() => setActiveId(tab.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  height: 28,
+                  paddingLeft: 12,
+                  paddingRight: 8,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontFamily: "var(--font-mono)",
+                  color: isActive ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                  backgroundColor: isActive
+                    ? "var(--origin-bg-active)"
+                    : hoveredTab === tab.id
+                      ? "var(--origin-bg-hover)"
+                      : "transparent",
+                }}
+                onMouseEnter={() => setHoveredTab(tab.id)}
+                onMouseLeave={() => setHoveredTab((h) => (h === tab.id ? null : h))}
+              >
+                <SquareTerminal size={13} style={{ flexShrink: 0, opacity: 0.8 }} />
+                <ShellDot info={shellInfos[tab.id]} />
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {tab.name}
+                </span>
+                {(hoveredTab === tab.id || isActive) && (
+                  <span
+                    title="Kill Terminal"
+                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 16,
+                      height: 16,
+                      borderRadius: 2,
+                      color: "var(--origin-fg-muted)",
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-default)";
+                      (e.currentTarget as HTMLElement).style.backgroundColor = "var(--origin-bg-hover)";
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-muted)";
+                      (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

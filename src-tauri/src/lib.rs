@@ -1,5 +1,7 @@
 mod ai;
 mod dap;
+mod extensions;
+mod extensions_market;
 mod fs;
 mod git;
 mod keychain;
@@ -124,6 +126,7 @@ pub fn run() {
             git::git_commit_push,
             system::sys_memory,
             terminal::terminal_create,
+            terminal::terminal_shell_name,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
@@ -142,6 +145,14 @@ pub fn run() {
             dap::dap_start,
             dap::dap_request,
             dap::dap_stop,
+            extensions::extensions_root_path,
+            extensions::list_extensions,
+            extensions::install_extension,
+            extensions::uninstall_extension,
+            extensions::read_extension_asset,
+            extensions::inspect_extension,
+            extensions_market::market_search,
+            extensions_market::market_install,
             embed_ide_panel,
             resize_ide_panel,
             destroy_ide_panel,

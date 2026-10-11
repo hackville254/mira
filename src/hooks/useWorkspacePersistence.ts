@@ -10,8 +10,16 @@ const ls = {
 export function useWorkspacePersistence() {
   const { setFolderPath } = useWorkspace();
 
-  const [sidebarOpen,    setSidebarOpen]    = useState(() => ls.get('origin-sidebar-open') !== 'false');
-  const [aiPanelOpen,    setAiPanelOpen]    = useState(() => ls.get('origin-ai-panel-open') === 'true');
+  const [sidebarOpen,    setSidebarOpen]    = useState(() => ls.get('origin-sidebar-open') === 'true');
+  const [aiPanelOpen,    setAiPanelOpen]    = useState(() => {
+    // Réouverture forcée une seule fois (bug de persistance corrigé) : on ignore
+    // la valeur sauvegardée tant que le flag n'est pas posé.
+    if (ls.get('origin-ai-panel-open-forced') !== 'true') {
+      ls.set('origin-ai-panel-open-forced', 'true');
+      return true;
+    }
+    return ls.get('origin-ai-panel-open') !== 'false';
+  });
   const [terminalOpen,   setTerminalOpen]   = useState(() => ls.get('origin-terminal-open') === 'true');
   const [terminalHeight, setTerminalHeight] = useState(() => {
     const n = parseInt(ls.get('origin-terminal-height') ?? '', 10);

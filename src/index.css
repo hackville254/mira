@@ -83,6 +83,23 @@ html, body, #root {
   height: 100%;
 }
 
+/* ── Appearance settings (Settings → Appearance → Interface) ───────────────── */
+
+/* Status bar visibility, toggled from Settings. Default = visible. */
+html[data-status-bar="false"] [data-origin-statusbar] {
+  display: none !important;
+}
+
+/* Density: compact tightens the tab bar height and file tree rows. Comfortable
+   is the default and needs no overrides. */
+html[data-density="compact"] [data-origin-tabbar] {
+  height: 30px !important;
+}
+html[data-density="compact"] [data-origin-tree-row] {
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
+}
+
 /* Plan badge action colours — solid backgrounds that adapt to theme type */
 [data-theme="dark"] {
   --plan-badge-edit-bg:   #3b82f6;

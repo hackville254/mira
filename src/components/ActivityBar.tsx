@@ -1,11 +1,12 @@
-import { Files, Search, GitBranch, Bug } from "lucide-react";
+import { Icon } from "@iconify/react";
 import { Tooltip } from "./ui/Tooltip";
 
 const items = [
-  { id: "explorer",   icon: Files,     label: "Explorer" },
-  { id: "search",     icon: Search,    label: "Search" },
-  { id: "sourcetree", icon: GitBranch, label: "Source Control" },
-  { id: "debug",      icon: Bug,       label: "Debug" },
+  { id: "explorer",   icon: "lucide:files",          label: "Explorer" },
+  { id: "search",     icon: "lucide:search",         label: "Search" },
+  { id: "sourcetree", icon: "lucide:git-branch",     label: "Source Control" },
+  { id: "debug",      icon: "lucide:bug",            label: "Debug" },
+  { id: "extensions", icon: "lucide:puzzle",         label: "Extensions" },
 ];
 
 interface ActivityBarProps {
@@ -16,16 +17,19 @@ interface ActivityBarProps {
 export default function ActivityBar({ active, onSelect }: ActivityBarProps) {
   return (
     <div
-      className="flex items-center justify-center gap-1 px-2 py-1 border-b shrink-0"
-      style={{ borderColor: "var(--origin-border-default)" }}
+      className="flex flex-col items-center gap-1 py-2 shrink-0"
+      style={{
+        width: 44,
+        backgroundColor: "var(--origin-bg-sidebar)",
+      }}
     >
-      {items.map(({ id, icon: Icon, label }) => {
+      {items.map(({ id, icon, label }) => {
         const isActive = active === id;
         return (
-          <Tooltip key={id} content={label} side="bottom">
+          <Tooltip key={id} content={label} side="right">
             <button
               onClick={() => onSelect(id)}
-              className="p-1.5 rounded transition-colors"
+              className="relative p-2 rounded transition-colors"
               style={{
                 color: isActive ? "var(--origin-fg-default)" : "var(--origin-fg-subtle)",
                 backgroundColor: isActive ? "var(--origin-bg-active)" : "transparent",
@@ -40,11 +44,37 @@ export default function ActivityBar({ active, onSelect }: ActivityBarProps) {
               }}
               aria-label={label}
             >
-              <Icon size={15} />
+              {isActive && (
+                <span
+                  className="absolute left-0 top-1/2 -translate-y-1/2 rounded-r"
+                  style={{ width: 2, height: 18, backgroundColor: "var(--origin-fg-default)" }}
+                />
+              )}
+              <Icon icon={icon} width={18} />
             </button>
           </Tooltip>
         );
       })}
+
+      <div className="flex-1" />
+
+      <Tooltip content="More" side="right">
+        <button
+          className="p-2 rounded transition-colors"
+          style={{ color: "var(--origin-fg-subtle)" }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "var(--origin-fg-muted)";
+            e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "var(--origin-fg-subtle)";
+            e.currentTarget.style.backgroundColor = "transparent";
+          }}
+          aria-label="More"
+        >
+          <Icon icon="lucide:more-horizontal" width={18} />
+        </button>
+      </Tooltip>
     </div>
   );
 }

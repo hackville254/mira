@@ -36,7 +36,7 @@ export interface IDESettings {
 }
 
 const DEFAULTS: IDESettings = {
-  'sidebar.open': true,
+  'sidebar.open': false,
   'sidebar.width': 240,
   'panel.bottom.open': false,
   'panel.right.open': false,

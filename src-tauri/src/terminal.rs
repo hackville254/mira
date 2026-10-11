@@ -36,6 +36,17 @@ fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
 }
 
+/// Basename of the shell used for terminals (e.g. "bash", "zsh", "powershell").
+#[tauri::command]
+pub fn terminal_shell_name() -> String {
+    let shell = default_shell();
+    std::path::Path::new(&shell)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&shell)
+        .to_string()
+}
+
 #[tauri::command]
 pub fn terminal_create(
     cwd: String,

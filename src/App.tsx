@@ -6,6 +6,7 @@ import TitleBar from "./components/TitleBar";
 import Sidebar from "./components/Sidebar";
 import Onboarding from "./components/onboarding/Onboarding";
 import EditorEmptyState from "./components/editor/EditorEmptyState";
+import EditorWelcome from "./components/editor/EditorWelcome";
 import TabBar from "./components/editor/TabBar";
 import Editor, { type EditorHandle, type EditorContext } from "./components/editor/Editor";
 import AiDiffPane, { type AiDiffTabData } from "./components/editor/AiDiffPane";
@@ -28,6 +29,9 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { languageLabel } from "./components/editor/languageSupport";
 import { useWorkspace } from "./context/WorkspaceContext";
 import { useDebugContext } from "./context/DebugContext";
+import { useExtensions, setHostDelegate, createDefaultHostServices } from "./context/ExtensionsContext";
+import { consentStatus, requiredCapabilities } from "./lib/extensions/permissions";
+import { readExtensionManifest } from "./lib/extensions";
 import { CommandContext } from "./context/CommandContext";
 import { useTabs } from "./hooks/useTabs";
 import { useWorkspacePersistence } from "./hooks/useWorkspacePersistence";
@@ -49,7 +53,7 @@ function App() {
     activeTabRef,
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
-    handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab,
+    handleNewFile, handleEditorChange, openAiDiffTab,
     handleSave, handleSaveAs, handleSaveAll,
   } = useTabs();
 
@@ -96,7 +100,88 @@ function App() {
   const [gitBranch,      setGitBranch]     = useState<string | null>(null);
   const [paletteOpen,    setPaletteOpen]   = useState(false);
   const [settingsOpen,   setSettingsOpen]  = useState(false);
-  const [aboutOpen,      setAboutOpen]     = useState(false);
+
+  // ── Level-2 extension host: publish the app's services as a HostDelegate.
+  // App.tsx owns the workspace/editor/toast wiring, so it builds the delegate
+  // here; the ExtensionsProvider reads it lazily. File ops are still confined
+  // to the workspace root by the host before they reach these functions.
+  const { extensions, activate } = useExtensions();
+  useEffect(() => {
+    setHostDelegate({
+      getWorkspaceRoot: () => folderPath,
+      ...createDefaultHostServices(),
+      getActiveEditor: () => {
+        const path = activeTabRef.current;
+        if (!path || path.startsWith("__")) return null;
+        const text = fileContentsRef.current[path];
+        if (text === undefined) return null;
+        const base = path.split(/[\\/]/).pop() ?? path;
+        const dot = base.lastIndexOf(".");
+        const extId = dot > 0 ? base.slice(dot + 1) : "";
+        return { uri: `file://${path}`, path, languageId: extId, getText: () => text };
+      },
+      notify: (kind, message) => showToast(message, kind === "error" ? "error" : "info"),
+      // Extension "open" of a file routes through the app's own tab opener.
+      executeCommand: async (id, args) => {
+        const { executeCommand } = await import("./lib/extensions/registry");
+        return executeCommand(id, ...args);
+      },
+      // Read-only metadata for `vscode.extensions.*`. The real `package.json`
+      // is exposed (not a synthetic stub) because extensions inspect their own
+      // `contributes` tree synchronously at module load.
+      getExtensionInfo: async (id) => {
+        const ext = extensions.find((e) => e.id === id || e.name === id);
+        if (!ext) return undefined;
+        const manifest = await readExtensionManifest(ext.id);
+        return {
+          id: ext.id,
+          extensionPath: ext.path,
+          isActive: true,
+          packageJSON: manifest ?? {
+            name: ext.name,
+            displayName: ext.display_name,
+            publisher: ext.publisher,
+            version: ext.version,
+            description: ext.description,
+          },
+        };
+      },
+      getInstalledExtensions: async () =>
+        Promise.all(
+          extensions.map(async (ext) => {
+            const manifest = await readExtensionManifest(ext.id);
+            return {
+              id: ext.id,
+              extensionPath: ext.path,
+              isActive: true,
+              packageJSON: manifest ?? {
+                name: ext.name,
+                displayName: ext.display_name,
+                publisher: ext.publisher,
+                version: ext.version,
+                description: ext.description,
+              },
+            };
+          }),
+        ),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-publish so the delegate's getWorkspaceRoot sees the current folder
+  }, [folderPath, showToast, openTab, extensions]);
+
+  // Auto-activate extensions on load whose code is already consented. Nothing
+  // runs without prior consent (consentStatus gates it); errors surface in the
+  // Extensions panel rather than blocking the app.
+  useEffect(() => {
+    for (const ext of extensions) {
+      if (!ext.main) continue;
+      const required = requiredCapabilities({ main: ext.main, commands: ext.commands, activation_events: ext.activation_events });
+      if (required.length === 0) continue;
+      if (consentStatus(ext.id, required).granted) {
+        void activate(ext).catch(() => { /* surfaced in the panel record */ });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run when the installed set changes
+  }, [extensions]);
 
   // Stable async-generator callback for AI inline autocomplete.
   // Reads localStorage at call time so model/provider/enabled changes take effect immediately.
@@ -223,7 +308,7 @@ function App() {
     zoomIn:            () => handleZoomIn(),
     zoomOut:           () => handleZoomOut(),
     zoomReset:         () => handleZoomReset(),
-    startDebug:        () => { setSidebarOpen(true); debugCtx.startSession?.(); },
+    startDebug:        () => { setSidebarOpen(true); },
     stopDebug:         () => debugCtx.stopSession(),
     stepOver:          () => debugCtx.stepOver?.(),
     stepInto:          () => debugCtx.stepIn?.(),
@@ -249,6 +334,12 @@ function App() {
     const result = await open({ multiple: false });
     if (!result) return;
     openTab(result as string);
+  }
+
+  function handleOpenProject(path: string) {
+    const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    pushRecentProject({ path, name }).catch(() => { /* store indisponible : on ouvre quand même */ });
+    setFolderPath(path);
   }
 
   function handleApplyCode(code: string, filePath?: string, _ctx?: EditorContext) {
@@ -322,18 +413,19 @@ function App() {
     );
   }
 
-  function handleAbout() { setAboutOpen(true); }
-
+  // Zoom in/out/reset handled below.
   const commands = {
     sidebarOpen, onToggleSidebar: () => setSidebarOpen(v => !v),
     terminalOpen, onToggleTerminal: () => setTerminalOpen(v => !v),
     aiPanelOpen, onToggleAiPanel: () => setAiPanelOpen(v => !v),
+    onSetAiPanel: (open: boolean) => setAiPanelOpen(open),
     isFullscreen, onToggleFullscreen: toggleFullscreen,
     onOpenFolder: handleOpenFolder,
     onOpenFile: handleOpenFile,
     onNewFile: handleNewFile,
     onNewWindow: handleNewWindow,
     onOpenPalette: () => setPaletteOpen(true),
+    onOpenSettings: () => setSettingsOpen(true),
     gitBranch,
     dirtyCount: tabs.filter(t => t.isDirty).length,
     hasActiveTab: !!activeTab && !activeTab.startsWith('__diff__'),
@@ -345,6 +437,18 @@ function App() {
     onCloseFolder: () => setFolderPath(null),
     onEditorUndo: () => editorRef.current?.undo(),
     onEditorRedo: () => editorRef.current?.redo(),
+    onEditorPrevFile: () => {
+      if (!activeTab || tabs.length < 2) return;
+      const idx = tabs.findIndex(t => t.path === activeTab);
+      if (idx < 0) return;
+      setActiveTab(tabs[(idx - 1 + tabs.length) % tabs.length].path);
+    },
+    onEditorNextFile: () => {
+      if (!activeTab || tabs.length < 2) return;
+      const idx = tabs.findIndex(t => t.path === activeTab);
+      if (idx < 0) return;
+      setActiveTab(tabs[(idx + 1) % tabs.length].path);
+    },
     onEditorCut: () => editorRef.current?.cut(),
     onEditorCopy: () => editorRef.current?.copy(),
     onEditorPaste: () => editorRef.current?.paste(),
@@ -356,7 +460,6 @@ function App() {
     onNewTerminalTab: handleNewTerminalTab,
     onClearTerminal: () => terminalRef.current?.clearActive(),
     onKillTerminal: () => terminalRef.current?.killActive(),
-    onAbout: handleAbout,
     onStartDebugging: () => {
       setSidebarOpen(true);
     },
@@ -367,7 +470,7 @@ function App() {
   return (
     <CommandContext.Provider value={commands}>
     <div
-      className="h-full w-full flex flex-col"
+      className="h-full w-full flex flex-col gap-1"
       style={{ backgroundColor: "var(--origin-bg-base)", color: "var(--origin-fg-default)" }}
     >
       {onboardingDone && <TitleBar />}
@@ -375,10 +478,10 @@ function App() {
         <Onboarding onComplete={completeOnboarding} />
       ) : (
         <>
-          <div className="flex flex-1 overflow-hidden">
+          <div className="flex flex-1 overflow-hidden gap-1">
             {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} fileTreeKey={fileTreeVersion} />}
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex flex-1 overflow-hidden gap-1">
+              <div className="flex-1 flex flex-col overflow-hidden gap-1">
                 <TabBar
                   tabs={tabs}
                   activeTab={activeTab}
@@ -387,9 +490,6 @@ function App() {
                     if (path === '__preview__') localStorage.removeItem('origin-preview-url');
                     closeTab(path);
                   }}
-                  onNewFile={handleNewFile}
-                  onOpenFile={handleOpenFile}
-                  onOpenPreview={openPreviewTab}
                 />
                 <main className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--origin-bg-editor)", position: "relative" }}>
                   {debugCtx.session.status !== 'idle' && debugCtx.session.status !== 'terminated' && (
@@ -403,12 +503,13 @@ function App() {
                       onStop={debugCtx.stopSession}
                     />
                   )}
-                  {tabs.length === 0 ? (
+                  {!folderPath ? (
                     <EditorEmptyState
-                      onFolderOpen={setFolderPath}
-                      onFileOpen={handleOpenFile}
-                      onNewFile={handleNewFile}
+                      onOpenFolder={handleOpenFolder}
+                      onOpenProject={handleOpenProject}
                     />
+                  ) : tabs.length === 0 ? (
+                    <EditorWelcome />
                   ) : activeTab?.startsWith('__diff__') ? (
                     (() => {
                       const diffTab = tabs.find(t => t.path === activeTab) as AiDiffTabData | undefined;
@@ -493,7 +594,6 @@ function App() {
             line={cursorPositions[activeTab ?? '']?.line ?? 1}
             col={cursorPositions[activeTab ?? '']?.col ?? 1}
             branch={gitBranch}
-            onOpenSettings={() => setSettingsOpen(true)}
             debugStatus={
               debugCtx.session.status === 'paused' ? 'paused' :
               debugCtx.session.status === 'running' ? 'running' : null
@@ -518,46 +618,6 @@ function App() {
         />
       )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-      {aboutOpen && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, zIndex: 9000,
-            background: 'rgba(0,0,0,0.55)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-          onClick={() => setAboutOpen(false)}
-        >
-          <div
-            style={{
-              background: 'var(--origin-bg-surface)',
-              border: '1px solid var(--origin-border-default)',
-              borderRadius: '10px',
-              padding: '28px 32px',
-              minWidth: '280px',
-              display: 'flex', flexDirection: 'column', gap: '8px',
-              boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--origin-fg-default)', margin: 0 }}>Origin IDE</p>
-            <p style={{ fontSize: '12px', color: 'var(--origin-fg-muted)', margin: 0 }}>Version 0.1.0</p>
-            <p style={{ fontSize: '12px', color: 'var(--origin-fg-subtle)', margin: '8px 0 0', lineHeight: 1.6 }}>
-              Built with Tauri 2.x + React + CodeMirror 6.
-            </p>
-            <button
-              onClick={() => setAboutOpen(false)}
-              style={{
-                marginTop: '16px', padding: '6px 16px', alignSelf: 'flex-end',
-                background: 'var(--origin-bg-hover)', color: 'var(--origin-fg-default)',
-                border: '1px solid var(--origin-border-default)', borderRadius: '6px',
-                cursor: 'pointer', fontSize: '12px',
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
     </div>
     </CommandContext.Provider>
   );

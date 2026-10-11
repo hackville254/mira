@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback } from "react";
 import {
-  ChevronRight, ChevronDown, Folder, FolderOpen, File,
+  ChevronRight, ChevronDown, File,
   FilePlus, FolderPlus, Pencil, Trash2, Copy, ExternalLink,
 } from "lucide-react";
 import { readDir, writeFile, renamePath, deletePath, createDirCmd, revealInExplorer, type FsEntry } from "../lib/fs";
-import { fileColor } from "../lib/fileColors";
+import FileIcon from "./FileIcon";
 import { useWorkspace } from "../context/WorkspaceContext";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
 
@@ -178,6 +178,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   return (
     <>
       <button
+        data-origin-tree-row=""
         onClick={handleClick}
         onContextMenu={e => { e.preventDefault(); e.stopPropagation(); openContextMenu(e.clientX, e.clientY, entry); }}
         onMouseEnter={() => setHovered(true)}
@@ -193,12 +194,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
           {entry.is_dir ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
         </span>
 
-        {entry.is_dir
-          ? expanded
-            ? <FolderOpen size={14} style={{ flexShrink: 0, color: '#eab308' }} />
-            : <Folder    size={14} style={{ flexShrink: 0, color: '#eab308' }} />
-          : <File size={14} style={{ flexShrink: 0, color: fileColor(entry.name) }} />
-        }
+        <FileIcon name={entry.name} isDir={entry.is_dir} expanded={expanded} size={14} />
 
         {isRenaming
           ? <RenameInput entry={entry} onDone={() => setRenamingPath(null)} />

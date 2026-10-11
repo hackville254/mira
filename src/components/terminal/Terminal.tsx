@@ -239,5 +239,17 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
     });
   }, [active]);
 
-  return <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />;
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        padding: "8px 12px",
+        boxSizing: "border-box",
+        overflow: "hidden",
+      }}
+    >
+      <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />
+    </div>
+  );
 }

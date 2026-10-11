@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, File } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { searchInFiles, type SearchMatch } from '../lib/search';
-import { fileColor } from '../lib/fileColors';
+import FileIcon from './FileIcon';
 import { useWorkspace } from '../context/WorkspaceContext';
 
 interface Props {
@@ -182,7 +182,7 @@ export default function SearchPanel({ onFileOpenAtLine }: Props) {
               position: 'sticky', top: 0,
               background: 'var(--origin-bg-sidebar)',
             }}>
-              <File size={12} style={{ color: fileColor(group.name), flexShrink: 0 }} />
+              <FileIcon name={group.name} size={12} />
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                 {group.name}
               </span>

@@ -1,14 +1,19 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Search, File, Terminal, FolderOpen, FilePlus, PanelLeft,
-  FileInput, GripHorizontal, Sun, Moon, Settings, Loader, AlignLeft,
+  FileInput, GripHorizontal, Sun, Moon, Settings, Loader, AlignLeft, Puzzle,
 } from 'lucide-react';
 import { readDir, type FsEntry } from '../../lib/fs';
 import { fileColor } from '../../lib/fileColors';
 import { searchInFiles, type SearchMatch } from '../../lib/search';
 import { useTheme } from '../../themes/ThemeContext';
 import { useWorkspace } from '../../context/WorkspaceContext';
+import {
+  subscribe as subscribeRegistry,
+  getCommands as getRegisteredCommands,
+  executeCommand,
+} from '../../lib/extensions/registry';
 import type { Tab } from '../editor/TabBar';
 
 // ── workspace walker ─────────────────────────────────────────────────────────
@@ -118,10 +123,15 @@ export default function CommandPalette({
   const [wsFiles, setWsFiles] = useState<WorkspaceFile[]>([]);
   const [textResults, setTextResults] = useState<SearchMatch[]>([]);
   const [textLoading, setTextLoading] = useState(false);
-  const [pos, setPos] = useState(() => ({
+  const posInitial = useMemo(() => ({
     x: Math.round((window.innerWidth - PALETTE_W) / 2),
     y: Math.round(window.innerHeight * 0.22),
-  }));
+  }), []);
+  const [pos, setPos] = useState(posInitial);
+
+  // Commands contributed at runtime by extensions (Level 2). Re-renders the
+  // palette when an extension registers/unregisters a command.
+  const extensionCommands = useSyncExternalStore(subscribeRegistry, getRegisteredCommands, getRegisteredCommands);
 
   const inputRef   = useRef<HTMLInputElement>(null);
   const listRef    = useRef<HTMLDivElement>(null);
@@ -297,9 +307,33 @@ export default function CommandPalette({
       result.push({ id: `cmd:${cmd.label}`, kind: 'command', label: cmd.label, detail: cmd.detail, icon: cmd.icon, shortcut: cmd.shortcut, score: score + 50000, action: cmd.action });
     }
 
+    // Extension-contributed commands (Level 2). Slightly lower priority than
+    // built-ins so core actions stay on top, but still above plain files.
+    for (const ext of extensionCommands) {
+      const haystack = `${ext.title} ${ext.category ?? ''} ${ext.id}`;
+      const score = fuzzyScore(q, haystack);
+      if (score === null) continue;
+      const detail = ext.category ? `${ext.category} · ${ext.id}` : ext.id;
+      result.push({
+        id: `ext-cmd:${ext.id}`,
+        kind: 'command',
+        label: ext.title,
+        detail,
+        icon: <Puzzle size={14} style={{ flexShrink: 0, color: 'var(--origin-accent-blue)' }} />,
+        badge: <span style={{ fontSize: '10px', color: 'var(--origin-fg-subtle)', flexShrink: 0 }}>extension</span>,
+        score: score + 20000,
+        action: () => {
+          void executeCommand(ext.id).catch((err: unknown) => {
+            console.error(`[extension] command "${ext.id}" failed:`, err);
+          });
+          onClose();
+        },
+      });
+    }
+
     result.sort((a, b) => a.score - b.score);
     return result.slice(0, 60);
-  }, [isTextMode, isFileMode, q, tabs, wsFiles, folderPath, terminalOpen, sidebarOpen, theme, themes, setTheme,
+  }, [isTextMode, isFileMode, q, tabs, wsFiles, folderPath, terminalOpen, sidebarOpen, theme, themes, setTheme, extensionCommands,
       onFileOpen, onClose, onNewFile, onOpenFolder, onOpenFile, onToggleSidebar, onToggleTerminal, onOpenSettings]);
 
   const textItems = useMemo<PaletteItem[]>(() =>

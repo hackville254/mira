@@ -1,18 +1,19 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Bot, Palette, Check, MessageSquareDot, SlidersHorizontal, Terminal, Copy, Keyboard } from "lucide-react";
+import { X, Eye, EyeOff, Bot, Palette, Check, SlidersHorizontal, Terminal, Copy, Keyboard, Search } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
+import FileIcon from "../FileIcon";
 import { PROVIDERS } from "../ai/providers";
 import { loadApiKey, saveApiKey, deleteApiKey } from "../../lib/secrets";
-import { useTheme } from "../../themes/ThemeContext";
-import { DEFAULT_SYSTEM_PROMPT, DEFAULT_ASK_PROMPT, DEFAULT_PLAN_PROMPT } from "../../lib/ai";
+import { useTheme, builtinThemes } from "../../themes/ThemeContext";
+import type { OriginTheme } from "../../themes/types";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const LOCAL_IDS = new Set(["ollama", "lmstudio", "vllm"]);
 const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
-type Section = "general" | "ai" | "prompts" | "appearance" | "terminal" | "keybindings";
+type Section = "general" | "ai" | "appearance" | "terminal" | "keybindings";
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,80 @@ function NavItem({ active, icon, label, onClick }: {
     </button>
   );
 }
+
+// ── Setting row (VS Code style) ──────────────────────────────────────────────
+
+function SettingRow({ title, description, children }: {
+  title: string;
+  description?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "24px",
+      padding: "11px 0",
+      borderBottom: "1px solid var(--origin-border-default)",
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "13px", color: "var(--origin-fg-default)" }}>{title}</div>
+        {description && (
+          <div style={{ fontSize: "11.5px", color: "var(--origin-fg-muted)", marginTop: "3px", lineHeight: 1.5 }}>
+            {description}
+          </div>
+        )}
+      </div>
+      {children && <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: "8px" }}>{children}</div>}
+    </div>
+  );
+}
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      fontSize: "11px", fontWeight: 600, color: "var(--origin-fg-subtle)",
+      textTransform: "uppercase", letterSpacing: "0.07em",
+      margin: "18px 0 2px",
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Toggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      role="switch"
+      aria-checked={on}
+      style={{
+        width: 34, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+        padding: 2, display: "flex", alignItems: "center",
+        backgroundColor: on ? "var(--origin-semantic-success, #2ea043)" : "var(--origin-border-default)",
+        transition: "background 0.15s", flexShrink: 0,
+      }}
+    >
+      <span style={{
+        width: 14, height: 14, borderRadius: "50%", backgroundColor: "#fff",
+        transform: on ? "translateX(16px)" : "translateX(0)",
+        transition: "transform 0.15s",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
+      }} />
+    </button>
+  );
+}
+
+const selectStyle: React.CSSProperties = {
+  padding: "4px 8px",
+  borderRadius: "4px",
+  border: "1px solid var(--origin-border-default)",
+  backgroundColor: "var(--origin-bg-base)",
+  color: "var(--origin-fg-default)",
+  fontSize: "12px",
+  outline: "none",
+  cursor: "pointer",
+};
 
 // ── AI Providers Section ─────────────────────────────────────────────────────
 
@@ -114,11 +189,11 @@ function AIProvidersSection() {
 
   return (
     <div style={{ padding: "2px 0 16px" }}>
-      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "18px", lineHeight: 1.5 }}>
+      <SectionHeading>API Keys</SectionHeading>
+      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "6px", lineHeight: 1.5 }}>
         API keys are stored in your OS keychain and never leave your device.
       </p>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "12px" }}>
         {API_PROVIDERS.map(provider => {
           const state = keys[provider.id];
           if (!state) return null;
@@ -280,212 +355,216 @@ function AIProvidersSection() {
 
 // ── Appearance Section ───────────────────────────────────────────────────────
 
-function AppearanceSection() {
-  const { theme, themes, setTheme } = useTheme();
+/** Extract a CSS var value for a token from a theme's color map. */
+function colorOf(theme: OriginTheme | undefined, token: string, fallback: string): string {
+  return theme?.colors[token] ?? fallback;
+}
+
+function ThemePreviewCard({ theme: t, selected, onSelect }: {
+  theme: OriginTheme;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const isDark = t.type === "dark";
+  const bg = colorOf(t, "bg.editor", isDark ? "#1e1e1e" : "#ffffff");
+  const sidebar = colorOf(t, "bg.sidebar", isDark ? "#252526" : "#f3f3f3");
+  const fg = colorOf(t, "fg.default", isDark ? "#d4d4d4" : "#333333");
+  const accent = colorOf(t, "accent.blue", "#3b82f6");
+  const kw = colorOf(t, "syntax.keyword", isDark ? "#569cd6" : "#0000ff");
+  const str = colorOf(t, "syntax.string", isDark ? "#ce9178" : "#a31515");
+  const fn = colorOf(t, "syntax.function", isDark ? "#dcdcaa" : "#795e26");
 
   return (
-    <div style={{ padding: "2px 0 16px" }}>
-      <div style={{ marginBottom: "20px" }}>
-        <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--origin-fg-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
-          Theme
+    <button
+      onClick={onSelect}
+      title={t.name}
+      style={{
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        padding: "8px",
+        borderRadius: "8px",
+        border: selected ? "2px solid var(--origin-accent-blue)" : "1px solid var(--origin-border-default)",
+        backgroundColor: "var(--origin-bg-base)",
+        cursor: "pointer",
+        textAlign: "left",
+        transition: "border-color 0.12s",
+      }}
+    >
+      {/* Mini editor mock */}
+      <div style={{
+        width: "100%",
+        height: "74px",
+        borderRadius: "5px",
+        overflow: "hidden",
+        display: "flex",
+        border: "1px solid rgba(128,128,128,0.2)",
+      }}>
+        {/* Sidebar strip */}
+        <div style={{ width: "26%", backgroundColor: sidebar, padding: "8px 6px", display: "flex", flexDirection: "column", gap: "5px" }}>
+          <div style={{ height: 4, width: "70%", borderRadius: 2, backgroundColor: fg, opacity: 0.5 }} />
+          <div style={{ height: 4, width: "50%", borderRadius: 2, backgroundColor: accent, opacity: 0.85 }} />
+          <div style={{ height: 4, width: "60%", borderRadius: 2, backgroundColor: fg, opacity: 0.3 }} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-          {themes.map(t => {
-            const isActive = t.name === theme.name;
-            return (
-              <button
-                key={t.name}
-                onClick={() => setTheme(t)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "12px",
-                  padding: "10px 12px",
-                  borderRadius: "8px",
-                  border: `1px solid ${isActive ? "var(--origin-fg-muted)" : "var(--origin-border-default)"}`,
-                  backgroundColor: isActive ? "var(--origin-bg-hover)" : "var(--origin-bg-base)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "all 0.1s",
-                }}
-                onMouseEnter={e => {
-                  if (!isActive) e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-                }}
-                onMouseLeave={e => {
-                  if (!isActive) e.currentTarget.style.backgroundColor = "var(--origin-bg-base)";
-                }}
-              >
-                <div style={{
-                  width: 20, height: 20, borderRadius: "50%",
-                  border: "2px solid var(--origin-border-default)",
-                  backgroundColor: t.type === "dark" ? "#0a0a0a" : "#ffffff",
-                  flexShrink: 0,
-                }} />
-                <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", fontWeight: isActive ? 500 : 400 }}>
-                  {t.name}
-                </span>
-                {isActive && (
-                  <Check size={14} style={{ marginLeft: "auto", color: "var(--origin-fg-default)" }} />
-                )}
-              </button>
-            );
-          })}
+        {/* Editor area */}
+        <div style={{ flex: 1, backgroundColor: bg, padding: "8px 8px", display: "flex", flexDirection: "column", gap: "5px", justifyContent: "center" }}>
+          <div style={{ height: 4, width: "80%", borderRadius: 2, backgroundColor: kw }} />
+          <div style={{ height: 4, width: "55%", borderRadius: 2, backgroundColor: fn }} />
+          <div style={{ height: 4, width: "68%", borderRadius: 2, backgroundColor: str }} />
+          <div style={{ height: 4, width: "40%", borderRadius: 2, backgroundColor: fg, opacity: 0.45 }} />
         </div>
       </div>
+      {/* Label */}
+      <div style={{ display: "flex", alignItems: "center", gap: "5px", minWidth: 0 }}>
+        {selected && <Check size={12} style={{ color: "var(--origin-accent-blue)", flexShrink: 0 }} />}
+        <span style={{
+          fontSize: "12px", color: "var(--origin-fg-default)", fontWeight: selected ? 500 : 400,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {t.name}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+const APPEARANCE_DENSITY_KEY = "origin-ui-density";
+const APPEARANCE_STATUS_BAR_KEY = "origin-ui-status-bar";
+
+/**
+ * Sample entries used to preview an icon theme, mirroring VS Code's own preview
+ * row. Names map onto real theme keys (`fileNames`/`fileExtensions`/folders) so
+ * the preview reflects what the Explorer will actually show.
+ */
+const ICON_PREVIEW_ENTRIES: { name: string; isDir?: boolean; expanded?: boolean }[] = [
+  { name: "src", isDir: true, expanded: true },
+  { name: "index.ts" },
+  { name: "App.tsx" },
+  { name: "styles.css" },
+  { name: "package.json" },
+  { name: "README.md" },
+  { name: "Dockerfile" },
+];
+
+/** Horizontal strip previewing the files/folders as rendered by the active theme. */
+function IconThemePreview() {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "16px",
+      flexWrap: "wrap",
+      padding: "12px 14px",
+      borderRadius: "8px",
+      border: "1px solid var(--origin-border-default)",
+      backgroundColor: "var(--origin-bg-base)",
+    }}>
+      {ICON_PREVIEW_ENTRIES.map(e => (
+        <span key={e.name} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <FileIcon name={e.name} isDir={e.isDir} expanded={e.expanded} size={16} />
+          <span style={{ fontSize: "12px", color: "var(--origin-fg-muted)" }}>{e.name}</span>
+        </span>
+      ))}
     </div>
   );
 }
 
-// ── Prompts Section ──────────────────────────────────────────────────────────
+function AppearanceSection() {
+  const {
+    theme, themes, setTheme,
+    iconThemes, iconThemeId, setIconTheme,
+    productIconThemes, productIconThemeId, setProductIconTheme,
+  } = useTheme();
 
-type PromptTab = "agent" | "ask" | "plan";
+  const [density, setDensity] = useState<string>(() => localStorage.getItem(APPEARANCE_DENSITY_KEY) ?? "comfortable");
+  const [statusBar, setStatusBar] = useState(() => localStorage.getItem(APPEARANCE_STATUS_BAR_KEY) !== "false");
 
-const PROMPT_CONFIGS: Record<PromptTab, { label: string; storageKey: string; defaultValue: string; description: string }> = {
-  agent: {
-    label: "Agent",
-    storageKey: "origin-ai-system-prompt",
-    defaultValue: DEFAULT_SYSTEM_PROMPT,
-    description: "Used in Agent mode. Full tool access — read, write, edit, bash.",
-  },
-  ask: {
-    label: "Ask",
-    storageKey: "origin-ai-ask-prompt",
-    defaultValue: DEFAULT_ASK_PROMPT,
-    description: "Used in Ask mode. Can call edit / multi_edit; changes go through the diff view.",
-  },
-  plan: {
-    label: "Plan",
-    storageKey: "origin-ai-plan-prompt",
-    defaultValue: DEFAULT_PLAN_PROMPT,
-    description: "Used in Plan mode Phase 1 (exploration) and drives the structured plan format.",
-  },
-};
-
-function PromptEditor({ tab }: { tab: PromptTab }) {
-  const cfg = PROMPT_CONFIGS[tab];
-  const [value, setValue] = useState(() => localStorage.getItem(cfg.storageKey) ?? cfg.defaultValue);
-  const [saved, setSaved] = useState(() => localStorage.getItem(cfg.storageKey) ?? cfg.defaultValue);
-  const [justSaved, setJustSaved] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(cfg.storageKey) ?? cfg.defaultValue;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load persisted setting value on mount/config change
-    setValue(stored);
-    setSaved(stored);
-  }, [cfg.storageKey, cfg.defaultValue]);
-
-  const isDirty = value !== saved;
-  const isDefault = value.trim() === cfg.defaultValue.trim();
-
-  function handleSave() {
-    if (isDefault) {
-      localStorage.removeItem(cfg.storageKey);
-    } else {
-      localStorage.setItem(cfg.storageKey, value);
-    }
-    setSaved(value);
-    setJustSaved(true);
-    setTimeout(() => setJustSaved(false), 1800);
+  function changeDensity(v: string) {
+    localStorage.setItem(APPEARANCE_DENSITY_KEY, v);
+    setDensity(v);
+    document.documentElement.setAttribute("data-density", v);
+  }
+  function toggleStatusBar() {
+    const next = !statusBar;
+    localStorage.setItem(APPEARANCE_STATUS_BAR_KEY, String(next));
+    setStatusBar(next);
+    document.documentElement.setAttribute("data-status-bar", String(next));
   }
 
   return (
-    <div>
-      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "12px", lineHeight: 1.6 }}>
-        {cfg.description} Changes take effect on the next message sent.
+    <div style={{ paddingBottom: "24px" }}>
+      <SectionHeading>Color Theme</SectionHeading>
+      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", margin: "4px 0 14px", lineHeight: 1.5 }}>
+        Select the colour theme for the editor and workspace. Themes installed from extensions appear here automatically.
       </p>
-      <textarea
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        spellCheck={false}
-        style={{
-          width: "100%",
-          minHeight: "200px",
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+        gap: "12px",
+      }}>
+        {themes.map(t => (
+          <ThemePreviewCard
+            key={t.name}
+            theme={t}
+            selected={t.name === theme.name}
+            onSelect={() => setTheme(t)}
+          />
+        ))}
+      </div>
+      {themes.length === builtinThemes.length && (
+        <div style={{
+          marginTop: "12px",
           padding: "10px 12px",
           borderRadius: "8px",
           border: "1px solid var(--origin-border-default)",
           backgroundColor: "var(--origin-bg-base)",
-          color: "var(--origin-fg-default)",
           fontSize: "12px",
-          fontFamily: "var(--font-mono)",
-          lineHeight: "1.65",
-          outline: "none",
-          resize: "vertical",
-          boxSizing: "border-box",
-          display: "block",
-        }}
-        onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
-        onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; }}
-      />
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
-        <button
-          onClick={() => setValue(cfg.defaultValue)}
-          disabled={isDefault}
-          style={{
-            padding: "5px 12px", borderRadius: "6px",
-            border: "1px solid var(--origin-border-default)",
-            backgroundColor: "transparent",
-            color: isDefault ? "var(--origin-fg-subtle)" : "var(--origin-fg-muted)",
-            fontSize: "12px", cursor: isDefault ? "default" : "pointer",
-          }}
-        >
-          Reset to Default
-        </button>
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={handleSave}
-          disabled={!isDirty}
-          style={{
-            padding: "5px 16px", borderRadius: "6px",
-            border: "1px solid var(--origin-border-default)",
-            backgroundColor: justSaved
-              ? "color-mix(in srgb, var(--origin-semantic-success) 15%, transparent)"
-              : isDirty ? "var(--origin-fg-default)" : "transparent",
-            color: justSaved
-              ? "var(--origin-semantic-success)"
-              : isDirty ? "var(--origin-bg-base)" : "var(--origin-fg-subtle)",
-            fontSize: "12px", fontWeight: 500,
-            cursor: isDirty ? "pointer" : "default",
-            transition: "all 0.15s", minWidth: 56,
-          }}
-        >
-          {justSaved ? "Saved!" : "Save"}
-        </button>
-      </div>
-    </div>
-  );
-}
+          color: "var(--origin-fg-muted)",
+          lineHeight: 1.5,
+        }}>
+          No colour theme from an extension is installed yet. Install one from the Extensions panel
+          (e.g. <span style={{ color: "var(--origin-fg-default)" }}>One Dark Pro</span>) and it will show up here.
+        </div>
+      )}
 
-function PromptsSection() {
-  const [tab, setTab] = useState<PromptTab>("agent");
-  const tabs: PromptTab[] = ["agent", "ask", "plan"];
-
-  return (
-    <div style={{ padding: "2px 0 16px" }}>
-      {/* Tab bar */}
-      <div style={{ display: "flex", gap: "4px", marginBottom: "16px" }}>
-        {tabs.map(t => {
-          const active = t === tab;
-          return (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              style={{
-                padding: "4px 14px", borderRadius: "6px", fontSize: "12px", fontWeight: active ? 500 : 400,
-                border: "1px solid",
-                borderColor: active ? "var(--origin-fg-muted)" : "var(--origin-border-default)",
-                backgroundColor: active ? "var(--origin-bg-hover)" : "transparent",
-                color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
-                cursor: "pointer", transition: "all 0.1s",
-              }}
-              onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
-              onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = "transparent"; }}
-            >
-              {PROMPT_CONFIGS[t].label}
-            </button>
-          );
-        })}
+      <SectionHeading>File Icon Theme</SectionHeading>
+      <SettingRow
+        title="Icon theme"
+        description="Icons shown next to files and folders in the Explorer, tabs and search results."
+      >
+        <select value={iconThemeId} onChange={e => setIconTheme(e.target.value)} style={selectStyle}>
+          {iconThemes.map(t => (
+            <option key={t.id || "__default"} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+      </SettingRow>
+      <div style={{ marginTop: "10px" }}>
+        <IconThemePreview />
       </div>
-      <PromptEditor key={tab} tab={tab} />
+
+      <SectionHeading>Product Icon Theme</SectionHeading>
+      <SettingRow
+        title="Product icon theme"
+        description="Icon set used for the interface (activity bar, panels, views)."
+      >
+        <select value={productIconThemeId} onChange={e => setProductIconTheme(e.target.value)} style={selectStyle}>
+          {productIconThemes.map(t => (
+            <option key={t.id || "__default"} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+      </SettingRow>
+
+      <SectionHeading>Interface</SectionHeading>
+      <SettingRow title="Density" description="Controls the spacing of the tab bar and file tree rows.">
+        <select value={density} onChange={e => changeDensity(e.target.value)} style={selectStyle}>
+          <option value="comfortable">Comfortable</option>
+          <option value="compact">Compact</option>
+        </select>
+      </SettingRow>
+      <SettingRow title="Status bar" description="Show the status bar at the bottom of the window.">
+        <Toggle on={statusBar} onToggle={toggleStatusBar} />
+      </SettingRow>
     </div>
   );
 }
@@ -559,89 +638,39 @@ function GeneralSection() {
   };
 
   return (
-    <div style={{ padding: "2px 0 16px" }}>
-      <div style={{
-        fontSize: "12px", fontWeight: 600, color: "var(--origin-fg-muted)",
-        textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px",
-      }}>
-        AI Autocomplete
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-        {/* Inline completions toggle */}
-        <div style={{
-          display: "flex", alignItems: "center", gap: "12px",
-          padding: "10px 12px", borderRadius: "8px",
-          border: "1px solid var(--origin-border-default)",
-          backgroundColor: "var(--origin-bg-base)",
-        }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: "13px", color: "var(--origin-fg-default)" }}>Inline completions</div>
-            <div style={{ fontSize: "11px", color: "var(--origin-fg-muted)", marginTop: "2px" }}>
-              Ghost text as you type — Tab to accept, Escape to dismiss.
-            </div>
-          </div>
-          <button
-            onClick={toggleCompletions}
-            style={{
-              padding: "4px 12px", borderRadius: "6px", fontSize: "12px",
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: completionsEnabled ? "var(--origin-fg-default)" : "transparent",
-              color: completionsEnabled ? "var(--origin-bg-base)" : "var(--origin-fg-muted)",
-              cursor: "pointer", fontWeight: 500, transition: "all 0.15s",
-            }}
-          >
-            {completionsEnabled ? "On" : "Off"}
-          </button>
-        </div>
-        {/* Ghost text delay */}
-        <div style={{
-          display: "flex", alignItems: "center", gap: "12px",
-          padding: "10px 14px", borderRadius: "8px",
-          border: "1px solid var(--origin-border-default)",
-          backgroundColor: "var(--origin-bg-base)",
-        }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: "13px", color: "var(--origin-fg-default)" }}>Ghost text delay</div>
-            <div style={{ fontSize: "11px", color: "var(--origin-fg-muted)", marginTop: "2px" }}>
-              Wait time after typing stops before requesting a suggestion.
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-            <input
-              type="number"
-              min={unit === 's' ? 0.1 : 100}
-              step={unit === 's' ? 0.1 : 50}
-              value={inputVal}
-              onChange={e => setInputVal(e.target.value)}
-              onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; commitInput(e.target.value); }}
-              onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
-              style={inputStyle}
-              onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
-            />
-            <div style={{ display: "flex", borderRadius: "6px", border: "1px solid var(--origin-border-default)", overflow: "hidden" }}>
-              {(['ms', 's'] as DelayUnit[]).map(u => (
-                <button
-                  key={u}
-                  onClick={() => switchUnit(u)}
-                  style={{
-                    padding: "5px 9px",
-                    fontSize: "11px",
-                    fontWeight: 500,
-                    border: "none",
-                    borderRight: u === 'ms' ? "1px solid var(--origin-border-default)" : "none",
-                    cursor: "pointer",
-                    backgroundColor: unit === u ? "var(--origin-fg-default)" : "transparent",
-                    color: unit === u ? "var(--origin-bg-base)" : "var(--origin-fg-muted)",
-                    transition: "all 0.1s",
-                  }}
-                >
-                  {u}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
+    <div style={{ paddingBottom: "24px" }}>
+      <SectionHeading>AI Autocomplete</SectionHeading>
+      <SettingRow
+        title="Inline completions"
+        description="Ghost text as you type — Tab to accept, Escape to dismiss."
+      >
+        <Toggle on={completionsEnabled} onToggle={toggleCompletions} />
+      </SettingRow>
+
+      <SettingRow
+        title="Ghost text delay"
+        description="Wait time after typing stops before requesting a suggestion."
+      >
+        <input
+          type="number"
+          min={unit === 's' ? 0.1 : 100}
+          step={unit === 's' ? 0.1 : 50}
+          value={inputVal}
+          onChange={e => setInputVal(e.target.value)}
+          onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; commitInput(e.target.value); }}
+          onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+          style={inputStyle}
+          onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
+        />
+        <select
+          value={unit}
+          onChange={e => switchUnit(e.target.value as DelayUnit)}
+          style={selectStyle}
+        >
+          <option value="ms">ms</option>
+          <option value="s">s</option>
+        </select>
+      </SettingRow>
     </div>
   );
 }
@@ -704,13 +733,8 @@ function TerminalSection() {
 
   return (
     <div style={{ padding: "2px 0 16px" }}>
-      <div style={{
-        fontSize: "12px", fontWeight: 600, color: "var(--origin-fg-muted)",
-        textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px",
-      }}>
-        Shell Integration
-      </div>
-      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "20px", lineHeight: 1.6 }}>
+      <SectionHeading>Shell Integration</SectionHeading>
+      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "20px", lineHeight: 1.6, marginTop: "6px" }}>
         Paste the snippet for your shell into the file shown, then reload your shell. Once active, terminal tabs show a live directory and a colored dot for command exit status.
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -765,8 +789,17 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
+const SECTIONS: { id: Section; label: string; icon: React.ReactNode; keywords: string }[] = [
+  { id: "general",      label: "General",           icon: <SlidersHorizontal size={14} />, keywords: "autocomplete inline ghost text delay completions" },
+  { id: "ai",           label: "AI Providers",      icon: <Bot size={14} />,               keywords: "api key openai anthropic gemini provider model" },
+  { id: "appearance",   label: "Appearance",        icon: <Palette size={14} />,           keywords: "theme color dark light" },
+  { id: "terminal",     label: "Terminal",          icon: <Terminal size={14} />,          keywords: "shell integration bash zsh powershell" },
+  { id: "keybindings",  label: "Keyboard Shortcuts",icon: <Keyboard size={14} />,          keywords: "keybinding shortcut keys" },
+];
+
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [section, setSection] = useState<Section>("general");
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -776,133 +809,136 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const filteredSections = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SECTIONS;
+    return SECTIONS.filter(
+      s => s.label.toLowerCase().includes(q) || s.keywords.includes(q)
+    );
+  }, [query]);
+
   return createPortal(
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 10000,
-        backgroundColor: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(4px)",
-        display: "flex", alignItems: "center", justifyContent: "center",
+        backgroundColor: "var(--origin-bg-sidebar)",
+        display: "flex", flexDirection: "column",
+        overflow: "hidden",
       }}
-      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div
-        style={{
-          width: "min(760px, 92vw)",
-          height: "min(540px, 88vh)",
-          backgroundColor: "var(--origin-bg-sidebar)",
-          border: "1px solid var(--origin-border-default)",
-          borderRadius: "12px",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-        onMouseDown={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          padding: "0 16px",
-          height: "48px",
-          borderBottom: "1px solid var(--origin-border-default)",
-          flexShrink: 0,
-        }}>
-          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)" }}>
-            Settings
-          </span>
-          <button
-            onClick={onClose}
+      {/* Header */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "12px",
+        padding: "0 16px",
+        height: "48px",
+        borderBottom: "1px solid var(--origin-border-default)",
+        flexShrink: 0,
+      }}>
+        <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap" }}>
+          Settings
+        </span>
+
+        {/* Search */}
+        <div style={{ position: "relative", flex: 1, maxWidth: "360px" }}>
+          <Search size={13} style={{
+            position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)",
+            color: "var(--origin-fg-subtle)", pointerEvents: "none",
+          }} />
+          <input
+            value={query}
+            onChange={e => {
+              const v = e.target.value;
+              setQuery(v);
+              const q = v.trim().toLowerCase();
+              if (q) {
+                const first = SECTIONS.find(s => s.label.toLowerCase().includes(q) || s.keywords.includes(q));
+                if (first) setSection(first.id);
+              }
+            }}
+            placeholder="Search settings"
             style={{
-              marginLeft: "auto",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 26, height: 26,
+              width: "100%",
+              padding: "5px 9px 5px 28px",
               borderRadius: "6px",
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              color: "var(--origin-fg-muted)",
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              color: "var(--origin-fg-default)",
+              fontSize: "12px",
+              outline: "none",
+              boxSizing: "border-box",
             }}
-            onMouseEnter={e => {
-              e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
-              e.currentTarget.style.color = "var(--origin-fg-default)";
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = "var(--origin-fg-muted)";
-            }}
-          >
-            <X size={15} />
-          </button>
+            onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
+            onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; }}
+          />
         </div>
 
-        {/* Body */}
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          {/* Left nav */}
-          <div style={{
-            width: "172px",
-            flexShrink: 0,
-            borderRight: "1px solid var(--origin-border-default)",
-            padding: "10px 8px",
-            overflowY: "auto",
-          }}>
-            <div style={{ fontSize: "10px", fontWeight: 600, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.07em", padding: "4px 10px 6px" }}>
-              Settings
-            </div>
-            <NavItem
-              active={section === "general"}
-              icon={<SlidersHorizontal size={14} />}
-              label="General"
-              onClick={() => setSection("general")}
-            />
-            <NavItem
-              active={section === "ai"}
-              icon={<Bot size={14} />}
-              label="AI Providers"
-              onClick={() => setSection("ai")}
-            />
-            <NavItem
-              active={section === "prompts"}
-              icon={<MessageSquareDot size={14} />}
-              label="System Prompts"
-              onClick={() => setSection("prompts")}
-            />
-            <NavItem
-              active={section === "appearance"}
-              icon={<Palette size={14} />}
-              label="Appearance"
-              onClick={() => setSection("appearance")}
-            />
-            <NavItem
-              active={section === "terminal"}
-              icon={<Terminal size={14} />}
-              label="Terminal"
-              onClick={() => setSection("terminal")}
-            />
-            <NavItem
-              active={section === "keybindings"}
-              icon={<Keyboard size={14} />}
-              label="Keyboard Shortcuts"
-              onClick={() => setSection("keybindings")}
-            />
-          </div>
+        <button
+          onClick={onClose}
+          style={{
+            marginLeft: "auto",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 26, height: 26,
+            borderRadius: "6px",
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            color: "var(--origin-fg-muted)",
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)";
+            e.currentTarget.style.color = "var(--origin-fg-default)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.backgroundColor = "transparent";
+            e.currentTarget.style.color = "var(--origin-fg-muted)";
+          }}
+        >
+          <X size={15} />
+        </button>
+      </div>
 
-          {/* Content */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
-            <div style={{
-              fontSize: "15px", fontWeight: 600,
-              color: "var(--origin-fg-default)",
-              marginBottom: "14px",
-            }}>
-              {section === "general" ? "General" : section === "ai" ? "AI Providers" : section === "prompts" ? "System Prompts" : section === "appearance" ? "Appearance" : section === "keybindings" ? "Keyboard Shortcuts" : "Terminal"}
+      {/* Body */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Left nav */}
+        <div style={{
+          width: "196px",
+          flexShrink: 0,
+          borderRight: "1px solid var(--origin-border-default)",
+          padding: "10px 8px",
+          overflowY: "auto",
+        }}>
+          <div style={{ fontSize: "10px", fontWeight: 600, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.07em", padding: "4px 10px 6px" }}>
+            Settings
+          </div>
+          {filteredSections.map(s => (
+            <NavItem
+              key={s.id}
+              active={section === s.id}
+              icon={s.icon}
+              label={s.label}
+              onClick={() => setSection(s.id)}
+            />
+          ))}
+          {filteredSections.length === 0 && (
+            <div style={{ fontSize: "12px", color: "var(--origin-fg-subtle)", padding: "8px 10px" }}>
+              No matching settings
             </div>
-            {section === "general"    && <GeneralSection />}
-            {section === "ai"         && <AIProvidersSection />}
-            {section === "prompts"    && <PromptsSection />}
-            {section === "appearance" && <AppearanceSection />}
-            {section === "terminal"      && <TerminalSection />}
-            {section === "keybindings"  && <KeybindingsSection />}
+          )}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 32px" }}>
+          <div style={{ maxWidth: "760px" }}>
+            <div style={{ fontSize: "16px", fontWeight: 600, color: "var(--origin-fg-default)" }}>
+              {SECTIONS.find(s => s.id === section)?.label}
+            </div>
+            {section === "general"     && <GeneralSection />}
+            {section === "ai"          && <AIProvidersSection />}
+            {section === "appearance"  && <AppearanceSection />}
+            {section === "terminal"    && <TerminalSection />}
+            {section === "keybindings" && <KeybindingsSection />}
           </div>
         </div>
       </div>

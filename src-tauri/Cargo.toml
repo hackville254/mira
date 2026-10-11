@@ -34,6 +34,7 @@ reqwest = { version = "0.12", features = ["json"] }
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level   = "z"      # optimize for size (not speed)
