@@ -281,9 +281,9 @@ const DEFAULT_WIDTH = 520;
 const MIN_WIDTH    = 520;
 const MAX_WIDTH    = 900;
 // Agent mode: the surface is slimmer because the task rail + tool panels live beside it.
-const AGENT_DEFAULT_WIDTH = 380;
-const AGENT_MIN_WIDTH     = 320;
-const AGENT_MAX_WIDTH     = 560;
+const AGENT_DEFAULT_WIDTH = 300;
+const AGENT_MIN_WIDTH     = 290;
+const AGENT_MAX_WIDTH     = 520;
 const CTX_MIN     = 160;
 const CTX_MAX     = 480;
 const CTX_DEFAULT = 200;
@@ -1069,6 +1069,21 @@ export default function AiPanel({
     window.addEventListener("mouseup", onUp);
   }, [width, effMin, effMax]);
 
+  // Right-edge resize handle (Agent mode): dragging right widens the panel.
+  const onRightMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true; startX.current = e.clientX; startW.current = width;
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const next = Math.min(effMax, Math.max(effMin, startW.current + (ev.clientX - startX.current)));
+      setWidth(next);
+      localStorage.setItem("origin-ai-panel-width", String(next));
+    };
+    const onUp = () => { dragging.current = false; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [width, effMin, effMax]);
+
   const onCtxMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     dragging.current = true; startX.current = e.clientX; startW.current = contextWidth;
@@ -1098,6 +1113,15 @@ export default function AiPanel({
           <div
             onMouseDown={onMouseDown}
             className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10"
+            style={{ backgroundColor: "transparent" }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-border-default)"; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          />
+        )}
+        {renderMode === "agent" && (
+          <div
+            onMouseDown={onRightMouseDown}
+            className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10"
             style={{ backgroundColor: "transparent" }}
             onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-border-default)"; }}
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
