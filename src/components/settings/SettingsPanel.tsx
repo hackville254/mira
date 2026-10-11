@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Plus, Palette } from "lucide-react";
+import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
 import FileIcon from "../FileIcon";
 import { PROVIDERS } from "../ai/providers";
 import { loadApiKey, saveApiKey, deleteApiKey } from "../../lib/secrets";
 import { useTheme, builtinThemes } from "../../themes/ThemeContext";
 import type { OriginTheme } from "../../themes/types";
+import { detectDevEnvironment, type ToolInfo } from "../../lib/env";
+import { loadDevEnvPrefs, saveDevEnvPrefs, type DevEnvPrefs } from "../../lib/devEnv";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -191,10 +193,92 @@ function DevEnvironmentSection() {
     display: "flex", alignItems: "center", padding: "14px 16px",
   };
 
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [prefs, setPrefs] = useState<DevEnvPrefs>(() => loadDevEnvPrefs());
+
+  useEffect(() => {
+    let cancelled = false;
+    detectDevEnvironment()
+      .then(list => { if (!cancelled) setTools(list); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const byName = useMemo(() => {
+    const m: Record<string, ToolInfo | undefined> = {};
+    for (const t of tools) if (!m[t.name]) m[t.name] = t;
+    return m;
+  }, [tools]);
+
+  const python = byName["python3"] ?? byName["python"];
+  const node   = byName["node"];
+
+  function chooseTool(kind: "pythonPath" | "nodePath", label: string) {
+    const value = window.prompt(`${label} path (leave empty to use auto-detected):`, prefs[kind] ?? "");
+    if (value === null) return;
+    const next = { ...prefs, [kind]: value.trim() || null };
+    setPrefs(next);
+    saveDevEnvPrefs(next);
+  }
+
+  const toolRow = (label: string, tool: ToolInfo | undefined, icon: string, chosen: string | null, kind: "pythonPath" | "nodePath") => {
+    const found = !!tool?.path;
+    return (
+      <div style={{ ...rowStyle, borderBottom: "1px solid var(--origin-border-default)" }}>
+        <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>{label}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            onClick={() => chooseTool(kind, label)}
+            title={tool?.path ?? "Not detected"}
+            style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "5px 10px", borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "var(--origin-bg-base)",
+              fontSize: "12px",
+              color: found ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+              cursor: "pointer", maxWidth: 320,
+            }}
+          >
+            <span style={{ fontSize: 13 }}>{icon}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {loading
+                ? "Detecting…"
+                : chosen
+                  ? chosen
+                  : found
+                    ? `${label} ${tool?.version ?? ""}`.trim()
+                    : `${label} not found`}
+            </span>
+            <ChevronDown size={12} style={{ color: "var(--origin-fg-muted)", flexShrink: 0 }} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
-      <div style={{ fontSize: "20px", fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 28 }}>
-        Development Environment
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
+        <div style={{ fontSize: "20px", fontWeight: 600, color: "var(--origin-fg-default)", flex: 1 }}>
+          Development Environment
+        </div>
+        <button
+          onClick={() => {
+            setLoading(true);
+            detectDevEnvironment().then(setTools).finally(() => setLoading(false));
+          }}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 12px", borderRadius: 6,
+            border: "1px solid var(--origin-border-default)",
+            backgroundColor: "var(--origin-bg-base)",
+            fontSize: "12px", color: "var(--origin-fg-default)", cursor: "pointer",
+          }}
+        >
+          <RefreshCw size={13} /> Rescan
+        </button>
       </div>
 
       {/* Python */}
@@ -208,32 +292,7 @@ function DevEnvironmentSection() {
         marginBottom: 32,
         backgroundColor: cardBg,
       }}>
-        <div style={{ ...rowStyle, borderBottom: "1px solid var(--origin-border-default)" }}>
-          <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Interpreter</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 7,
-              padding: "5px 10px", borderRadius: 6,
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: "var(--origin-bg-base)",
-              fontSize: "12px", color: "var(--origin-fg-default)",
-              cursor: "pointer",
-            }}>
-              <span style={{ fontSize: 13 }}>🐍</span>
-              <span>Python 3.13.15 ('venv': venv)</span>
-              <ChevronDown size={12} style={{ color: "var(--origin-fg-muted)" }} />
-            </div>
-            <button style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 30, height: 30, borderRadius: 6,
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: "var(--origin-bg-base)",
-              color: "var(--origin-fg-muted)", cursor: "pointer",
-            }}>
-              <Plus size={15} />
-            </button>
-          </div>
-        </div>
+        {toolRow("Python Interpreter", python, "🐍", prefs.pythonPath, "pythonPath")}
         <div style={rowStyle}>
           <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Python Extension Configuration</span>
           <button style={{
@@ -258,32 +317,7 @@ function DevEnvironmentSection() {
         overflow: "hidden",
         backgroundColor: cardBg,
       }}>
-        <div style={rowStyle}>
-          <span style={{ fontSize: "13px", color: "var(--origin-fg-default)", flex: 1 }}>Node Version</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 7,
-              padding: "5px 10px", borderRadius: 6,
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: "var(--origin-bg-base)",
-              fontSize: "12px", color: "var(--origin-fg-default)",
-              cursor: "pointer",
-            }}>
-              <span style={{ fontSize: 13 }}>⬢</span>
-              <span>Node.js 24.21.0</span>
-              <ChevronDown size={12} style={{ color: "var(--origin-fg-muted)" }} />
-            </div>
-            <button style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 30, height: 30, borderRadius: 6,
-              border: "1px solid var(--origin-border-default)",
-              backgroundColor: "var(--origin-bg-base)",
-              color: "var(--origin-fg-muted)", cursor: "pointer",
-            }}>
-              <Plus size={15} />
-            </button>
-          </div>
-        </div>
+        {toolRow("Node Version", node, "⬢", prefs.nodePath, "nodePath")}
       </div>
     </div>
   );

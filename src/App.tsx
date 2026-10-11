@@ -30,6 +30,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { languageLabel } from "./components/editor/languageSupport";
 import { useWorkspace } from "./context/WorkspaceContext";
 import { useDebugContext } from "./context/DebugContext";
+import { useDiagnostics } from "./context/DiagnosticsContext";
 import { useExtensions, setHostDelegate, createDefaultHostServices } from "./context/ExtensionsContext";
 import { consentStatus, requiredCapabilities } from "./lib/extensions/permissions";
 import { readExtensionManifest } from "./lib/extensions";
@@ -40,6 +41,7 @@ import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 
 function App() {
   const { folderPath, setFolderPath } = useWorkspace();
+  const diagnostics = useDiagnostics();
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem('origin-onboarding') === 'true'
   );
@@ -607,6 +609,8 @@ function App() {
                     onResize={setTerminalHeight}
                     onClose={() => setTerminalOpen(false)}
                     hidden={!terminalOpen}
+                    rootPath={folderPath}
+                    onOpenFile={(path, line, col) => openTabAtLine(path, line, col)}
                   />
                 )}
               </div>
@@ -630,6 +634,9 @@ function App() {
         line={cursorPositions[activeTab ?? '']?.line ?? 1}
         col={cursorPositions[activeTab ?? '']?.col ?? 1}
         branch={gitBranch}
+        errors={diagnostics.errors}
+        warnings={diagnostics.warnings}
+        onShowProblems={() => { setTerminalOpen(true); requestAnimationFrame(() => terminalRef.current?.showProblems()); }}
         debugStatus={
           debugCtx.session.status === 'paused' ? 'paused' :
           debugCtx.session.status === 'running' ? 'running' : null

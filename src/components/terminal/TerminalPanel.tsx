@@ -3,6 +3,7 @@ import { Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
 import { terminalShellName } from "../../lib/terminal";
 import TerminalInstance from "./Terminal";
+import ProblemsPanel from "../problems/ProblemsPanel";
 
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 600;
@@ -25,6 +26,8 @@ export interface TerminalPanelHandle {
   clearActive: () => void;
   killActive: () => void;
   runInNewTab: (command: string) => void;
+  /** Ouvre l'onglet Problems dans le panneau bas. */
+  showProblems: () => void;
 }
 
 interface Props {
@@ -33,7 +36,13 @@ interface Props {
   onResize: (h: number) => void;
   onClose: () => void;
   hidden?: boolean;
+  /** Racine du workspace, pour afficher des chemins relatifs dans Problems. */
+  rootPath?: string | null;
+  /** Ouverture d'un fichier à une ligne (clic sur un diagnostic). */
+  onOpenFile?: (path: string, line: number, col: number) => void;
 }
+
+type BottomView = 'terminal' | 'problems';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -157,7 +166,8 @@ function ShellDot({ info }: { info: TabShellInfo | undefined }) {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden }, ref) {
+const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile }, ref) {
+  const [view, setView] = useState<BottomView>('terminal');
   const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd, "bash"));
   const [activeId, setActiveId] = useState<number>(() => {
     const idx = loadSavedActiveIndex(tabs.length);
@@ -175,7 +185,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
   useImperativeHandle(ref, () => ({
-    addTab,
+    addTab() { setView('terminal'); addTab(); },
     clearActive() {
       setClearKeys(prev => ({ ...prev, [activeId]: (prev[activeId] ?? 0) + 1 }));
     },
@@ -188,7 +198,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       setTabs((prev) => [...prev, { id, name, cwd }]);
       setActiveId(id);
       setPendingInputs(prev => ({ ...prev, [id]: command }));
+      setView('terminal');
     },
+    showProblems() { setView('problems'); },
   }));
 
   // ── Resolve the real shell name, then restore/create the initial tab ─────
@@ -355,33 +367,51 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           userSelect: "none",
         }}
       >
-        {/* Panel title */}
-        <span
-          style={{
-            flex: 1,
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--origin-fg-default)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          Terminal
-        </span>
+        {/* Panel tabs */}
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, overflow: "hidden" }}>
+          {([['terminal', 'Terminal'], ['problems', 'Problems']] as const).map(([id, label]) => {
+            const active = view === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setView(id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "0 8px", height: 22, borderRadius: 4, border: "none",
+                  background: active ? "var(--origin-bg-active)" : "transparent",
+                  color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                  fontSize: 12, fontWeight: active ? 600 : 400, cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--origin-bg-hover)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
 
-        {/* New terminal */}
-        <PanelBtn onClick={addTab} title="New Terminal">
-          <Plus size={13} />
-        </PanelBtn>
+        {/* New terminal — only relevant in the Terminal view */}
+        {view === "terminal" && (
+          <PanelBtn onClick={addTab} title="New Terminal">
+            <Plus size={13} />
+          </PanelBtn>
+        )}
 
         {/* Close panel */}
-        <PanelBtn onClick={onClose} title="Close Terminal (Ctrl+`)">
+        <PanelBtn onClick={onClose} title="Close Panel (Ctrl+`)">
           <X size={12} />
         </PanelBtn>
       </div>
 
-      {/* Body: terminal on the left, tab list on the right */}
+      {view === "problems" ? (
+        <ProblemsPanel
+          rootPath={rootPath}
+          onOpenFile={(path, line, col) => onOpenFile?.(path, line, col)}
+        />
+      ) : (
+      /* Body: terminal on the left, tab list on the right */
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
         {/* Terminal instances — all mounted, only active is visible */}
@@ -483,6 +513,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           })}
         </div>
       </div>
+      )}
     </div>
   );
 });

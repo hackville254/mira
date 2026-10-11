@@ -11,6 +11,8 @@ interface Props {
   warnings?: number;
   spaces?: number;
   lineEnding?: 'LF' | 'CRLF';
+  /** Ouvre le panneau Problems au clic sur le compteur. */
+  onShowProblems?: () => void;
 }
 
 function StatusItem({ children, onClick, title }: { children: React.ReactNode; onClick?: () => void; title?: string }) {
@@ -41,6 +43,7 @@ function StatusItem({ children, onClick, title }: { children: React.ReactNode; o
 export default function StatusBar({
   language, line, col, branch, debugStatus,
   errors = 0, warnings = 0, spaces = 2, lineEnding = 'LF',
+  onShowProblems,
 }: Props) {
   const { theme, themes, setTheme } = useTheme();
   const isDark = theme.type === 'dark';
@@ -97,7 +100,7 @@ export default function StatusBar({
         </StatusItem>
 
         {/* Errors & Warnings */}
-        <StatusItem title="Problems">
+        <StatusItem title="Problems" onClick={onShowProblems}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: errors > 0 ? 'var(--origin-semantic-error)' : undefined }}>
             <Icon icon="lucide:x-circle" width={11} />
             {errors}

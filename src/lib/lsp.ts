@@ -4,30 +4,22 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
 // ── Language detection ────────────────────────────────────────────────────────
+// La détection est déléguée au registre unique `lib/languages.ts` afin d'éviter
+// toute divergence entre coloration, label et identité LSP.
+import {
+  getLspLanguage as resolveLspLanguage,
+  getLspLanguageId as resolveLspLanguageId,
+  type LspLanguage,
+} from './languages';
 
-export type LspLanguage = 'typescript' | 'rust' | 'python';
+export type { LspLanguage };
 
 export function getLspLanguage(filePath: string): LspLanguage | null {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  switch (ext) {
-    case 'ts': case 'tsx': case 'js': case 'jsx': return 'typescript';
-    case 'rs': return 'rust';
-    case 'py': return 'python';
-    default: return null;
-  }
+  return resolveLspLanguage(filePath);
 }
 
 export function getLspLanguageId(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  switch (ext) {
-    case 'ts':  return 'typescript';
-    case 'tsx': return 'typescriptreact';
-    case 'js':  return 'javascript';
-    case 'jsx': return 'javascriptreact';
-    case 'rs':  return 'rust';
-    case 'py':  return 'python';
-    default:    return 'plaintext';
-  }
+  return resolveLspLanguageId(filePath);
 }
 
 export function pathToUri(filePath: string): string {

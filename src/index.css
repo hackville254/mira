@@ -49,6 +49,12 @@
   to   { transform: rotate(360deg); }
 }
 
+/* Source Control : n'affiche les actions (stage/discard) qu'au survol de la ligne. */
+.origin-scm-actions { opacity: 0; transition: opacity 0.1s ease; }
+.origin-scm-row:hover .origin-scm-actions { opacity: 1; }
+.origin-scm-row:hover { background-color: var(--origin-bg-hover); }
+.origin-scm-actions button:hover { background-color: var(--origin-bg-hover); color: var(--origin-fg-default); }
+
 *, *::before, *::after {
   box-sizing: border-box;
   scrollbar-width: thin;

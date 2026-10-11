@@ -5,6 +5,123 @@
 
 ---
 
+### [2026-10-12T14:30] | Registre unique de langages (registre + alignement coloration/label/LSP)
+
+- **Contexte :**
+  Travailler « proprement avec tous les langages » était impossible : trois tables de langages **divergentes** coexistaient — `languageSupport.ts` (coloration + label), `lsp.ts` (identité LSP) et `ExtensionsContext.tsx` (`LANGUAGE_EXTENSIONS` pour les grammaires TextMate). Conséquences réelles : la StatusBar pouvait afficher « Shell Script » ou « TOML » alors qu'aucune coloration n'était appliquée (`default → []`), SCSS/Sass étaient routés vers du CSS pur, et seuls 3 langages (TS/JS, Rust, Python) avaient une identité LSP reconnue.
+
+- **Modifications effectuées :**
+  - `src/lib/languages.ts` (**nouveau**) : **source de vérité unique**. Chaque `LanguageDef` déclare `id`, `label`, `extensions[]`, `filenames[]` (ex. `Dockerfile`, `Makefile`), une **factory de parser** CodeMirror, et l'identité LSP optionnelle (`lsp` + `languageId`). Couverture des langages courants : TS/TSX/JS/JSX, CSS/SCSS/Sass, HTML, JSON, Markdown, XML/SVG, Rust, Python, Go, C, C++, Java, C#, Scala, Kotlin, Swift, Dart, Ruby, PHP, Lua, Perl, R, Erlang, Haskell, Clojure, Shell, Dockerfile, Makefile, SQL, YAML, TOML, INI, Protobuf. Index dérivés (`byId`/`byFilename`/`byExtension`) construits une fois ; résolution par **nom de fichier exact puis extension**. Garde-fou : id dupliqué → throw au chargement.
+  - `src/components/editor/languageSupport.ts` : réduit à une **façade** ré-exportant `getLanguageExtension`/`languageLabel`/`resolveLanguage` depuis le registre (imports existants inchangés).
+  - `src/lib/lsp.ts` : `getLspLanguage`/`getLspLanguageId` délèguent au registre ; `type LspLanguage` ré-exporté pour ne pas casser les consommateurs.
+  - `src/context/DiagnosticsContext.tsx` : la liste figée `['typescript','rust','python']` est remplacée par `getSupportedLspLanguages()` dérivé du registre.
+  - `package.json` : dépendance `@codemirror/legacy-modes@^6.5.5` (modes CM5 pour les langages sans parser moderne).
+
+- **Décisions Techniques :**
+  - **Un seul module déclaratif** plutôt que trois tables : élimine par construction les divergences label≠coloration≠LSP.
+  - Parsers modernes (`@codemirror/lang-*`) quand ils existent (meilleure précision : Lezer), sinon `StreamLanguage.define` sur un mode `legacy-modes`. Un helper `legacy()` isole le **seul cast nécessaire** : `legacy-modes` type ses parsers via `@codemirror/streamparser` (paquet de compat CM5), nominalement distinct de `@codemirror/language` bien que structurellement identique. Le cast est sûr (même contrat runtime) et documenté.
+  - PHP n'a **aucun** mode legacy-modes → déclaré avec `parser: () => []` : le label « PHP » est correct sans coloration, et une grammaire TextMate fournie par une extension peut le compléter (priorité `dynLangCompartment` ≥ coloration de base).
+  - LSP **volontairement** non élargi ici : `lsp.rs` (côté Rust) reste sur une allowlist stricte (3 serveurs). Élargir l'identité LSP sans serveur côté backend créerait des tentatives de spawn vouées à l'échec. Étape suivante séparée.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `languages.ts` (nouveau), `languageSupport.ts`, `lsp.ts`, `DiagnosticsContext.tsx`, `package.json`.
+  - `Editor.tsx` : la coloration de base `getLanguageExtension(path)` est **surchargée** par `dynLangCompartment` si une extension fournit une grammaire — comportement voulu (VS Code-like).
+  - Aucune rupture d'API : `languageLabel`/`getLanguageExtension`/`getLspLanguage` conservent leurs signatures.
+  - Validé : `tsc --noEmit` OK, `eslint` OK (0 erreur), `build:frontend` OK.
+
+- **Prochaines étapes :**
+  - Élargir l'identité LSP par **config workspace** (gopls, clangd, jdtls, etc.) côté `lsp.rs` + préférences, avec commandes d'installation.
+  - Vue « langage détecté » (registre) dans Settings pour transparence.
+  - Ajouter bouton **Run** par langage (pilote via fichier de config workspace).
+
+---
+
+### [2026-10-12T13:15] | Problems panel LSP (diagnostics globaux + StatusBar)
+
+- **Contexte :**
+  Les diagnostics LSP (`publishDiagnostics`) arrivaient déjà du serveur et s'affichaient dans l'éditeur (squigly + gutter via `codemirror-languageserver`), mais aucun **état global** ne les agrégeait : la StatusBar affichait `errors`/`warnings` figés à 0 (props jamais alimentées depuis `App.tsx`) et il n'existait aucun panneau Problems.
+
+- **Modifications effectuées :**
+  - `src/context/DiagnosticsContext.tsx` (nouveau) : provider écoutant `lsp-notification-{typescript,rust,python}`, filtrant `textDocument/publishDiagnostics`, convertissant URI→chemin (`uriToPath`, gère `file:///c%3A/...`) et exposant `byFile: Map<path, DiagnosticEntry[]>`, `errors`, `warnings`, `total`. Sévérité LSP 1–4 normalisée en `error|warning|info|hint`, lignes/colonnes converties de 0-based à 1-based.
+  - `src/main.tsx` : `DiagnosticsProvider` monté autour de `<App/>`.
+  - `src/components/problems/ProblemsPanel.tsx` (nouveau) : liste groupée par fichier (accordéon), tri erreurs d'abord puis par ligne, filtre par sévérité (All/Errors/Warnings/Info), chemins relatifs au workspace, clic sur un diagnostic → ouverture du fichier à la ligne/colonne.
+  - `src/components/terminal/TerminalPanel.tsx` : transformé en **panneau bas à onglets** (Terminal / Problems). Barre d'onglets en header, `activeView` interne, `showProblems()` ajouté au handle, `addTab`/`runInNewTab` rebasculent sur la vue Terminal. Nouvelles props `rootPath`, `onOpenFile`.
+  - `src/components/StatusBar.tsx` : compteur Problems rendu cliquable (`onShowProblems`).
+  - `src/App.tsx` : `useDiagnostics()` branché sur la StatusBar (`errors`/`warnings` réels), clic ouvre le panneau bas + bascule sur Problems (`showProblems` via `requestAnimationFrame`), props `rootPath`/`onOpenFile` passées au `TerminalPanel`.
+  - `src/components/ai/AgentModeView.tsx` : mêmes props passées au `TerminalPanel` en mode AI.
+
+- **Décisions Techniques :**
+  - Écoute permanente des 3 langues (pas d'abonnement par fichier) : simple et robuste ; le serveur envoie des diagnostics vides à la fermeture (`didClose`), donc les fichiers disparaissent automatiquement sans logique de nettoyage côté client.
+  - Le panneau Problems vit **dans** le panneau bas existant (onglet) plutôt qu'un nouveau système de panneaux : réutilise le montage/redimensionnement déjà en place, zéro duplication.
+  - Pas de nouveaux canaux IPC : tout passe par les événements LSP déjà émis.
+  - API volontairement minimale (pas de `clearFile`/`clearAll`) — non utilisés, retirés pour éviter la dette.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `DiagnosticsContext.tsx` (nouveau), `ProblemsPanel.tsx` (nouveau), `main.tsx`, `TerminalPanel.tsx`, `StatusBar.tsx`, `App.tsx`, `AgentModeView.tsx`.
+  - Le `TerminalPanel` reste rétro-compatible : `rootPath`/`onOpenFile` optionnels, les autres call sites (TitleBar, CommandPalette, keybindings) sont inchangés.
+  - Validé : `typecheck` OK, `lint` 0 erreur (warnings préexistants), `build:frontend` OK.
+
+- **Prochaines étapes :**
+  - Persister l'onglet actif du panneau bas (Terminal/Problems) si souhaité.
+  - Ajouter un onglet « Output » / « Debug Console » au même panneau bas.
+  - Raccourcis clavier : Ctrl+Shift+M (focus Problems), F8/Shift+F8 (navigation entre diagnostics).
+
+---
+
+### [2026-10-12T12:30] | Settings réels — Development Environment
+
+- **Contexte :**
+  La section « Development Environment » de Settings affichait des valeurs **codées en dur** (`Python 3.13.15 ('venv': venv)`, `Node.js 24.21.0`) et des boutons inertes. Objectif : refléter la machine réelle et permettre de choisir un interpréteur. Périmètre validé avec l'utilisateur : **Dev Env uniquement**, persistance via **localStorage**, détection **automatique au chargement**.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/env.rs` (nouveau) : commande `detect_dev_environment` qui détecte `python3`/`python`, `node`/`npm`, `git` via `Command::new(exe).arg("--version")` (jamais de shell), résout le PATH sans shell, parse la version. Renvoie un `ToolInfo { name, path, version }` par outil (avec `path/version = None` si introuvable).
+  - `src-tauri/src/lib.rs` : `mod env;` + enregistrement de `env::detect_dev_environment` dans `generate_handler!`.
+  - `src/lib/env.ts` (nouveau) : wrapper `detectDevEnvironment()` typé.
+  - `src/lib/devEnv.ts` (nouveau) : `loadDevEnvPrefs` / `saveDevEnvPrefs` (clé `origin-devenv`) pour le choix manuel d'interpréteur.
+  - `src/components/settings/SettingsPanel.tsx` : `DevEnvironmentSection` réécrite — détection réelle au montage (état `Detecting…` → version réelle ou `not found`), bouton **Rescan** fonctionnel, sélection d'interpréteur persistée, `RefreshCw` importé, `Plus` retiré (inutilisé).
+
+- **Décisions Techniques :**
+  - Détection côté Rust plutôt que Node : cohérent avec `git.rs`/`system.rs`, aucun accès shell, allowlist de binaires fixes.
+  - `Command::new` + argument littéral `--version` : aucun input utilisateur concaténé ⇒ pas de surface d'injection.
+  - Persistance localStorage (et non fichier par workspace) pour rester cohérent avec le reste de l'app (`origin-ai-provider`, thème) et éviter de nouvelles commandes IPC.
+  - `chooseTool` via `window.prompt` : solution minimale acceptable ; la vraie sélection native (dialog) pourra être ajoutée plus tard si besoin.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `env.rs`, `lib.rs`, `env.ts`, `devEnv.ts`, `SettingsPanel.tsx`.
+  - Aucun effet de bord sur les autres sections. Le résultat de détection n'est pas mis en cache (rescan léger).
+  - Validé : `cargo check` OK (warning préexistant `dap.rs:75`), `npm run typecheck` OK, `npm run lint` 0 erreur, `npm run build:frontend` OK.
+
+- **Prochaines étapes :**
+  - Sélection native d'interpréteur via `tauri-plugin-dialog` (remplacer `window.prompt`).
+  - Brancher le « Python Extension Configuration » / « Go to Settings » sur la vraie section concernée.
+  - Sections restantes encore « Coming soon » (General, Appearance persistés, etc.).
+
+---
+
+### [2026-10-12T11:45] | Source Control — Git complet + AI Commit réel
+
+- **Contexte :**
+  Les boutons du panneau Source Control étaient majoritairement morts (stage/unstage/discard/pull/push/fetch/branches/amend/sync), et l'« AI commit » fabriquait un message en concaténant des noms de fichiers au lieu d'appeler le LLM.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/git.rs` : ~11 nouvelles commandes — `git_stage`, `git_stage_all`, `git_unstage`, `git_discard`, `git_pull`, `git_push`, `git_fetch`, `git_list_branches`, `git_checkout`, `git_create_branch`, `git_commit_amend`, `git_commit_sync`, `git_diff`. Ajout des validateurs `reject_unsafe_arg`, `validate_branch_name` (`git check-ref-format --branch`), `validate_rel_path`.
+  - `src-tauri/src/lib.rs` : enregistrement des commandes.
+  - `src/lib/git.ts` : wrappers TS + interface `BranchEntry`.
+  - `src/lib/gitCommitMessage.ts` (nouveau) : génération IA via `generateText` + `buildLanguageModel` sur le diff réel (`git_diff`).
+  - `src/components/SourceTreePanel.tsx` : staging/discard par fichier (actions au survol), menu Branches, Pull/Push/Fetch, amend/sync réels, bouton **Auto** = auto-refresh 5 s, « Unstage All », suppression du « Discard All » trompeur.
+  - `src/index.css` : hover reveal `.origin-scm-actions`.
+
+- **Décisions Techniques :**
+  - Sécurité : jamais de shell (`Command::args`), noms de branche validés par la référence officielle git, suppression de fichier untracked seulement si `canonicalize` confirme le confinement au repo.
+
+- **Impacts & Dépendances :**
+  - Validé : `cargo check`, `typecheck`, `lint`, `build:frontend` OK.
+
+- **Prochaines étapes :**
+  - Voir entrée Dev Env ci-dessus.
+
+---
+
 ### [2026-10-11T21:50] | Panneau Agent (IDE) : ouvert par défaut
 
 - **Contexte :**

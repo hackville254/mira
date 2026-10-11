@@ -8,6 +8,7 @@ import { ToastProvider } from "./components/ui/Toast";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { DebugProvider } from "./context/DebugContext";
 import { ExtensionsProvider } from "./context/ExtensionsContext";
+import { DiagnosticsProvider } from "./context/DiagnosticsContext";
 
 // Apply persisted appearance preferences before the first paint so there is no
 // flash of the default density/status-bar state.
@@ -25,7 +26,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
           <ExtensionsProvider>
             <ToastProvider>
               <DebugProvider>
-                <App />
+                <DiagnosticsProvider>
+                  <App />
+                </DiagnosticsProvider>
               </DebugProvider>
             </ToastProvider>
           </ExtensionsProvider>

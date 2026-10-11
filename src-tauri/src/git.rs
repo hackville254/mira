@@ -9,6 +9,64 @@ pub(crate) fn git_cmd() -> std::process::Command {
     cmd
 }
 
+/// Rejette toute entrée pouvant être interprétée comme une option git (commence
+/// par `-`) ou contenant des métacaractères. Les arguments sont de toute façon
+/// passés via `Command::args` (jamais un shell), donc il n'y a pas d'injection
+/// shell possible ; ce filtre empêche uniquement l'injection d'options git
+/// (ex: `--upload-pack=...`) via un nom de branche ou un chemin.
+fn reject_unsafe_arg(value: &str, kind: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{kind} cannot be empty"));
+    }
+    if value.starts_with('-') {
+        return Err(format!("{kind} cannot start with '-': {value}"));
+    }
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return Err(format!("{kind} contains illegal characters"));
+    }
+    Ok(())
+}
+
+/// Valide un nom de branche en s'appuyant sur `git check-ref-format --branch`,
+/// qui est la référence officielle des noms de branche valides.
+fn validate_branch_name(path: &str, name: &str) -> Result<(), String> {
+    reject_unsafe_arg(name, "branch name")?;
+    let out = git_cmd()
+        .args(["check-ref-format", "--branch", name])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("invalid branch name: {name}"));
+    }
+    Ok(())
+}
+
+/// Valide qu'un chemin de fichier relatif reste confiné à la racine du dépôt.
+/// Refuse les chemins absolus, les remontées (`..`) hors racine et les options.
+fn validate_rel_path(rel: &str) -> Result<(), String> {
+    reject_unsafe_arg(rel, "path")?;
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        return Err(format!("path must be relative: {rel}"));
+    }
+    // Normalise les composants et vérifie qu'on ne remonte jamais au-dessus de la racine.
+    let mut depth: i32 = 0;
+    for comp in p.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err(format!("path escapes repository: {rel}"));
+                }
+            }
+            std::path::Component::Normal(_) => depth += 1,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn git_branch(path: String) -> Option<String> {
     let out = git_cmd()
@@ -187,4 +245,261 @@ pub fn git_commit_push(path: String, title: String, description: String) -> Resu
         return Err(String::from_utf8_lossy(&push.stderr).into_owned());
     }
     Ok(String::from_utf8_lossy(&push.stdout).into_owned())
+}
+
+// ── Staging ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn git_stage(path: String, file: String) -> Result<String, String> {
+    validate_rel_path(&file)?;
+    let out = git_cmd()
+        .args(["add", "--", &file])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[tauri::command]
+pub fn git_stage_all(path: String) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["add", "-A"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[tauri::command]
+pub fn git_unstage(path: String, file: String) -> Result<String, String> {
+    validate_rel_path(&file)?;
+    let out = git_cmd()
+        .args(["reset", "-q", "HEAD", "--", &file])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Restaure un fichier à son état HEAD. Si le fichier est non suivi (untracked),
+/// `git checkout` échoue : on le supprime alors du disque côté Rust.
+#[tauri::command]
+pub fn git_discard(path: String, file: String) -> Result<String, String> {
+    validate_rel_path(&file)?;
+    let out = git_cmd()
+        .args(["checkout", "--", &file])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    // Fichier probablement untracked : on le supprime s'il est bien confiné.
+    let target = std::path::Path::new(&path).join(&file);
+    let canon_root = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let canon_target = std::fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    if !canon_target.starts_with(&canon_root) {
+        return Err("refusing to delete path outside repository".to_string());
+    }
+    if canon_target.is_dir() {
+        std::fs::remove_dir_all(&canon_target).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&canon_target).map_err(|e| e.to_string())?;
+    }
+    Ok("discarded".to_string())
+}
+
+// ── Remote operations ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn git_pull(path: String) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["pull"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[tauri::command]
+pub fn git_push(path: String) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["push"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[tauri::command]
+pub fn git_fetch(path: String) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["fetch", "--all", "--prune"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// ── Branches ──────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct BranchEntry {
+    name:    String,
+    current: bool,
+    remote:  bool,
+}
+
+#[tauri::command]
+pub fn git_list_branches(path: String) -> Vec<BranchEntry> {
+    let Ok(out) = git_cmd()
+        .args(["branch", "-a", "--no-color", "--format=%(refname:short)\t%(HEAD)"])
+        .current_dir(&path)
+        .output()
+    else { return vec![] };
+    if !out.status.success() { return vec![]; }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let mut p = l.splitn(2, '\t');
+            let raw = p.next().unwrap_or("").trim().to_string();
+            let head = p.next().unwrap_or("").trim();
+            let remote = raw.starts_with("remotes/") || raw.starts_with("origin/");
+            let name = raw.strip_prefix("remotes/").unwrap_or(&raw).to_string();
+            BranchEntry { name, current: head == "*", remote }
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn git_checkout(path: String, branch: String) -> Result<String, String> {
+    // Une branche distante `origin/x` doit être suivie localement.
+    let is_remote = branch.starts_with("origin/") || branch.starts_with("remotes/");
+    validate_branch_name(&path, branch.strip_prefix("remotes/").unwrap_or(&branch))?;
+    let out = if is_remote {
+        let local = branch.rsplit('/').next().unwrap_or(&branch);
+        git_cmd()
+            .args(["checkout", "-B", local, "--track", &branch])
+            .current_dir(&path)
+            .output()
+    } else {
+        git_cmd()
+            .args(["checkout", &branch])
+            .current_dir(&path)
+            .output()
+    }
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[tauri::command]
+pub fn git_create_branch(path: String, branch: String) -> Result<String, String> {
+    validate_branch_name(&path, &branch)?;
+    let out = git_cmd()
+        .args(["checkout", "-b", &branch])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// ── Amend / Sync ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn git_commit_amend(path: String, title: String, description: String) -> Result<String, String> {
+    let stage = git_cmd()
+        .args(["add", "-A"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !stage.status.success() {
+        return Err(String::from_utf8_lossy(&stage.stderr).into_owned());
+    }
+    let mut cmd = git_cmd();
+    cmd.args(["commit", "--amend", "-m", &title]).current_dir(&path);
+    if !description.is_empty() {
+        cmd.args(["-m", &description]);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Commit & Sync : commit, puis pull (rebase pour éviter un merge commit), puis push.
+#[tauri::command]
+pub fn git_commit_sync(path: String, title: String, description: String) -> Result<String, String> {
+    git_commit(path.clone(), title, description)?;
+    let pull = git_cmd()
+        .args(["pull", "--rebase"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !pull.status.success() {
+        return Err(format!("pull failed: {}", String::from_utf8_lossy(&pull.stderr)));
+    }
+    let push = git_cmd()
+        .args(["push"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !push.status.success() {
+        return Err(String::from_utf8_lossy(&push.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&push.stdout).into_owned())
+}
+
+// ── Diff (pour la génération IA du message de commit) ─────────────────────────
+
+/// Retourne le diff complet des changements (staged + unstaged) par rapport à
+/// HEAD, tronqué à `max_bytes` pour ne pas saturer le contexte du modèle.
+#[tauri::command]
+pub fn git_diff(path: String, max_bytes: Option<usize>) -> String {
+    let cap = max_bytes.unwrap_or(12_000);
+    let staged = git_cmd()
+        .args(["diff", "--cached", "--no-color"])
+        .current_dir(&path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let unstaged = git_cmd()
+        .args(["diff", "--no-color"])
+        .current_dir(&path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let mut combined = format!("{staged}{unstaged}");
+    if combined.len() > cap {
+        combined.truncate(cap);
+        combined.push_str("\n… [diff truncated]");
+    }
+    combined
 }

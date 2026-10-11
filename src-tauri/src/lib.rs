@@ -1,5 +1,6 @@
 mod ai;
 mod dap;
+mod env;
 mod extensions;
 mod extensions_market;
 mod fs;
@@ -124,7 +125,21 @@ pub fn run() {
             git::git_log_full,
             git::git_commit,
             git::git_commit_push,
+            git::git_stage,
+            git::git_stage_all,
+            git::git_unstage,
+            git::git_discard,
+            git::git_pull,
+            git::git_push,
+            git::git_fetch,
+            git::git_list_branches,
+            git::git_checkout,
+            git::git_create_branch,
+            git::git_commit_amend,
+            git::git_commit_sync,
+            git::git_diff,
             system::sys_memory,
+            env::detect_dev_environment,
             terminal::terminal_create,
             terminal::terminal_shell_name,
             terminal::terminal_write,

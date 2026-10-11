@@ -428,6 +428,8 @@ export default function AgentModeView(props: AgentModeViewProps) {
               onResize={setTerminalHeight}
               onClose={() => setTerminalOpen(false)}
               hidden={false}
+              rootPath={folderPath}
+              onOpenFile={(path, line, col) => openTabAtLine(path, line, col)}
             />
           )}
 
