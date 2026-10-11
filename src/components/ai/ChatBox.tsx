@@ -741,7 +741,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           style={{ display:"flex", alignItems:"center", gap:"4px", fontSize:"12px", fontWeight:500,
             padding:"2px 6px", borderRadius:"9999px", border:"1px solid var(--origin-border-default)",
             color:"var(--origin-fg-muted)", userSelect:"none", cursor:"pointer",
-            transition:"background 0.1s, color 0.1s", maxWidth:"150px", minWidth:0 }}>
+            transition:"background 0.1s, color 0.1s", maxWidth:"96px", minWidth:0 }}>
           <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{modelLabel}</span>
           <ChevronDown size={10} style={{ flexShrink: 0 }} />
         </div>

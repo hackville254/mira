@@ -135,7 +135,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
               style={{
                 padding: "0 16px", height: "100%",
                 background: toolTab === t ? "var(--origin-bg-editor)" : "transparent",
-                border: "none", borderBottom: toolTab === t ? "2px solid var(--origin-accent-blue)" : "2px solid transparent",
+                border: "none",
                 color: toolTab === t ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
                 cursor: "pointer", fontSize: "12px", fontWeight: 600,
                 textTransform: "capitalize",
