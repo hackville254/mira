@@ -37,7 +37,7 @@ export default function FileTree({
     dragPaths, dropTarget, canPaste,
     toggleExpanded, setExpandedAll, select, setSelected,
     beginDrag, endDrag, setDropTarget, dropInto, importInto,
-    copyToClipboard, pasteInto,
+    copyToClipboard, pasteInto, pruneSelection,
     startRename, cancelRename, commitRename,
     startCreate, cancelCreate, commitCreate, refresh,
   } = explorer;
@@ -74,9 +74,12 @@ export default function FileTree({
     const results = await deleteEntries(ctx, paths);
     const failed = results.filter(r => !r.ok);
     if (failed.length) showToast(String(failed[0].error), "error");
+    // Retire de la sélection les chemins réellement supprimés, sinon l'action
+    // suivante (supprimer, couper…) viserait des chemins devenus inexistants.
+    pruneSelection(results.filter(r => r.ok && r.path).map(r => r.path as string));
     // Le refresh global recharge les dossiers parents touchés.
     refresh();
-  }, [folderPath, showToast, refresh]);
+  }, [folderPath, showToast, refresh, pruneSelection]);
 
   // ── Copier / couper / coller ──────────────────────────────────────────────────
   const doCopy = useCallback((paths: string[], mode: "copy" | "cut") => {

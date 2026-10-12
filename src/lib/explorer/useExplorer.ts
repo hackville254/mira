@@ -93,6 +93,8 @@ export interface UseExplorerResult {
   cancelCreate: () => void;
   commitCreate: (parentPath: string, kind: "file" | "folder", name: string) => Promise<void>;
   canPaste: boolean;
+  /** Retire de la sélection les chemins supprimés (après un Delete). */
+  pruneSelection: (removed: string[]) => void;
   refresh: () => void;
 }
 
@@ -284,6 +286,30 @@ export function useExplorer(
   const beginDrag = useCallback((paths: string[]) => { dragPathsRef.current = paths; setDragPaths(paths); }, []);
   const endDrag = useCallback(() => { dragPathsRef.current = []; setDragPaths([]); setDropTarget(null); }, []);
 
+  /**
+   * Après un déplacement (drag interne ou couper/coller), la sélection suit les
+   * fichiers vers leur **nouvelle destination** — comme VS Code. Sans cela, la
+   * sélection pointerait sur des chemins devenus inexistants et l'action
+   * suivante (supprimer, recouper…) échouerait silencieusement.
+   */
+  const followMoved = useCallback((results: ops.OpResult[]) => {
+    const moved = results.filter(r => r.ok && r.path).map(r => r.path as string);
+    if (moved.length === 0) return;
+    setSelectedState(new Set(moved));
+    setAnchor(moved[0]);
+  }, []);
+
+  /** Retire de la sélection les chemins qui n'existent plus (après suppression). */
+  const pruneSelection = useCallback((removed: string[]) => {
+    if (removed.length === 0) return;
+    const gone = new Set(removed.map(normalize));
+    setSelectedState(prev => {
+      const next = new Set([...prev].filter(p => !gone.has(normalize(p))));
+      return next.size === prev.size ? prev : next;
+    });
+    setAnchor(prev => (prev && gone.has(normalize(prev)) ? null : prev));
+  }, []);
+
   const dropInto = useCallback(async (targetDir: string, sources?: string[]): Promise<ops.OpResult[]> => {
     // Les sources sont passées explicitement par l'appelant (session de drag) :
     // cela évite une dépendance à `dragPaths` qui recréait la fonction à chaque
@@ -299,8 +325,9 @@ export function useExplorer(
   /** Drop de fichiers venus de l'OS (Finder/Explorer) → copiés dans la cible. */
   const importInto = useCallback(async (targetDir: string, externalPaths: string[]) => {
     if (!opsCtxRef.current || externalPaths.length === 0) return;
-    await ops.copyInto(opsCtxRef.current, externalPaths, targetDir);
-  }, []);
+    const results = await ops.copyInto(opsCtxRef.current, externalPaths, targetDir);
+    followMoved(results);
+  }, [followMoved]);
 
   // ── Presse-papier ───────────────────────────────────────────────────────────
 
@@ -313,12 +340,15 @@ export function useExplorer(
   const pasteInto = useCallback(async (targetDir: string) => {
     if (!opsCtxRef.current || !clipboard || clipboard.paths.length === 0) return;
     if (clipboard.mode === "cut") {
-      await ops.moveInto(opsCtxRef.current, clipboard.paths, targetDir);
-      setClipboard(null);
+      const results = await ops.moveInto(opsCtxRef.current, clipboard.paths, targetDir);
+      followMoved(results);
+      // On ne vide le presse-papier que si le déplacement a réussi.
+      if (results.some(r => r.ok)) setClipboard(null);
     } else {
-      await ops.copyInto(opsCtxRef.current, clipboard.paths, targetDir);
+      const results = await ops.copyInto(opsCtxRef.current, clipboard.paths, targetDir);
+      followMoved(results);
     }
-  }, [clipboard]);
+  }, [clipboard, followMoved]);
 
   // ── Renommage inline ────────────────────────────────────────────────────────
 
@@ -377,7 +407,7 @@ export function useExplorer(
     renamingPath, pendingCreate,
     toggleExpanded, setExpandedAll, select, setSelected,
     beginDrag, endDrag, setDropTarget, dropInto, importInto,
-    copyToClipboard, pasteInto, canPaste,
+    copyToClipboard, pasteInto, canPaste, pruneSelection,
     startRename, cancelRename, commitRename,
     startCreate, cancelCreate, commitCreate,
     refresh,

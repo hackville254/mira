@@ -137,6 +137,19 @@ export default function ExplorerTree(props: Props) {
   useEffect(() => {
     const DRAG_THRESHOLD = 5; // px : au-delà, c'est un drag (pas un clic).
 
+    // Cible interne du drag : le dossier sous le curseur, sinon la **racine** du
+    // workspace quand on lâche dans la zone vide de l'explorateur (comme VS Code,
+    // ce qui permet de ressortir un fichier d'un sous-dossier vers la racine).
+    const internalTargetAt = (x: number, y: number): string | null => {
+      const dir = targetDirAt(x, y);
+      if (dir) return dir;
+      const root = scrollerRef.current;
+      if (!root) return null;
+      const r = root.getBoundingClientRect();
+      const inside = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      return inside ? props.rootPath : null;
+    };
+
     const onMove = (e: PointerEvent) => {
       const s = dragSession.current;
       if (!s || e.pointerId !== s.pointerId) return;
@@ -154,7 +167,7 @@ export default function ExplorerTree(props: Props) {
       }
       // Ghost qui suit le curseur + désigne le dossier sous le curseur.
       setDragGhost({ x: e.clientX, y: e.clientY, count: s.paths.length });
-      onSetDropTarget(targetDirAt(e.clientX, e.clientY));
+      onSetDropTarget(internalTargetAt(e.clientX, e.clientY));
     };
 
     const cleanupDragStyles = () => {
@@ -169,7 +182,9 @@ export default function ExplorerTree(props: Props) {
       cleanupDragStyles();
       setDragGhost(null);
       if (s.active) {
-        const dir = targetDirAt(e.clientX, e.clientY);
+        const dir = internalTargetAt(e.clientX, e.clientY);
+        // La racine et les lignes peuvent être des cibles ; on ignore seulement
+        // quand la cible est l'un des éléments glissés (ou son sous-arbre).
         if (dir && !s.paths.includes(dir)) void onDropInto(dir, s.paths);
         else onEndDrag();
       }
@@ -190,7 +205,7 @@ export default function ExplorerTree(props: Props) {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
     };
-  }, [onBeginDrag, onEndDrag, onDropInto, onSetDropTarget]);
+  }, [onBeginDrag, onEndDrag, onDropInto, onSetDropTarget, props.rootPath]);
 
   // Fenêtrage : ne rend que les lignes visibles (+ overscan).
   const { startIndex, endIndex } = useMemo(() => {
@@ -231,12 +246,17 @@ export default function ExplorerTree(props: Props) {
     if (idx >= 0) ensureVisible(idx + 1);
   }, [createParent, rows, ensureVisible]);
 
+  const rootIsDropTarget = !!dropTarget && dropTarget === props.rootPath;
+
   return (
     <div
       ref={scrollerRef}
       className="flex-1 overflow-y-auto outline-none"
       role="tree"
       tabIndex={0}
+      style={rootIsDropTarget
+        ? { boxShadow: "inset 0 0 0 2px var(--origin-accent-blue)", background: "var(--origin-bg-hover)" }
+        : undefined}
       onScroll={e => setScrollTop((e.target as HTMLDivElement).scrollTop)}
       onClickCapture={e => {
         // Neutralise le clic qui suit immédiatement un drag (relâchement).

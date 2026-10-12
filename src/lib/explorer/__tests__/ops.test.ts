@@ -164,6 +164,33 @@ describe("moveInto", () => {
     expect(ctx.changed.flat()).toContain("/ws/sub");
     expect(ctx.changed.flat()).toContain(ROOT);
   });
+
+  it("déplace toute une sélection multiple en un lot", async () => {
+    mockDirs.add("/ws/sub");
+    mockFiles.add("/ws/a.txt");
+    mockFiles.add("/ws/b.txt");
+    mockFiles.add("/ws/c.txt");
+    const ctx = makeCtx();
+    const res = await moveInto(ctx, ["/ws/a.txt", "/ws/b.txt", "/ws/c.txt"], "/ws/sub");
+    expect(res).toEqual([
+      { ok: true, path: "/ws/sub/a.txt" },
+      { ok: true, path: "/ws/sub/b.txt" },
+      { ok: true, path: "/ws/sub/c.txt" },
+    ]);
+    expect([...mockFiles].filter(f => f.startsWith("/ws/sub/")).length).toBe(3);
+  });
+
+  it("résout les collisions d'un lot multiple sans écraser l'existant", async () => {
+    mockDirs.add("/ws/sub");
+    mockFiles.add("/ws/a.txt");          // source 1
+    mockFiles.add("/ws/b.txt");          // source 2
+    mockFiles.add("/ws/sub/a.txt");      // homonyme déjà présent
+    const ctx = makeCtx();
+    const res = await moveInto(ctx, ["/ws/a.txt", "/ws/b.txt"], "/ws/sub");
+    expect(res[0]).toEqual({ ok: true, path: "/ws/sub/a copy.txt" });
+    expect(res[1]).toEqual({ ok: true, path: "/ws/sub/b.txt" });
+    expect(mockFiles.has("/ws/sub/a.txt")).toBe(true); // original intact
+  });
 });
 
 describe("copyInto", () => {
