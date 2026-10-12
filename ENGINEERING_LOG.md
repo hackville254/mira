@@ -5,7 +5,34 @@
 
 ---
 
-### [2026-10-12T23:00] | Éditeur — affichage des médias (image / PDF / binaire) + icônes
+### [2026-10-12T23:10] | Éditeur — preview vidéo/audio + icônes médias fixes
+
+- **Contexte :**
+  Après l'ajout des visionneuses image/PDF, deux manques : (1) les médias populaires (vidéo, audio) n'étaient pas prévisualisables ; (2) les icônes des médias devaient être **fixes et distinctes** par famille (image, PDF, vidéo, audio, archive, bureautique) — un `.svg` affichait à tort l'icône XML, car le registre de langages classe le SVG comme XML pour la coloration.
+
+- **Modifications effectuées :**
+  - **`src/lib/fileKind.ts`** : kinds ajoutés `video` / `audio` ; nouveaux sets `VIDEO_EXTENSIONS` (mp4, m4v, webm, ogv, mov, mkv) et `AUDIO_EXTENSIONS` (mp3, wav, ogg, oga, flac, aac, m4a, opus, weba) ; nouvelle fonction `mediaMimeOf` (MIME vidéo/audio) ; `isBinaryReadable` étendu à video/audio. Nettoyage : `avi/wmv/flv/mpg/mpeg/3gp` déplacés en binaire (non lus par la webview) ; `ts` retiré du binaire (collision avec TypeScript).
+  - **`src/components/editor/VideoViewerPane.tsx`** / **`AudioViewerPane.tsx`** (CRÉÉS) : base64 → `Blob` → `URL.createObjectURL` → `<video controls>` / `<audio controls>` (seek natif, pas de limite de data URL) ; URL révoquée au démontage.
+  - **`src/hooks/useTabs.ts`** : le MIME est choisi selon le kind (`imageMimeOf` pour image, `mediaMimeOf` pour vidéo/audio).
+  - **`src/App.tsx`** / **`src/components/ai/AgentModeView.tsx`** : 2 branches de routage (`video`, `audio`) avec état Loading + fallback `UnsupportedFilePane`.
+  - **`src/themes/materialIcons.ts`** : nouveaux glyphes `video`, `audio`, `archive`, `word`, `excel`, `powerpoint` ; `FILE_EXTENSIONS` étendu (vidéo, audio, bureautique, archives) ; table `MEDIA_EXTENSIONS` élargie — une extension média **prime sur l'icône de langage**, corrigeant le `.svg` → icône `image`.
+  - **`src/lib/__tests__/fileKind.test.ts`** (CRÉÉ) : 12 tests figeant la classification (image/pdf/video/audio/binary/text), les MIME et `isBinaryReadable`.
+
+- **Décisions techniques :**
+  - **Blob URL pour vidéo/audio** (comme le PDF) : permet le seek et évite la limite de longueur des data URLs sur les gros médias ; toujours en base64 côté backend (garde workspace, aucun chemin exposé).
+  - **Icônes par famille d'extension** : on connaît l'extension → icône fixe, sans dépendre du registre de langage (source de la confusion SVG/XML). Table `MEDIA_EXTENSIONS` évaluée **avant** `languageIcon` dans `pickKey`.
+  - **Collision `ts`** : extension ambiguë (TypeScript vs MPEG-TS). Arbitrage : TypeScript l'emporte (usage écrasant) — le MPEG-TS retombe sur l'icône texte, acceptable.
+
+- **Impacts & Dépendances :**
+  - `useTabs` importe désormais `mediaMimeOf` ; vues `App.tsx`/`AgentModeView.tsx` étendues (duplication de routage maintenue — dette préexistante).
+  - Validation : `tsc` 0 erreur, `eslint` 0 erreur (2 warnings préexistants `App.tsx`), `vitest` **159/159**, `cargo build --lib` OK.
+  - Recompiler le binaire Tauri pour tester le rendu réel.
+
+- **Prochaines étapes :**
+  - Factoriser le routage d'onglets (supprimer la duplication App/AgentModeView).
+  - Chantier D (non entamé) : `gopls` / `clangd`.
+
+---
 
 - **Contexte :**
   Ouvrir une image ou un PDF dans l'éditeur tentait de lire le fichier comme du texte UTF-8 → écran d'erreur « stream did not contain valid UTF-8 ». Besoin : afficher correctement les médias (images, PDF) et les autres fichiers binaires, et disposer d'icônes d'onglet distinctes.

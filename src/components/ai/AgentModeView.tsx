@@ -11,6 +11,8 @@ import AiDiffPane, { type AiDiffTabData } from "../editor/AiDiffPane";
 import WebPreviewPane from "../editor/WebPreviewPane";
 import ImageViewerPane from "../editor/ImageViewerPane";
 import PdfViewerPane from "../editor/PdfViewerPane";
+import VideoViewerPane from "../editor/VideoViewerPane";
+import AudioViewerPane from "../editor/AudioViewerPane";
 import UnsupportedFilePane from "../editor/UnsupportedFilePane";
 import { fileKindOf } from "../../lib/fileKind";
 import TerminalPanel, { type TerminalPanelHandle } from "../terminal/TerminalPanel";
@@ -418,6 +420,32 @@ export default function AgentModeView(props: AgentModeViewProps) {
                   <UnsupportedFilePane
                     fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
                   />
+                ) : activeTab && fileKindOf(activeTab) === "video" ? (
+                  binaryData[activeTab] ? (
+                    <VideoViewerPane
+                      base64={binaryData[activeTab].base64}
+                      mime={binaryData[activeTab].mime}
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                    />
+                  ) : (
+                    <UnsupportedFilePane
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      reason={fileErrors[activeTab]}
+                    />
+                  )
+                ) : activeTab && fileKindOf(activeTab) === "audio" ? (
+                  binaryData[activeTab] ? (
+                    <AudioViewerPane
+                      base64={binaryData[activeTab].base64}
+                      mime={binaryData[activeTab].mime}
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                    />
+                  ) : (
+                    <UnsupportedFilePane
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      reason={fileErrors[activeTab]}
+                    />
+                  )
                 ) : activeTab && fileContents[activeTab] !== undefined ? (
                   <Editor
                     ref={editorRef}

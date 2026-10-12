@@ -14,6 +14,8 @@ import WebPreviewPane from "./components/editor/WebPreviewPane";
 import MarkdownPreviewPane from "./components/editor/MarkdownPreviewPane";
 import ImageViewerPane from "./components/editor/ImageViewerPane";
 import PdfViewerPane from "./components/editor/PdfViewerPane";
+import VideoViewerPane from "./components/editor/VideoViewerPane";
+import AudioViewerPane from "./components/editor/AudioViewerPane";
 import UnsupportedFilePane from "./components/editor/UnsupportedFilePane";
 import { fileKindOf } from "./lib/fileKind";
 import StatusBar from "./components/StatusBar";
@@ -724,6 +726,44 @@ function App() {
                     <UnsupportedFilePane
                       fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
                     />
+                  ) : activeTab && fileKindOf(activeTab) === 'video' ? (
+                    binaryData[activeTab] ? (
+                      <VideoViewerPane
+                        base64={binaryData[activeTab].base64}
+                        mime={binaryData[activeTab].mime}
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      />
+                    ) : fileErrors[activeTab] ? (
+                      <UnsupportedFilePane
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                        reason={fileErrors[activeTab]}
+                      />
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center">
+                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
+                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
+                        </span>
+                      </div>
+                    )
+                  ) : activeTab && fileKindOf(activeTab) === 'audio' ? (
+                    binaryData[activeTab] ? (
+                      <AudioViewerPane
+                        base64={binaryData[activeTab].base64}
+                        mime={binaryData[activeTab].mime}
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      />
+                    ) : fileErrors[activeTab] ? (
+                      <UnsupportedFilePane
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                        reason={fileErrors[activeTab]}
+                      />
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center">
+                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
+                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
+                        </span>
+                      </div>
+                    )
                   ) : activeTab && fileContents[activeTab] !== undefined ? (
                     <Editor
                       ref={editorRef}

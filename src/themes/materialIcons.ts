@@ -123,6 +123,18 @@ const ICONS: Record<string, string> = {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ffb300" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m4 2v2h2V4zm2 3v2h-2V7zm-2 3v2h2v-2zm2 3v2h-2v-2zm-2 3v3h2v-3z"/></svg>',
   image:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#26a69a" d="M8.5 13.5 11 16.5 14.5 12l4.5 6H5zM13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"/></svg>',
+  video:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#7e57c2" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m3 7v6l5-3z"/></svg>',
+  audio:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ef6c00" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m5 8.5a1.75 1.75 0 1 0 1.75 1.75V9h3V6.5h-4.5z"/></svg>',
+  archive:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ffb300" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m4 2v2h2V4zm2 3v2h-2V7zm-2 3v2h2v-2zm2 3v2h-2v-2zm-2 3v3h2v-3z"/></svg>',
+  word:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#2962ff" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m1 8 1 6 1-4 1 4 1-6H9.6l-.5 3.4L8.6 10z"/></svg>',
+  excel:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#1d6f42" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m1.2 8 1.7 3-1.8 3H9l1.1-1.9L9 12.1zm2.8 0v6h1.4v-4l1.4 4H15V10h-1.4v4l-1.4-4z"/></svg>',
+  powerpoint:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#d24726" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m2 8v6h1.5v-2h1a1.5 1.5 0 0 0 1.5-1.5v-1A1.5 1.5 0 0 0 10.5 10zm1.5 1.5h1v1h-1z"/></svg>',
 
   // ── Mobile ────────────────────────────────────────────────────────────────
   flutter:
@@ -287,11 +299,14 @@ const FILE_EXTENSIONS: Record<string, string> = {
   env: 'settings',
   lock: 'lock',
   pdf: 'pdf',
-  zip: 'zip',
-  gz: 'zip',
-  tar: 'zip',
-  rar: 'zip',
-  '7z': 'zip',
+  zip: 'archive',
+  gz: 'archive',
+  tar: 'archive',
+  rar: 'archive',
+  '7z': 'archive',
+  bz2: 'archive',
+  xz: 'archive',
+  tgz: 'archive',
   png: 'image',
   jpg: 'image',
   jpeg: 'image',
@@ -300,6 +315,41 @@ const FILE_EXTENSIONS: Record<string, string> = {
   bmp: 'image',
   ico: 'image',
   avif: 'image',
+  // ── Vidéo ─────────────────────────────────────────────────────────────────
+  mp4: 'video',
+  m4v: 'video',
+  webm: 'video',
+  ogv: 'video',
+  mov: 'video',
+  mkv: 'video',
+  avi: 'video',
+  wmv: 'video',
+  flv: 'video',
+  mpg: 'video',
+  mpeg: 'video',
+  '3gp': 'video',
+  // ── Audio ─────────────────────────────────────────────────────────────────
+  mp3: 'audio',
+  wav: 'audio',
+  ogg: 'audio',
+  oga: 'audio',
+  flac: 'audio',
+  aac: 'audio',
+  m4a: 'audio',
+  opus: 'audio',
+  weba: 'audio',
+  // ── Documents bureautiques ────────────────────────────────────────────────
+  doc: 'word',
+  docx: 'word',
+  odt: 'word',
+  rtf: 'word',
+  xls: 'excel',
+  xlsx: 'excel',
+  ods: 'excel',
+  csv: 'excel',
+  ppt: 'powerpoint',
+  pptx: 'powerpoint',
+  odp: 'powerpoint',
 };
 
 /** Clés d'icônes exposées par le registre `lib/languages.ts` → clé du catalogue. */
@@ -313,28 +363,57 @@ const KEY_FILE = 'file';
 const KEY_FOLDER = 'folder';
 
 /**
+ * Extensions de fichiers dont l'icône doit primer sur l'icône de langage.
+ * Le registre `lib/languages.ts` classe par ex. le SVG comme XML (pour la
+ * coloration) : l'icône doit pourtant rester celle d'une image. On y place donc
+ * toutes les extensions médias à icône fixe (image, PDF, vidéo, audio, archives,
+ * documents bureautiques).
+ */
+const MEDIA_EXTENSIONS = new Set([
+  // Image / PDF
+  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'pdf',
+  // Vidéo
+  'mp4', 'm4v', 'webm', 'ogv', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', '3gp',
+  // Audio
+  'mp3', 'wav', 'ogg', 'oga', 'flac', 'aac', 'm4a', 'opus', 'weba',
+  // Archives
+  'zip', 'gz', 'tar', 'rar', '7z', 'bz2', 'xz', 'tgz',
+  // Documents bureautiques
+  'doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ods', 'csv', 'ppt', 'pptx', 'odp',
+]);
+
+/**
  * Choisit la clé d'icône pour un nom donné, par ordre de spécificité :
- *  1. clé de langage fournie par le registre (`languageIcon`) ;
- *  2. nom de fichier exact ;
- *  3. extension ;
- *  4. repli générique (`file` / `folder`).
+ *  1. extension média (image/PDF) — prime sur le langage : un `.svg` doit
+ *     afficher l'icône image, pas l'icône XML (le registre `lib/languages.ts`
+ *     classe le SVG comme XML pour la coloration, mais l'icône doit rester
+ *     celle d'une image) ;
+ *  2. clé de langage fournie par le registre (`languageIcon`) ;
+ *  3. nom de fichier exact ;
+ *  4. extension ;
+ *  5. repli générique (`file` / `folder`).
  */
 function pickKey(name: string, isDir: boolean, languageIcon: string | null): string {
   if (isDir) return KEY_FOLDER;
+
+  const lower = name.toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  const ext = dot >= 0 && dot < lower.length - 1 ? lower.slice(dot + 1) : '';
+
+  if (ext && MEDIA_EXTENSIONS.has(ext)) {
+    const mediaKey = FILE_EXTENSIONS[ext];
+    if (mediaKey) return mediaKey;
+  }
 
   if (languageIcon) {
     const alias = ICON_KEY_ALIASES[languageIcon] ?? languageIcon;
     if (ICONS[alias]) return alias;
   }
 
-  const lower = name.toLowerCase();
-
   const byName = FILE_NAMES[lower];
   if (byName) return byName;
 
-  const dot = lower.lastIndexOf('.');
-  if (dot >= 0 && dot < lower.length - 1) {
-    const ext = lower.slice(dot + 1);
+  if (ext) {
     const byExt = FILE_EXTENSIONS[ext];
     if (byExt) return byExt;
   }

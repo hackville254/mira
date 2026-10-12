@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { readFile, readFileBase64, writeFile } from "../lib/fs";
-import { fileKindOf, imageMimeOf, isBinaryReadable } from "../lib/fileKind";
+import { fileKindOf, imageMimeOf, mediaMimeOf, isBinaryReadable } from "../lib/fileKind";
 import type { Tab } from "../components/editor/TabBar";
 import { useToast } from "../components/ui/Toast";
 
@@ -32,8 +32,10 @@ export function useTabs() {
     // texte éditable.
     if (isBinaryReadable(activeTab)) {
       if (binaryData[activeTab] !== undefined) return;
+      const kind = fileKindOf(activeTab);
+      const mime = kind === 'image' ? imageMimeOf(activeTab) : mediaMimeOf(activeTab);
       readFileBase64(activeTab)
-        .then(base64 => setBinaryData(prev => ({ ...prev, [activeTab]: { base64, mime: imageMimeOf(activeTab) } })))
+        .then(base64 => setBinaryData(prev => ({ ...prev, [activeTab]: { base64, mime } })))
         .catch((e) => {
           const msg = e instanceof Error ? e.message : String(e);
           const name = activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab;
