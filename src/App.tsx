@@ -11,6 +11,7 @@ import TabBar from "./components/editor/TabBar";
 import Editor, { type EditorHandle, type EditorContext } from "./components/editor/Editor";
 import AiDiffPane, { type AiDiffTabData } from "./components/editor/AiDiffPane";
 import WebPreviewPane from "./components/editor/WebPreviewPane";
+import MarkdownPreviewPane from "./components/editor/MarkdownPreviewPane";
 import StatusBar from "./components/StatusBar";
 import TerminalPanel, { type TerminalPanelHandle } from "./components/terminal/TerminalPanel";
 import CommandPalette from "./components/palette/CommandPalette";
@@ -35,6 +36,7 @@ import { invalidateLspClient } from "./lib/lspCm6";
 import { resolveRunConfig, trustWorkspace } from "./lib/runConfigStore";
 import { pickTaskForFile, substituteArgs } from "./lib/runTasks";
 import { useWorkspace } from "./context/WorkspaceContext";
+import { useMobileProject } from "./lib/mobileFrameworks";
 import { useDebugContext } from "./context/DebugContext";
 import { useDiagnostics } from "./context/DiagnosticsContext";
 import { useExtensions, setHostDelegate, createDefaultHostServices } from "./context/ExtensionsContext";
@@ -47,6 +49,7 @@ import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 
 function App() {
   const { folderPath, setFolderPath } = useWorkspace();
+  const mobileFrameworks = useMobileProject(folderPath);
   const diagnostics = useDiagnostics();
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem('origin-onboarding') === 'true'
@@ -62,7 +65,7 @@ function App() {
     activeTabRef,
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
-    handleNewFile, handleEditorChange, openAiDiffTab,
+    handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll,
   } = useTabs();
 
@@ -624,7 +627,7 @@ function App() {
         />
       ) : (
         <div className="flex flex-1 overflow-hidden gap-1">
-            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} fileTreeKey={fileTreeVersion} />}
+            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} />}
             <div className="flex flex-1 overflow-hidden gap-1">
               <div className="flex-1 flex flex-col overflow-hidden gap-1">
                 <TabBar
@@ -663,6 +666,17 @@ function App() {
                     })()
                   ) : activeTab === '__preview__' ? (
                     <WebPreviewPane />
+                  ) : activeTab?.startsWith('__mdpreview__') ? (
+                    (() => {
+                      const mdTab = tabs.find(t => t.path === activeTab);
+                      const fp = mdTab?.filePath ?? activeTab.slice('__mdpreview__'.length);
+                      return (
+                        <MarkdownPreviewPane
+                          content={fileContents[fp] ?? ''}
+                          fileName={fp.split(/[\\/]/).filter(Boolean).pop() ?? fp}
+                        />
+                      );
+                    })()
                   ) : activeTab && fileContents[activeTab] !== undefined ? (
                     <Editor
                       ref={editorRef}
@@ -745,6 +759,7 @@ function App() {
         branch={gitBranch}
         errors={diagnostics.errors}
         warnings={diagnostics.warnings}
+        mobileFrameworks={mobileFrameworks}
         onShowProblems={() => { setTerminalOpen(true); requestAnimationFrame(() => terminalRef.current?.showProblems()); }}
         debugStatus={
           debugCtx.session.status === 'paused' ? 'paused' :
@@ -756,6 +771,7 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           tabs={tabs}
+          activeTab={activeTab}
           onFileOpen={openTab}
           onFileOpenAtLine={(path, line) => { setPaletteOpen(false); openTabAtLine(path, line, 0); }}
           onClose={() => setPaletteOpen(false)}
@@ -765,6 +781,7 @@ function App() {
           onToggleSidebar={() => { setPaletteOpen(false); setSidebarOpen(v => !v); }}
           onToggleTerminal={() => { setPaletteOpen(false); setTerminalOpen(v => !v); }}
           onOpenSettings={() => { setPaletteOpen(false); setSettingsOpen(true); }}
+          onOpenMarkdownPreview={(path) => { setPaletteOpen(false); openMarkdownPreviewTab(path); }}
           terminalOpen={terminalOpen}
           sidebarOpen={sidebarOpen}
         />

@@ -321,9 +321,8 @@ pub fn make_executable(path: &Path) -> bool {
 }
 
 /// Écrit des octets bruts comme fichier exécutable dans `dest_dir/filename`.
-/// Non encore branché en v1 (les composants passent par extraction d'archive)
-/// mais couvert par les tests.
-#[allow(dead_code)]
+/// Cas d'usage : releases publiant un binaire **nu** mono-fichier (ex. marksman,
+/// format `"bin"` de l'index LSP), sans archive à extraire.
 pub fn write_binary(bytes: &[u8], dest_dir: &Path, filename: &str) -> Result<PathBuf, DownloadError> {
     std::fs::create_dir_all(dest_dir).map_err(|e| {
         DownloadError::new(ERR_EXTRACT_FAILED, format!("mkdir {}: {e}", dest_dir.display()))

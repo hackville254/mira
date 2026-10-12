@@ -13,18 +13,20 @@ const DEFAULT_WIDTH = 240;
 interface Props {
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
+  onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
   defaultCollapsed?: boolean;
 }
 
-function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
+function ActivePanel({ id, onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey }: {
   id: string;
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
+  onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
 }) {
   switch (id) {
-    case "explorer":   return <FileTree onFileOpen={onFileOpen} refreshKey={fileTreeKey} />;
+    case "explorer":   return <FileTree onFileOpen={onFileOpen} onMarkdownPreview={onMarkdownPreview} refreshKey={fileTreeKey} />;
     case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} />;
     case "sourcetree": return <SourceTreePanel />;
     case "debug":      return <DebugPanel onFileOpenAtLine={onFileOpenAtLine} />;
@@ -33,7 +35,7 @@ function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
   }
 }
 
-export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey, defaultCollapsed = false }: Props) {
+export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, defaultCollapsed = false }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [active, setActive] = useState("explorer");
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -82,6 +84,7 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey, def
         id={active}
         onFileOpen={onFileOpen}
         onFileOpenAtLine={onFileOpenAtLine}
+        onMarkdownPreview={onMarkdownPreview}
         fileTreeKey={fileTreeKey}
       />
 

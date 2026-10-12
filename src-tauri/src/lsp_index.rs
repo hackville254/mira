@@ -34,7 +34,8 @@ pub struct Artifact {
     pub url: &'static str,
     /// SHA-256 attendu des octets téléchargés (64 caractères hex minuscules).
     pub sha256: &'static str,
-    /// Format d'archive : "gz", "zip" (utilisé pour choisir l'extracteur).
+    /// Format du payload : "gz", "zip" (archives → extracteur) ou "bin"
+    /// (binaire nu écrit tel quel, ex. marksman). Choisit le traitement.
     pub archive: &'static str,
     /// Nom du fichier exécutable **attendu dans l'archive** (relatif).
     pub exe_hint: &'static str,
@@ -86,7 +87,7 @@ pub fn artifact_is_well_formed(art: &Artifact) -> bool {
     art.url.starts_with("https://")
         && art.sha256.len() == 64
         && art.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        && matches!(art.archive, "gz" | "zip")
+        && matches!(art.archive, "gz" | "zip" | "bin")
 }
 
 // ── Catalogue figé ──────────────────────────────────────────────────────────
@@ -202,6 +203,21 @@ pub const COMPONENTS: &[Component] = &[
         approx_mb: 15,
         artifacts: &[],
     },
+    // Markdown : binaire natif `marksman` (licence MIT), mono-fichier autonome.
+    // Distribution GitHub = binaire nu (pas d'archive) → format "bin". Lancé
+    // avec l'argument `server` (voir `lsp_exe_and_args` dans lsp.rs).
+    Component {
+        id: "marksman",
+        install_dir: "marksman",
+        approx_mb: 42,
+        artifacts: &[
+            ("macos", "aarch64", MS_MACOS),
+            ("macos", "x86_64", MS_MACOS),
+            ("linux", "x86_64", MS_LINUX_X64),
+            ("linux", "aarch64", MS_LINUX_ARM64),
+            ("windows", "x86_64", MS_WINDOWS),
+        ],
+    },
 ];
 
 // ── Empreintes figées (release rust-analyzer 2025-01-06) ─────────────────────
@@ -238,6 +254,36 @@ const RA_X86_64_WINDOWS: Artifact = Artifact {
     exe_hint: "rust-analyzer.exe",
 };
 
+// ── Empreintes figées (release marksman 2026-02-08) ─────────────────────────
+// Binaires NUS mono-fichier (pas d'archive) → format "bin" écrit tel quel.
+// `marksman-macos` est un binaire universel (arm64 + x86_64) : le même
+// artefact couvre les deux architectures macOS.
+
+const MS_MACOS: Artifact = Artifact {
+    url: "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos",
+    sha256: "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
+    archive: "bin",
+    exe_hint: "marksman",
+};
+const MS_LINUX_X64: Artifact = Artifact {
+    url: "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-x64",
+    sha256: "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087",
+    archive: "bin",
+    exe_hint: "marksman",
+};
+const MS_LINUX_ARM64: Artifact = Artifact {
+    url: "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-arm64",
+    sha256: "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb",
+    archive: "bin",
+    exe_hint: "marksman",
+};
+const MS_WINDOWS: Artifact = Artifact {
+    url: "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman.exe",
+    sha256: "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
+    archive: "bin",
+    exe_hint: "marksman.exe",
+};
+
 /// Retourne le composant correspondant à un `serverId`, s'il est installable
 /// automatiquement (indépendamment de la plateforme).
 pub fn component_for(server_id: &str) -> Option<&'static Component> {
@@ -251,6 +297,9 @@ pub fn not_auto_installable(server_id: &str) -> Option<&'static str> {
     match server_id {
         "gopls" => Some("NEEDS_GO_TOOLCHAIN"),
         "clangd" => Some("NEEDS_LLVM_TOOLCHAIN"),
+        // Dart/Flutter : le serveur d'analyse (`dart language-server`) est fourni
+        // par le SDK Dart/Flutter, jamais téléchargé par l'app.
+        "dart-analysis-server" => Some("NEEDS_DART_TOOLCHAIN"),
         _ => None,
     }
 }
@@ -330,6 +379,7 @@ mod tests {
     fn gopls_and_clangd_are_not_auto_installable() {
         assert_eq!(not_auto_installable("gopls"), Some("NEEDS_GO_TOOLCHAIN"));
         assert_eq!(not_auto_installable("clangd"), Some("NEEDS_LLVM_TOOLCHAIN"));
+        assert_eq!(not_auto_installable("dart-analysis-server"), Some("NEEDS_DART_TOOLCHAIN"));
         assert_eq!(not_auto_installable("rust-analyzer"), None);
     }
 
@@ -381,5 +431,23 @@ mod tests {
         // Un serveur non installable reste hors COMPONENTS.
         assert!(component_for("gopls").is_none());
         assert!(component_for("clangd").is_none());
+    }
+
+    #[test]
+    fn marksman_is_registered_as_bare_binary() {
+        // marksman : binaire natif (format "bin"), installable sur les cibles
+        // épinglées (macos uni-arch, linux x64/arm64, windows x64).
+        let comp = component_for("marksman").expect("marksman doit être enregistré");
+        assert!(is_installable(comp, "macos", "aarch64"));
+        assert!(is_installable(comp, "macos", "x86_64"));
+        assert!(is_installable(comp, "linux", "x86_64"));
+        assert!(is_installable(comp, "linux", "aarch64"));
+        assert!(is_installable(comp, "windows", "x86_64"));
+        for (_os, _arch, art) in comp.artifacts {
+            assert_eq!(art.archive, "bin", "marksman doit être un binaire nu");
+            assert!(artifact_is_well_formed(art));
+        }
+        // Sur une cible non couverte, on obtient None proprement.
+        assert!(select_artifact(comp, "plan9", "mips").is_none());
     }
 }

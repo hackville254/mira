@@ -123,6 +123,18 @@ const ICONS: Record<string, string> = {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ffb300" d="M13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m4 2v2h2V4zm2 3v2h-2V7zm-2 3v2h2v-2zm2 3v2h-2v-2zm-2 3v3h2v-3z"/></svg>',
   image:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#26a69a" d="M8.5 13.5 11 16.5 14.5 12l4.5 6H5zM13 9h5.5L13 3.5zM6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"/></svg>',
+
+  // ── Mobile ────────────────────────────────────────────────────────────────
+  flutter:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#42a5f5" d="M14.314 0 2.7 12L6 15.3 21.314 0z"/><path fill="#42a5f5" d="M14.314 0 2.7 12L6 15.3 21.314 0z"/><path fill="#0d47a1" d="M14.314 0 2.7 12L6 15.3 21.314 0z"/><path fill="#42a5f5" d="M14.314 0 2.7 12L6 15.3 21.314 0z"/><path fill="#0d47a1" d="m21.3 9.3-6.6 6.6 3.3 3.3L24 12.9V6z"/><path fill="#42a5f5" d="m6 15.3 3.3 3.3 6.6-6.6H9.3z"/><path fill="#0d47a1" d="m14.7 18.6-3.3 3.3 3.3 3.3H24l-6-6.6z"/></svg>',
+  android:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#8bc34a" d="M17.6 9.48l1.84-3.18c.16-.31.04-.69-.26-.85a.637.637 0 0 0-.83.22l-1.88 3.24a11.5 11.5 0 0 0-8.94 0L5.65 5.67a.643.643 0 0 0-.87-.2c-.28.18-.37.54-.22.83L6.4 9.48A10.78 10.78 0 0 0 1 18h22a10.78 10.78 0 0 0-5.4-8.52M7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5m10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5"/></svg>',
+  apple:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#b0bec5" d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2.005.77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11"/></svg>',
+  capacitor:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#53b9ff" d="M12 2 2 12l10 10 10-10zm0 3.6 6.4 6.4-6.4 6.4-6.4-6.4z"/><circle cx="12" cy="12" r="3" fill="#53b9ff"/></svg>',
+  ionic:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#4e8df2" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20m0 17.5a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15"/><circle cx="12" cy="12" r="3.6" fill="#4e8df2"/><circle cx="18" cy="6" r="2.4" fill="#fff"/></svg>',
 };
 
 // ── Mappings déclaratifs ─────────────────────────────────────────────────────
@@ -167,6 +179,21 @@ const FILE_NAMES: Record<string, string> = {
   'readme.md': 'markdown',
   'readme.txt': 'markdown',
   readme: 'markdown',
+  // ── Marqueurs de projets mobiles ──────────────────────────────────────────
+  'pubspec.yaml': 'dart',
+  'pubspec.lock': 'lock',
+  'podfile': 'apple',
+  'podfile.lock': 'lock',
+  'settings.gradle': 'android',
+  'settings.gradle.kts': 'android',
+  'build.gradle': 'android',
+  'build.gradle.kts': 'android',
+  'gradle.properties': 'android',
+  'androidmanifest.xml': 'android',
+  'info.plist': 'apple',
+  'capacitor.config.json': 'capacitor',
+  'capacitor.config.ts': 'capacitor',
+  'ionic.config.json': 'ionic',
 };
 
 /** Extension (sans point, minuscules) → clé d'icône. */
@@ -195,7 +222,9 @@ const FILE_EXTENSIONS: Record<string, string> = {
   mdx: 'markdown',
   rst: 'markdown',
   xml: 'xml',
-  plist: 'xml',
+  plist: 'apple',
+  storyboard: 'apple',
+  xib: 'apple',
   svg: 'image',
   rs: 'rust',
   py: 'python',
@@ -217,6 +246,7 @@ const FILE_EXTENSIONS: Record<string, string> = {
   sc: 'scala',
   kt: 'kotlin',
   kts: 'kotlin',
+  gradle: 'android',
   swift: 'swift',
   dart: 'dart',
   rb: 'ruby',
@@ -349,4 +379,15 @@ export function resolveMaterialIcon(
   if (isDir) return folderUri(expanded);
   const key = pickKey(name, isDir, languageIcon);
   return iconDataUri(ICONS[key] ?? GLYPH_FILE);
+}
+
+/**
+ * Data-URI d'une icône Material résolue **par clé directe** (sans nom de
+ * fichier). Utile pour afficher une icône de technologie (framework mobile)
+ * ailleurs que dans l'explorateur. Retombe sur le glyphe `file` si la clé est
+ * inconnue — jamais `null`.
+ */
+export function materialIconByKey(key: string | null | undefined): string {
+  const resolved = key ? (ICON_KEY_ALIASES[key] ?? key) : KEY_FILE;
+  return iconDataUri(ICONS[resolved] ?? GLYPH_FILE);
 }

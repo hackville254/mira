@@ -25,7 +25,7 @@ export function useTabs() {
 
   useEffect(() => {
     if (!activeTab || fileContents[activeTab] !== undefined) return;
-    if (activeTab.startsWith('__untitled__') || activeTab.startsWith('__diff__') || activeTab.startsWith('__preview__')) return;
+    if (activeTab.startsWith('__untitled__') || activeTab.startsWith('__diff__') || activeTab.startsWith('__preview__') || activeTab.startsWith('__mdpreview__')) return;
     readFile(activeTab)
       .then(content => setFileContents(prev => ({ ...prev, [activeTab]: content })))
       .catch((e) => {
@@ -112,6 +112,22 @@ export function useTabs() {
     setActiveTab(tabPath);
   }
 
+  /**
+   * Ouvre (ou réactive) un onglet de prévisualisation Markdown pour `filePath`.
+   * L'onglet est identifié par `__mdpreview__<filePath>` : une seule instance par
+   * fichier. Le rendu lit le contenu courant via `fileContents[filePath]`, donc
+   * l'aperçu reste synchronisé avec les modifications de l'éditeur.
+   */
+  function openMarkdownPreviewTab(filePath: string) {
+    const tabPath = `__mdpreview__${filePath}`;
+    const fileName = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
+    setTabs(prev => prev.find(t => t.path === tabPath)
+      ? prev
+      : [...prev, { path: tabPath, name: `${fileName} (preview)`, isDirty: false, kind: 'markdown-preview' as const, filePath }]
+    );
+    setActiveTab(tabPath);
+  }
+
   async function handleSave(path: string) {
     const content = fileContentsRef.current[path];
     if (content === undefined) return;
@@ -160,7 +176,7 @@ export function useTabs() {
     activeTabRef,
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
-    handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab,
+    handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll,
   };
 }

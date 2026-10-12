@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react';
-import { X, GitCompare, Globe } from 'lucide-react';
+import { X, GitCompare, Globe, FileText } from 'lucide-react';
 import FileIcon from '../FileIcon';
 
 export interface Tab {
-  path: string;   // for ai-diff tabs: "__diff__<approvalId>"
+  path: string;   // for ai-diff tabs: "__diff__<approvalId>"; md preview: "__mdpreview__<filePath>"
   name: string;
   isDirty: boolean;
   isUntitled?: boolean;
-  kind?: 'file' | 'ai-diff' | 'preview';
+  kind?: 'file' | 'ai-diff' | 'preview' | 'markdown-preview';
   // ai-diff only
   filePath?: string;
   originalContent?: string;
@@ -63,6 +63,8 @@ function TabItem({ tab, active, onSelect, onClose }: { tab: Tab; active: boolean
         ? <GitCompare size={13} style={{ flexShrink: 0, color: 'rgba(46,160,67,0.9)' }} />
         : tab.kind === 'preview'
         ? <Globe size={13} style={{ flexShrink: 0, color: 'var(--origin-accent-blue)' }} />
+        : tab.kind === 'markdown-preview'
+        ? <FileText size={13} style={{ flexShrink: 0, color: 'var(--origin-accent-blue)' }} />
         : tab.isDirty
           ? <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--origin-fg-muted)', flexShrink: 0 }} />
           : <FileIcon name={tab.name} size={13} />

@@ -122,6 +122,8 @@ pub fn run() {
             fs::rename_path,
             fs::delete_path,
             fs::create_dir_cmd,
+            fs::copy_path,
+            fs::path_exists,
             fs::reveal_in_explorer,
             fs::read_editor_keybindings,
             fs::detect_installed_editors,

@@ -1,5 +1,7 @@
 import { Icon } from '@iconify/react';
 import { useTheme } from '../themes/ThemeContext';
+import { materialIconByKey } from '../themes/materialIcons';
+import type { MobileFramework } from '../lib/mobileFrameworks';
 
 interface Props {
   language: string;
@@ -11,6 +13,8 @@ interface Props {
   warnings?: number;
   spaces?: number;
   lineEnding?: 'LF' | 'CRLF';
+  /** Frameworks mobiles détectés dans le projet courant (badge informatif). */
+  mobileFrameworks?: MobileFramework[];
   /** Ouvre le panneau Problems au clic sur le compteur. */
   onShowProblems?: () => void;
 }
@@ -43,6 +47,7 @@ function StatusItem({ children, onClick, title }: { children: React.ReactNode; o
 export default function StatusBar({
   language, line, col, branch, debugStatus,
   errors = 0, warnings = 0, spaces = 2, lineEnding = 'LF',
+  mobileFrameworks = [],
   onShowProblems,
 }: Props) {
   const { theme, themes, setTheme } = useTheme();
@@ -114,6 +119,18 @@ export default function StatusBar({
 
       {/* Right */}
       <div style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+        {mobileFrameworks.map(fw => (
+          <StatusItem key={fw.id} title={`${fw.label} · ${fw.markers.join(', ')}`}>
+            <img
+              src={materialIconByKey(fw.icon)}
+              width={12}
+              height={12}
+              alt=""
+              style={{ flexShrink: 0, display: 'block' }}
+            />
+            <span>{fw.label}</span>
+          </StatusItem>
+        ))}
         <StatusItem>
           <span>{language}</span>
         </StatusItem>

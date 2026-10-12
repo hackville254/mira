@@ -5,6 +5,125 @@
 
 ---
 
+### [2026-10-12T17:00] | Explorateur — réécriture complète « parité VS Code »
+
+- **Contexte :**
+  Deux bugs bloquants signalés : (1) impossible de créer un fichier/dossier **dans** un dossier (vide ou nouveau) depuis l'explorateur ; (2) le **drag & drop** pour déplacer un fichier/dossier vers un dossier ne fonctionnait pas. Objectif : refonte propre de l'explorateur pour une parité VS Code complète (création, DnD interne + import OS, presse-papier, renommage inline, menu contextuel, raccourcis, virtualisation grands projets).
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/fs.rs`** : `assert_in_workspace` durci (garde lexicale + **canonicalisation** anti-symlink/anti-`..`, résolution du plus proche ancêtre existant + suffixe pour les créations). `read_dir` valide désormais le workspace. Nouvelles commandes `path_exists`, `copy_path` (+ `copy_recursive` gérant symlinks `cfg(unix/windows)`, refus de copie dans le sous-arbre) ; `rename_path`/`create_dir_cmd` étendus (validation `from`/`to`, refus si la cible existe).
+  - **`src-tauri/src/lib.rs`** : enregistrement `copy_path`, `path_exists` dans `generate_handler!`.
+  - **`src/lib/fs.ts`** : interface `FsScope` ; toutes les commandes acceptent un scope optionnel (`workspaceRoot`) ; ajout `copyPath`, `pathExists`.
+  - **`src/lib/explorer/treeModel.ts`** (CRÉÉ, 17 tests) : helpers de chemins (`sepOf`, `parentOf`, `baseName`, `joinPath`, `normalize`, `isAncestorOrSelf`), `sortEntries` (**dossiers d'abord + A→Z**), `flattenTree` (arbre aplati → `FlatRow[]`), `nextSelection` (sélection avec ancre, Shift/Cmd).
+  - **`src/lib/explorer/ops.ts`** (CRÉÉ) : opérations FS pures avec gardes (`uniquePath` anti-écrasement « name copy », `createFile`, `createFolder`, `renameEntry`, `moveInto`, `copyInto`, `deleteEntries`, `listDir`).
+  - **`src/lib/explorer/useExplorer.ts`** (CRÉÉ) : état centralisé (cache par dossier, expansion persistée, sélection+ancre, presse-papier interne, drag, création/renommage inline, décoration git). Refs stables `opsCtxRef`/`refreshRef` câblées via `useEffect` (jamais mutées au rendu). `startCreate` déplie le dossier cible **avant** de poser `pendingCreate` → corrige le bug de création.
+  - **`src/components/explorer/ExplorerTree.tsx`** (CRÉÉ) : arbre **virtualisé** (`ROW_HEIGHT=22`, `OVERSCAN=8`, `ResizeObserver`, fenêtrage `translateY`). **Import OS** via l'API native Tauri 2 `getCurrentWebview().onDragDropEvent()` (hit-test de la ligne sous le curseur, position physique → logique via `devicePixelRatio`, restreint à la zone de l'explorateur). **Drag interne réimplémenté en Pointer Events** (`pointerdown`/`pointermove`/`pointerup`, seuil 5 px, sélection au mousedown, suppression du clic post-drag) car l'API HTML5 DnD est **bloquée** par Tauri 2 quand `dragDropEnabled` est actif (défaut).
+  - **`src/components/explorer/RenameInput.tsx`** / **`CreateInput.tsx`** (CRÉÉS) : saisie inline, sélection du nom sans l'extension (VS Code), `Enter`=valider, `Escape`=annuler, `blur`=valider.
+  - **`src/components/FileTree.tsx`** (RÉÉCRIT en façade) : consomme `useExplorer`, menu contextuel complet, raccourcis (Del/F2/Cmd+N/Cmd+Shift+N/C/X/V/A, flèches, Enter, Espace), suppression avec **confirmation native** (`window.confirm`).
+
+- **Décisions techniques :**
+  - **Séparation pure/impure** : `treeModel.ts` et `ops.ts` sont des modules purs, testables sans DOM ; le hook ne fait qu'orchestrer l'état ; le composant ne fait que rendre. Cela rend les bugs de logique (tri, sélection, résolution de chemins) couvrables par des tests rapides.
+  - **Défense en profondeur** : le confinement workspace est vérifié **côté frontend** (pré-filtrage, retour immédiat) **et** côté **backend Rust** (autorité finale, anti-symlink via canonicalisation). Le frontend n'est jamais digne de confiance seul.
+  - **Virtualisation** : listes plates + fenêtrage pour tenir 10 k+ fichiers sans exploser le DOM.
+  - **Anti-écrasement systématique** : `uniquePath` résout « name copy » ; le renommage refuse une cible existante. Jamais de perte silencieuse de données.
+  - **Suppression** : confirmation native explicite plutôt que corbeille (choix utilisateur), pour rester portable et prévisible.
+  - **Conflit DnD Tauri 2 (découverte majeure)** : avec `dragDropEnabled: true` (défaut, indispensable pour capter les chemins des fichiers venus de l'OS via `onDragDropEvent`), Tauri **intercepte et bloque l'API HTML5 Drag & Drop** dans la webview (surtout Windows/WebView2, cible de nos bundles `nsis`/`msi`). Le drag interne a donc été **réécrit en Pointer Events** — indépendant de l'API bloquée et multiplateforme — plutôt que de dépendre d'un plugin tiers non mature (`tauri-plugin-windows-file-drop`) ou de désactiver l'import OS. On garde ainsi **les deux** fonctionnalités sans dépendance externe.
+
+- **Impacts & Dépendances :**
+  - `src-tauri/src/lib.rs` : handlers ajoutés → recompiler le binaire Tauri.
+  - `FileTree.tsx` garde la même API publique (`onFileOpen`, `onMarkdownPreview?`, `refreshKey?`) + nouvelle prop **optionnelle** `onFileOpenToSide?` (n'apparaît dans le menu que si branchée).
+  - Validation : `tsc` 0 erreur, `eslint` 0 erreur (sur `FileTree.tsx`, `components/explorer`, `lib/explorer`), `vitest` **127/127**, `cargo test --lib` **61/61**.
+
+- **Prochaines étapes :**
+  - Brancher `onFileOpenToSide` quand l'éditeur supportera le split d'onglets (l'item de menu s'affichera automatiquement).
+  - Chantier D (non entamé) : `gopls` / `clangd`.
+
+---
+
+### [2026-10-12T16:30] | Chantier C — Détection native des frameworks mobile + LSP Dart/Flutter
+
+- **Contexte :**
+  L'utilisateur veut que l'IDE **reconnaisse nativement les projets mobile** (React Native, Expo, Flutter, Android, iOS, Capacitor, Ionic) : signaler le type de projet et brancher les outils LSP adaptés (dart analysis server pour Flutter), sans qu'il ait à configurer quoi que ce soit.
+
+- **Modifications effectuées :**
+  - **`src/lib/mobileFrameworks.ts`** (CRÉÉ) : module pur + hook.
+    - `MobileFramework { id, label, language, icon, markers }`.
+    - `JS_STACK_RULES` (react-native, expo, @capacitor/core, @ionic/react, @ionic/angular) via `package.json` ; `FILE_RULES` (pubspec.yaml→flutter, AndroidManifest.xml/settings.gradle(.kts)→android, Podfile→ios).
+    - `extractDependencies` : parsing JSON **borné** (2 Mo max), sections `dependencies`/`devDependencies` uniquement, échec silencieux (jamais de throw sur entrée hostile).
+    - `detectMobileFrameworksFromNames` (pur, testable) + `detectMobileFrameworks(folderPath)` (lecture superficielle) + hook `useMobileProject`.
+  - **`src/lib/__tests__/mobileFrameworks.test.ts`** (CRÉÉ) : 10 tests (Flutter, RN, Expo, Android, iOS, dédup, JSON invalide, non-mobile, casse, clés d'icônes).
+  - **`src/themes/materialIcons.ts`** : bloc SVG « Mobile » (flutter, android, apple, capacitor, ionic) + mappings noms/extensions (pubspec.yaml, Podfile, Gradle, AndroidManifest.xml, Info.plist…). **API `materialIconByKey(key)`** exportée (résolution directe par clé).
+  - **`src/lib/languages.ts`** : `kotlin` scindé (kt / kts), `gradle` et `plist` ajoutés, fichiers Ruby étendus (Podfile/Fastfile/Appfile) ; **`dart` câblé sur `dart-analysis-server`**.
+  - **`src/components/StatusBar.tsx`** : badge(s) framework(s) mobile détecté(s) à droite.
+  - **Câblage LSP Dart** : `src-tauri/src/lsp.rs` (`lsp_exe_and_args` → `("dart", &["language-server"])` + `SERVER_IDS`), `src/lib/lspConfig.ts` (`KNOWN_SERVERS` + `DEFAULT_LSP_CONFIG.servers`, `needs: 'NEEDS_DART_TOOLCHAIN'`), `src-tauri/src/lsp_index.rs` (raison `NEEDS_DART_TOOLCHAIN`).
+
+- **Décisions techniques :**
+  - **Détection non fiable à 100 % → bornée et défensive** : lecture superficielle (racine + `package.json`), parsing JSON en try/catch silencieux, taille plafonnée. Détection = indication UX, jamais autorité d'exécution.
+  - **Dart jamais téléchargé par l'app** : le language server (`dart language-server`) est fourni par le SDK Dart/Flutter. On l'expose en LSP dédié mais **non auto-installable** (`NEEDS_DART_TOOLCHAIN`) : cohérent avec la règle « binaire tiers = confirmation / pas de téléchargement sauvage ».
+  - **Langages mobile ajoutés au registre unique** `languages.ts` (source de vérité icône + parser + identité LSP) plutôt qu'un mapping ad hoc.
+
+- **Impacts & Dépendances :**
+  - `tsc` 0 erreur, `eslint` 0 erreur, `vitest` 110/110, `cargo test --lib` 61/61.
+  - `App.tsx` : `useMobileProject(folderPath)` → `mobileFrameworks` → `StatusBar`. Aucun impact sur les serveurs existants (entrée purement additive dans l'allowlist).
+
+- **Prochaines étapes :**
+  - Chantier D : `gopls` / `clangd` (binaires tiers + confirmation au premier usage).
+  - Envisager un LSP Kotlin/Swift (`kotlin-language-server`, `sourcekit-lsp`) si le besoin mobile natif Android/iOS se confirme.
+
+---
+
+### [2026-10-12T15:10] | Chantier B — Preview Markdown en onglet plein écran + action/icône
+
+- **Contexte :**
+  L'utilisateur veut **prévisualiser proprement les fichiers `.md`** depuis l'IDE (icône + action), au lieu de dépendre d'un rendu inline limité.
+
+- **Modifications effectuées :**
+  - **`src/components/editor/MarkdownPreviewPane.tsx`** (CRÉÉ) : onglet plein écran, modes **Preview / Source**, réutilise `MarkdownMessage`. Aucun `openUrl`/`ExternalLink` (pas de navigation externe depuis le rendu).
+  - **`src/components/editor/TabBar.tsx`** : `kind` étendu à `'markdown-preview'` + icône `FileText`.
+  - **`src/hooks/useTabs.ts`** : sentinelle `__mdpreview__`, `openMarkdownPreviewTab(filePath)`.
+  - **`src/App.tsx`** : rendu conditionnel de l'onglet preview.
+  - **`src/components/FileTree.tsx`** : item « Open Markdown Preview » (icône `Eye`) pour `.md`/`.mdx` ; prop `onMarkdownPreview?` **optionnelle** (défaut no-op).
+  - **`src/components/Sidebar.tsx`** : prop `onMarkdownPreview?` optionnelle propagée.
+  - **`src/components/palette/CommandPalette.tsx`** : commande **« Open Markdown Preview »** affichée uniquement si l'onglet actif est un `.md`/`.mdx` (+ `activeTab`/`onOpenMarkdownPreview` dans les deps).
+
+- **Décisions techniques :**
+  - **Onglet dédié** plutôt qu'aperçu inline : place au rendu complet, cohérent avec le modèle d'onglets existant.
+  - **Prop optionnelle avec no-op par défaut** : évite de casser les autres points de montage (`AgentModeView`) → un seul point de câblage à maintenir.
+
+- **Impacts & Dépendances :**
+  - `tsc` 0 / `eslint` 0 / `vitest` 100/100 au moment de la livraison.
+  - `Tab.kind` étendu : tout `switch` sur `kind` doit rester exhaustif (aucune régression constatée).
+
+- **Prochaines étapes :**
+  - ~~Chantier C mobile~~ (livré, voir entrée ci-dessus).
+
+---
+
+### [2026-10-12T14:20] | Chantier A — LSP Markdown (marksman, binaire natif)
+
+- **Contexte :**
+  Le Markdown était le seul langage « courant » sans serveur LSP. Objectif : complétion/diagnostic Markdown, sans dépendance à Node.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/lsp.rs`** : `lsp_exe_and_args` → `("marksman", &["server"])` ; ajout à `SERVER_IDS` du catalogue.
+  - **`src-tauri/src/lsp_index.rs`** : entrée d'index figé (archive `"bin"`, binaire natif) pour `marksman`.
+  - **`src-tauri/src/downloader.rs`** : `write_binary` branché pour l'installation du binaire.
+  - **`src/lib/lspConfig.ts`** : `marksman` dans `KNOWN_SERVERS` + `DEFAULT_LSP_CONFIG.servers` (`extensions: ['md','mdx']`, `languageId: 'markdown'`, pas de `--stdio`).
+  - **`src/lib/languages.ts`** : `markdown` câblé sur `marksman`.
+
+- **Décisions techniques :**
+  - **marksman (binaire natif)** retenu plutôt qu'un serveur npm : pas de toolchain Node requise, téléchargement d'une archive unique, invocation `marksman server`.
+  - **Index figé = seule autorité de téléchargement** : le frontend ne peut demander que des composants présents dans `lsp_index::COMPONENTS` (surface d'attaque réduite).
+
+- **Impacts & Dépendances :**
+  - `cargo test --lib` 7/7 (marksman ajouté à l'allowlist + index).
+  - Aucune régression des serveurs npm existants.
+
+- **Prochaines étapes :**
+  - Chaîner sur le chantier B (preview `.md`).
+
+---
+
 ### [2026-10-12T23:55] | Toasts LSP clarifiés + icônes Material officielles dans l'explorateur
 
 - **Contexte :**

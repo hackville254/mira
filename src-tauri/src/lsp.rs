@@ -95,6 +95,12 @@ fn lsp_exe_and_args(server_id: &str) -> Option<(&'static str, &'static [&'static
         "vscode-html-language-server" => Some(("vscode-html-language-server", &["--stdio"])),
         "yaml-language-server"        => Some(("yaml-language-server", &["--stdio"])),
         "dockerfile-language-server-nodejs" => Some(("dockerfile-language-server-nodejs", &["--stdio"])),
+        // Markdown : binaire natif marksman, sous-commande `server`.
+        "marksman"                    => Some(("marksman", &["server"])),
+        // Dart / Flutter : language server fourni par le SDK Dart (`dart
+        // language-server`). Jamais téléchargé par l'app : présent uniquement
+        // si le SDK Dart/Flutter est installé sur la machine.
+        "dart-analysis-server"        => Some(("dart", &["language-server"])),
         _ => None,
     }
 }
@@ -702,6 +708,8 @@ pub async fn lsp_catalog(app: tauri::AppHandle) -> Result<Vec<LspCatalogEntry>, 
         "vscode-html-language-server",
         "yaml-language-server",
         "dockerfile-language-server-nodejs",
+        "marksman",
+        "dart-analysis-server",
     ];
 
     let (os, arch) = crate::lsp_index::platform_key();
@@ -853,6 +861,11 @@ pub async fn lsp_install(server_id: String, app: tauri::AppHandle) -> Result<Lsp
         let _ = std::fs::remove_dir_all(&dest);
     }
     let installed: PathBuf = match artifact.archive {
+        "bin" => {
+            // Binaire nu mono-fichier (marksman) : écrit tel quel + chmod +x.
+            let exe_name = if cfg!(windows) { format!("{exe}.exe") } else { exe.to_string() };
+            crate::downloader::write_binary(&bytes, &dest, &exe_name).map_err(|e| e.to_json())?
+        }
         "gz" => {
             // rust-analyzer : gzip d'un binaire nu (pas un tar.gz).
             let exe_name = if cfg!(windows) { format!("{exe}.exe") } else { exe.to_string() };

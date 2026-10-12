@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import {
   Search, File, Terminal, FolderOpen, FilePlus, PanelLeft,
-  FileInput, GripHorizontal, Sun, Moon, Settings, Loader, AlignLeft, Puzzle,
+  FileInput, GripHorizontal, Sun, Moon, Settings, Loader, AlignLeft, Puzzle, FileText,
 } from 'lucide-react';
 import { readDir, type FsEntry } from '../../lib/fs';
 import { fileColor } from '../../lib/fileColors';
@@ -93,6 +93,7 @@ interface PaletteItem {
 
 export interface CommandPaletteProps {
   tabs: Tab[];
+  activeTab: string | null;
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number) => void;
   onClose: () => void;
@@ -102,6 +103,7 @@ export interface CommandPaletteProps {
   onToggleSidebar: () => void;
   onToggleTerminal: () => void;
   onOpenSettings: () => void;
+  onOpenMarkdownPreview: (path: string) => void;
   terminalOpen: boolean;
   sidebarOpen: boolean;
 }
@@ -111,9 +113,10 @@ export interface CommandPaletteProps {
 const PALETTE_W = 560;
 
 export default function CommandPalette({
-  tabs, onFileOpen, onFileOpenAtLine, onClose,
+  tabs, activeTab, onFileOpen, onFileOpenAtLine, onClose,
   onNewFile, onOpenFolder, onOpenFile,
   onToggleSidebar, onToggleTerminal, onOpenSettings,
+  onOpenMarkdownPreview,
   terminalOpen, sidebarOpen,
 }: CommandPaletteProps) {
   const { folderPath } = useWorkspace();
@@ -283,7 +286,10 @@ export default function CommandPalette({
     }
 
     // Commands
+    const activeIsMarkdown =
+      !!activeTab && !activeTab.startsWith('__') && /\.(md|mdx)$/i.test(activeTab);
     const cmds = [
+      ...(activeIsMarkdown ? [{ label: 'Open Markdown Preview', tokens: 'markdown preview md render', detail: 'Render the active Markdown file in a preview tab', icon: <FileText size={14} style={{ flexShrink: 0, color: 'var(--origin-fg-muted)' }} />, shortcut: undefined, action: () => { onOpenMarkdownPreview(activeTab!); onClose(); } }] : []),
       { label: 'New File',            tokens: 'new create untitled',        detail: 'Create a new untitled file',          icon: <FilePlus  size={14} style={{ flexShrink: 0, color: 'var(--origin-fg-muted)' }} />, shortcut: 'Ctrl+N',   action: () => { onNewFile();       onClose(); } },
       { label: 'Open Folder…',        tokens: 'open folder workspace',       detail: 'Open a project folder',               icon: <FolderOpen size={14} style={{ flexShrink: 0, color: 'var(--origin-fg-muted)' }} />, shortcut: 'Ctrl+K O', action: () => { onOpenFolder();    onClose(); } },
       { label: 'Open File…',          tokens: 'open file browse disk',       detail: 'Open a file from disk',               icon: <FileInput  size={14} style={{ flexShrink: 0, color: 'var(--origin-fg-muted)' }} />, shortcut: 'Ctrl+O',   action: () => { onOpenFile();      onClose(); } },
@@ -334,7 +340,8 @@ export default function CommandPalette({
     result.sort((a, b) => a.score - b.score);
     return result.slice(0, 60);
   }, [isTextMode, isFileMode, q, tabs, wsFiles, folderPath, terminalOpen, sidebarOpen, theme, themes, setTheme, extensionCommands,
-      onFileOpen, onClose, onNewFile, onOpenFolder, onOpenFile, onToggleSidebar, onToggleTerminal, onOpenSettings]);
+      onFileOpen, onClose, onNewFile, onOpenFolder, onOpenFile, onToggleSidebar, onToggleTerminal, onOpenSettings,
+      activeTab, onOpenMarkdownPreview]);
 
   const textItems = useMemo<PaletteItem[]>(() =>
     textResults.map(r => {

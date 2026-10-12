@@ -124,7 +124,7 @@ export const LANGUAGES: LanguageDef[] = [
   { id: 'sass', label: 'Sass', extensions: ['sass'], parser: () => legacy(sass), icon: 'sass' },
   { id: 'html', label: 'HTML', extensions: ['html', 'htm'], parser: () => html(), lsp: 'vscode-html-language-server', languageId: 'html', icon: 'html' },
   { id: 'json', label: 'JSON', extensions: ['json', 'jsonc'], parser: () => json(), lsp: 'vscode-json-language-server', languageId: 'json', icon: 'json' },
-  { id: 'markdown', label: 'Markdown', extensions: ['md', 'mdx'], parser: () => markdown(), icon: 'markdown' },
+  { id: 'markdown', label: 'Markdown', extensions: ['md', 'mdx'], parser: () => markdown(), lsp: 'marksman', languageId: 'markdown', icon: 'markdown' },
   { id: 'xml', label: 'XML', extensions: ['xml', 'svg'], parser: () => legacy(xml), icon: 'xml' },
 
   // ── Systèmes / backend ────────────────────────────────────────────────────
@@ -140,10 +140,16 @@ export const LANGUAGES: LanguageDef[] = [
   { id: 'java', label: 'Java', extensions: ['java'], parser: () => legacy(java), lsp: 'jdtls', languageId: 'java', icon: 'java' },
   { id: 'csharp', label: 'C#', extensions: ['cs'], parser: () => legacy(csharp), icon: 'csharp' },
   { id: 'scala', label: 'Scala', extensions: ['scala', 'sc'], parser: () => legacy(scala), icon: 'scala' },
-  { id: 'kotlin', label: 'Kotlin', extensions: ['kt', 'kts'], parser: () => legacy(kotlin), icon: 'kotlin' },
+  { id: 'kotlin', label: 'Kotlin', extensions: ['kt'], parser: () => legacy(kotlin), icon: 'kotlin' },
+  // Kotlin Script (build.gradle.kts) : coloration Kotlin.
+  { id: 'kotlin-script', label: 'Kotlin Script', extensions: ['kts'], parser: () => legacy(kotlin), icon: 'kotlin' },
+  // Gradle (Groovy DSL) : proche de Groovy ; coloration Kotlin par repli raisonnable.
+  { id: 'gradle', label: 'Gradle', extensions: ['gradle'], parser: () => legacy(kotlin), icon: 'android' },
   { id: 'swift', label: 'Swift', extensions: ['swift'], parser: () => legacy(swift), icon: 'swift' },
-  { id: 'dart', label: 'Dart', extensions: ['dart'], parser: () => legacy(dart), icon: 'dart' },
-  { id: 'ruby', label: 'Ruby', extensions: ['rb', 'rake'], filenames: ['Rakefile', 'Gemfile'], parser: () => legacy(ruby), icon: 'ruby' },
+  { id: 'dart', label: 'Dart', extensions: ['dart'], parser: () => legacy(dart), lsp: 'dart-analysis-server', languageId: 'dart', icon: 'dart' },
+  // Manifeste / propriétés Apple (Info.plist) : coloration XML.
+  { id: 'plist', label: 'Property List', extensions: ['plist'], parser: () => legacy(xml), icon: 'apple' },
+  { id: 'ruby', label: 'Ruby', extensions: ['rb', 'rake'], filenames: ['Rakefile', 'Gemfile', 'Podfile', 'Fastfile', 'Appfile'], parser: () => legacy(ruby), icon: 'ruby' },
   { id: 'php', label: 'PHP', extensions: ['php'], parser: () => [], icon: 'php' },
   { id: 'lua', label: 'Lua', extensions: ['lua'], parser: () => legacy(lua), icon: 'lua' },
   { id: 'perl', label: 'Perl', extensions: ['pl', 'pm'], parser: () => legacy(perl), icon: 'perl' },

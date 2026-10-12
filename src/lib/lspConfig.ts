@@ -73,7 +73,7 @@ export interface KnownServer {
    * (ex. "NEEDS_GO_TOOLCHAIN"). Absent = installable par l'app (un clic).
    * L'UI grise le bouton et affiche une phrase courte, jamais « error ».
    */
-  needs?: 'NEEDS_GO_TOOLCHAIN' | 'NEEDS_LLVM_TOOLCHAIN' | 'NEEDS_JAVA_TOOLCHAIN';
+  needs?: 'NEEDS_GO_TOOLCHAIN' | 'NEEDS_LLVM_TOOLCHAIN' | 'NEEDS_JAVA_TOOLCHAIN' | 'NEEDS_DART_TOOLCHAIN';
 }
 
 export const KNOWN_SERVERS: KnownServer[] = [
@@ -131,6 +131,15 @@ export const KNOWN_SERVERS: KnownServer[] = [
   {
     id: 'dockerfile-language-server-nodejs',
     label: 'Dockerfile (dockerfile-language-server-nodejs)',
+  },
+  {
+    id: 'marksman',
+    label: 'Markdown (marksman)',
+  },
+  {
+    id: 'dart-analysis-server',
+    label: 'Dart / Flutter (dart analysis server)',
+    needs: 'NEEDS_DART_TOOLCHAIN',
   },
 ];
 
@@ -198,6 +207,20 @@ export const DEFAULT_LSP_CONFIG: LspConfig = {
       extensions: ['dockerfile'],
       languageId: 'dockerfile',
       args: ['--stdio'],
+    },
+    {
+      // marksman : pas d'argument `--stdio` (binaire natif, sous-commande
+      // `server` fournie par défaut côté Rust dans `lsp_exe_and_args`).
+      serverId: 'marksman',
+      extensions: ['md', 'mdx'],
+      languageId: 'markdown',
+    },
+    {
+      // Dart / Flutter : serveur fourni par le SDK Dart (`dart
+      // language-server`, arguments gérés côté Rust). Non auto-installable.
+      serverId: 'dart-analysis-server',
+      extensions: ['dart'],
+      languageId: 'dart',
     },
   ],
 };
