@@ -38,6 +38,12 @@ export interface ExtensionInfo {
   extension_dependencies?: string[];
   /** Ids bundled by this one (`extensionPack`). Informational. */
   extension_pack?: string[];
+  /**
+   * Executables tiers embarqués/lancés par l'extension (`origin.binaries`),
+   * chemins relatifs au dossier de l'extension. Chaque binaire exige un
+   * consentement explicite de l'utilisateur au premier usage.
+   */
+  binaries?: string[];
 }
 
 /** Root folder where extensions are installed. */

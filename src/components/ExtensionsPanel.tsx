@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Puzzle, Trash2, RefreshCw, Download, FileCode2, AlertTriangle, Package,
   Search, Loader2, Check, BadgeCheck, Star, Play, Square, ChevronDown, ChevronRight, ShieldCheck,
+  Binary,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -15,6 +16,9 @@ import {
   CAPABILITY_INFO, consentStatus, requiredCapabilities, setGrantedCapabilities,
   type Capability,
 } from "../lib/extensions/permissions";
+import {
+  binaryConsentStatus, setGrantedBinaries,
+} from "../lib/extensions/binaryConsent";
 import type { ExtensionHostRecord } from "../lib/extensions/host";
 
 type Tab = "installed" | "marketplace";
@@ -49,6 +53,8 @@ export default function ExtensionsPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   /** Extension awaiting a consent decision (opens the permissions modal). */
   const [consentFor, setConsentFor] = useState<ExtensionInfo | null>(null);
+  /** Extension awaiting approval of its third-party binaries. */
+  const [binaryConsentFor, setBinaryConsentFor] = useState<ExtensionInfo | null>(null);
 
   const recordById = useMemo(() => {
     const map = new Map<string, ExtensionHostRecord>();
@@ -154,6 +160,12 @@ export default function ExtensionsPanel() {
       setConsentFor(ext); // ask first — nothing runs without approval
       return;
     }
+    // Binaires tiers : confirmation obligatoire au premier usage, avant toute
+    // exécution de code.
+    if (!binaryConsentStatus(ext.id, ext.binaries ?? []).granted) {
+      setBinaryConsentFor(ext);
+      return;
+    }
     setBusy(true);
     try {
       await activate(ext);
@@ -167,6 +179,20 @@ export default function ExtensionsPanel() {
   const handleGrant = useCallback(async (ext: ExtensionInfo, caps: Capability[]) => {
     setGrantedCapabilities(ext.id, caps);
     setConsentFor(null);
+    setBusy(true);
+    try {
+      await activate(ext);
+    } catch (e) {
+      setNotice(`Activation failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [activate]);
+
+  /** Approuve les binaires tiers puis active l'extension. */
+  const handleGrantBinaries = useCallback(async (ext: ExtensionInfo, binaries: string[]) => {
+    setGrantedBinaries(ext.id, binaries);
+    setBinaryConsentFor(null);
     setBusy(true);
     try {
       await activate(ext);
@@ -270,6 +296,14 @@ export default function ExtensionsPanel() {
           onGrant={caps => void handleGrant(consentFor, caps)}
         />
       )}
+
+      {binaryConsentFor && (
+        <BinaryConsentModal
+          ext={binaryConsentFor}
+          onCancel={() => setBinaryConsentFor(null)}
+          onGrant={binaries => void handleGrantBinaries(binaryConsentFor, binaries)}
+        />
+      )}
     </div>
   );
 }
@@ -312,7 +346,8 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
         // Le bouton Activer n'a de sens que si un entrypoint est déclaré ET
         // résolvable, et que les prérequis (`extensionDependencies`) sont
         // satisfaits. On grise dans les deux cas : rien d'utile à exécuter.
-        const canRun = !!ext.main && state !== "unsupported" && state !== "prerequisites-missing";
+        const canRun = !!ext.main && state !== "unsupported" && state !== "prerequisites-missing"
+          && state !== "binary-consent-required";
         const expanded = expandedId === ext.id;
         const hasLog = (rec?.log.length ?? 0) > 0;
         return (
@@ -329,6 +364,7 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
                 {state === "error" && <ErrorBadge />}
                 {state === "unsupported" && <UnsupportedBadge />}
                 {state === "prerequisites-missing" && <PrereqBadge />}
+                {state === "binary-consent-required" && <BinaryBadge />}
               </div>
               {ext.publisher && (
                 <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -366,6 +402,11 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
               {state === "prerequisites-missing" && (
                 <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", marginTop: 4, lineHeight: 1.4 }}>
                   {rec?.error ?? "Dépendances manquantes."} — installe la ou les extensions requises pour l'activer.
+                </div>
+              )}
+              {state === "binary-consent-required" && (
+                <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", marginTop: 4, lineHeight: 1.4 }}>
+                  {rec?.error ?? "Binaires tiers à approuver."} — approuve-les pour activer l'extension.
                 </div>
               )}
             </div>
@@ -455,6 +496,20 @@ function PrereqBadge() {
   return (
     <span className="flex items-center gap-1" style={{ fontSize: "10px", padding: "1px 5px", borderRadius: 3, background: "var(--origin-bg-hover)", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>
       <Puzzle size={9} /> dépendance
+    </span>
+  );
+}
+
+/**
+ * État « consentement binaire requis » : l'extension embarque des binaires
+ * tiers (`origin.binaries`) que l'utilisateur n'a pas encore approuvés. Ce n'est
+ * PAS une erreur — l'extension reste installée et activable dès approbation.
+ * Badge neutre, action = approuver les binaires.
+ */
+function BinaryBadge() {
+  return (
+    <span className="flex items-center gap-1" style={{ fontSize: "10px", padding: "1px 5px", borderRadius: 3, background: "var(--origin-bg-hover)", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>
+      <Binary size={9} /> binaire tiers
     </span>
   );
 }
@@ -680,6 +735,106 @@ function ConsentModal({ ext, onCancel, onGrant }: {
               border: "1px solid transparent", fontWeight: 500,
             }}>
             Grant &amp; Activate
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * Confirmation de l'usage de binaires tiers. Affichée au premier usage : une
+ * extension qui embarque des exécutables (`origin.binaries`) ne peut être
+ * activée tant que l'utilisateur ne les a pas explicitement approuvés. Aucun
+ * binaire tiers n'est jamais lancé silencieusement.
+ */
+function BinaryConsentModal({ ext, onCancel, onGrant }: {
+  ext: ExtensionInfo;
+  onCancel: () => void;
+  onGrant: (binaries: string[]) => void;
+}) {
+  const { missing } = binaryConsentStatus(ext.id, ext.binaries ?? []);
+  const [checked, setChecked] = useState<Set<string>>(() => new Set(missing));
+  const isModal = typeof document !== "undefined";
+
+  const toggle = (bin: string) => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      if (next.has(bin)) next.delete(bin); else next.add(bin);
+      return next;
+    });
+  };
+
+  const allApproved = missing.every(b => checked.has(b));
+
+  if (!isModal) return null;
+
+  return createPortal(
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 460, maxWidth: "90vw",
+          background: "var(--origin-bg-surface)",
+          border: "1px solid var(--origin-border-default)",
+          borderRadius: 10, padding: "22px 24px",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
+          display: "flex", flexDirection: "column", gap: 14,
+        }}>
+        <div className="flex items-center gap-2">
+          <Binary size={18} style={{ color: "var(--origin-accent-blue)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--origin-fg-default)" }}>
+            Third-party binaries for {ext.display_name}
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: "var(--origin-fg-muted)", margin: 0, lineHeight: 1.5 }}>
+          This extension ships executables it may run. Origin never launches a third-party
+          binary without your approval — review and confirm below.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {missing.map(bin => {
+            const on = checked.has(bin);
+            return (
+              <label key={bin} className="flex items-start gap-2" style={{ cursor: "pointer" }}>
+                <input type="checkbox" checked={on} onChange={() => toggle(bin)}
+                  style={{ marginTop: 3, flexShrink: 0 }} />
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 12, color: "var(--origin-fg-default)", fontWeight: 500, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+                    {bin}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center justify-end gap-2" style={{ marginTop: 4 }}>
+          <button onClick={onCancel}
+            style={{
+              padding: "6px 14px", fontSize: 12, borderRadius: 6, cursor: "pointer",
+              background: "var(--origin-bg-hover)", color: "var(--origin-fg-default)",
+              border: "1px solid var(--origin-border-default)",
+            }}>
+            Cancel
+          </button>
+          <button onClick={() => onGrant(Array.from(checked))} disabled={!allApproved}
+            title={allApproved ? "Approve and activate" : "Approve every binary to continue"}
+            style={{
+              padding: "6px 14px", fontSize: 12, borderRadius: 6,
+              cursor: allApproved ? "pointer" : "default",
+              background: allApproved ? "var(--origin-accent-blue)" : "var(--origin-bg-hover)",
+              color: allApproved ? "#fff" : "var(--origin-fg-subtle)",
+              border: "1px solid transparent", fontWeight: 500,
+            }}>
+            Approve &amp; Activate
           </button>
         </div>
       </div>

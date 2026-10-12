@@ -7,6 +7,7 @@ import { type ExtensionInfo, listExtensions, readExtensionAsset } from "../lib/e
 import { tmLanguageToStreamLanguage } from "../lib/tmLanguage";
 import { ExtensionHost, type ExtensionHostRecord, type HostDelegate } from "../lib/extensions/host";
 import { clearCapabilities } from "../lib/extensions/permissions";
+import { clearBinaryConsent } from "../lib/extensions/binaryConsent";
 import { executeCommand as runRegisteredCommand } from "../lib/extensions/registry";
 import { readDir, readFile, writeFile } from "../lib/fs";
 
@@ -289,4 +290,5 @@ export function createDefaultHostServices(): Pick<
 /** Clear stored consent for an extension (used when it is uninstalled). */
 export function revokeConsent(extensionId: string): void {
   clearCapabilities(extensionId);
+  clearBinaryConsent(extensionId);
 }

@@ -94,6 +94,12 @@ pub struct ExtensionInfo {
     /// pack does not auto-install members here, but the UI can surface them.
     #[serde(default)]
     pub extension_pack: Vec<String>,
+    /// Third-party executables the extension ships or runs (declared under the
+    /// non-standard `origin.binaries` key). Every entry is a path relative to
+    /// the extension folder. The host requires the user's explicit consent at
+    /// first use — never silently runs a third-party binary.
+    #[serde(default)]
+    pub binaries: Vec<String>,
 }
 
 /// Subset of the VS Code `package.json` manifest we care about.
@@ -116,7 +122,19 @@ struct Manifest {
     #[serde(default, rename = "extensionPack")]
     extension_pack: Vec<String>,
     #[serde(default)]
+    origin: OriginSection,
+    #[serde(default)]
     contributes: Contributes,
+}
+
+/// Origin-specific (non-standard) manifest section. Kept separate from the VS
+/// Code `contributes` block so an Origin field can never be mistaken for a
+/// standard one.
+#[derive(serde::Deserialize, Default)]
+struct OriginSection {
+    /// Executables the extension ships/runs, relative to its folder.
+    #[serde(default)]
+    binaries: Vec<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -353,6 +371,7 @@ fn read_installed_extension(dir: &Path) -> Result<ExtensionInfo, String> {
         activation_events: manifest.activation_events.clone(),
         extension_dependencies: manifest.extension_dependencies.clone(),
         extension_pack: manifest.extension_pack.clone(),
+        binaries: manifest.origin.binaries.clone(),
     })
 }
 
@@ -517,6 +536,7 @@ pub fn inspect_extension(source_path: String) -> Result<ExtensionInfo, String> {
         activation_events: manifest.activation_events.clone(),
         extension_dependencies: manifest.extension_dependencies.clone(),
         extension_pack: manifest.extension_pack.clone(),
+        binaries: manifest.origin.binaries.clone(),
     })
 }
 
@@ -659,5 +679,19 @@ mod tests {
         let m = read_manifest_from_vsix(&vsix).expect("manifest parses");
         assert!(m.extension_dependencies.is_empty());
         assert!(m.extension_pack.is_empty());
+        assert!(m.origin.binaries.is_empty());
+    }
+
+    #[test]
+    fn parses_origin_declared_binaries() {
+        let manifest = r#"{
+            "name": "tool-shipper",
+            "publisher": "acme",
+            "version": "1.0.0",
+            "origin": { "binaries": ["bin/mytool", "bin/helper"] }
+        }"#;
+        let vsix = build_vsix(manifest, &[]);
+        let m = read_manifest_from_vsix(&vsix).expect("manifest parses");
+        assert_eq!(m.origin.binaries, vec!["bin/mytool", "bin/helper"]);
     }
 }

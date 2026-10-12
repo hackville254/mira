@@ -24,6 +24,7 @@ import {
 } from "./permissions";
 import { resolveEntry, type ResolvedEntry } from "./entry";
 import { checkPrerequisites } from "./guard";
+import { binaryConsentStatus } from "./binaryConsent";
 import {
   registerCommand as registerInRegistry,
   unregisterAllForExtension,
@@ -76,7 +77,8 @@ export type ActivationState =
   | "active"
   | "error"
   | "unsupported"
-  | "prerequisites-missing";
+  | "prerequisites-missing"
+  | "binary-consent-required";
 
 export interface ExtensionHostRecord {
   extensionId: string;
@@ -237,6 +239,18 @@ export class ExtensionHost {
       throw new Error(
         `Missing permissions: ${status.missing.join(", ")}. Grant them before activating.`,
       );
+    }
+
+    // Consentement des binaires tiers : l'extension déclare `origin.binaries`
+    // des exécutables qu'elle embarque/lance. On refuse d'activer tant que
+    // l'utilisateur ne les a pas approuvés explicitement — jamais de lancement
+    // silencieux d'un binaire tiers (état explicable, pas une « error »).
+    const binStatus = binaryConsentStatus(ext.id, ext.binaries ?? []);
+    if (!binStatus.granted) {
+      rec.state = "binary-consent-required";
+      rec.error = `Binaires tiers à approuver : ${binStatus.missing.join(", ")}`;
+      this.emit();
+      throw new Error(rec.error);
     }
 
     // Already active → no-op.

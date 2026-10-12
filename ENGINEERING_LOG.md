@@ -5,6 +5,37 @@
 
 ---
 
+### [2026-10-12T21:35] | Extensions : consentement des binaires tiers & garde de prérequis (ext-guard + ext-consent)
+
+- **Contexte :**
+  Deux garde-fous manquaient au tier « code » des extensions (Level 2, sandbox QuickJS). **(1) ext-guard** : une extension déclarant `extensionDependencies` pouvait être activée alors que ses dépendances n'étaient pas installées, provoquant des échecs opaques à l'exécution. **(2) ext-consent** : aucune extension ne peut embarquer/lancer un binaire tiers sans confirmation — règle produit « tout binaire tiers demande confirmation au premier usage ». Objectif : bloquer l'activation tant qu'un prérequis manque ou qu'un binaire tiers n'est pas approuvé, avec des états **explicables** (jamais un « error » nu) et une action exécutable côté UI.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/extensions.rs` : `ExtensionInfo` expose désormais `extension_dependencies` / `extension_pack` (standard `extensionDependencies` / `extensionPack`) et `binaries` (section **non standard** `origin.binaries`, liste de chemins relatifs). Nouveau struct `OriginSection`. 3 tests Rust ajoutés (deps/pack parsés, défauts vides, binaires `origin`).
+  - `src/lib/extensions.ts` : champs `extension_dependencies`, `extension_pack`, `binaries` ajoutés à `ExtensionInfo`.
+  - `src/lib/extensions/guard.ts` (**nouveau**) : `checkPrerequisites` / `describeMissing` — résolution pure et testable des prérequis (comparaison d'ids insensible à la casse).
+  - `src/lib/extensions/binaryConsent.ts` (**nouveau**) : modèle de consentement binaire — `normalizeBinaryPath` / `normalizeBinaryList` (clé stable), `missingBinaryConsent`, `grantedBinaries` / `setGrantedBinaries` / `addGrantedBinaries` / `clearBinaryConsent`, `binaryConsentStatus`. Persistance localStorage `origin-extension-binary-consents`.
+  - `src/lib/extensions/host.ts` : états `prerequisites-missing` et `binary-consent-required` ajoutés à `ActivationState`. Dans `activate()` : garde `checkPrerequisites` **avant** les permissions, puis garde `binaryConsentStatus` — activation refusée (état explicable, pas « error ») tant que non satisfait.
+  - `src/components/ExtensionsPanel.tsx` : badges neutres `PrereqBadge` / `BinaryBadge`, messages explicatifs + action ; bouton Activer grisé pour ces états ; nouvelle `BinaryConsentModal` (approbation binaire par binaire).
+  - `src/context/ExtensionsContext.tsx` : `revokeConsent` purge aussi le consentement binaire à la désinstallation.
+
+- **Décisions Techniques :**
+  - **Binaires déclarés hors `contributes`** : champ non standard `origin.binaries` isolé dans son propre struct, pour qu'un champ Origin ne soit jamais confondu avec un champ VS Code standard.
+  - **Consentement pur + persistance séparée** : `binaryConsent.ts` garde la logique de normalisation/calcul testable **sans** effet de bord ; le stockage est isolé en fin de module. Les chemins sont normalisés (`\` → `/`, `./` retiré) pour qu'une variante Windows/Unix désigne le même binaire.
+  - **Défense en profondeur** : le consentement est vérifié à l'activation (host) **et** reste exigé pour toute capacité sensible (déjà en place via `assertCapability`). Aucun lancement silencieux possible.
+  - **États non bloquants plutôt qu'« error »** : prérequis/binaire manquants laissent l'extension installée et **deviendront activables** dès satisfaction — cohérent avec la politique « jamais un error nu, toujours une action ».
+
+- **Impacts & Dépendances :**
+  - Backend : `extensions.rs` (manifest + `ExtensionInfo`). Frontend : `extensions.ts`, `guard.ts` (nouveau), `binaryConsent.ts` (nouveau), `host.ts`, `ExtensionsPanel.tsx`, `ExtensionsContext.tsx`.
+  - `ExtensionInfo` gagne 3 champs optionnels : rétrocompatible (défauts vides côté Rust).
+  - Validation : `cargo test --lib` **52 passed** (+3), `npm test` **100 passed** (+17 : guard + binaryConsent), `tsc --noEmit` **0 erreur**, `eslint` **0 erreur** (warnings préexistants inchangés).
+
+- **Prochaines étapes :**
+  - Câbler le lancement effectif d'un binaire d'extension (aujourd'hui : consentement + gating en place ; l'exécution réelle d'un `origin.binaries` via une commande Tauri dédiée reste à brancher).
+  - Optionnel : téléchargement du Node portable non branché (v1).
+
+---
+
 ### [2026-10-12T20:40] | LSP : résolution multi-source, erreur structurée & support des serveurs embarqués dans les extensions VS Code
 
 - **Contexte :**
