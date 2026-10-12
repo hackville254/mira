@@ -5,6 +5,36 @@
 
 ---
 
+### [2026-10-12T23:55] | Toasts LSP clarifiés + icônes Material officielles dans l'explorateur
+
+- **Contexte :**
+  Deux irritants d'UX signalés par l'utilisateur : (1) les toasts LSP contenaient des **tirets cadratins** (`—`) et un message de succès peu explicite (« installé — complétion activée ») ; (2) dans l'éditeur/explorateur, **les icônes de langages ne correspondaient pas au langage réel** (glyphes monochromes génériques : Python = engrenage, Go = symbole de code…).
+
+- **Modifications effectuées :**
+  - **`src/App.tsx`** (`handleMissingServer`) : suppression de tous les tirets cadratins dans les toasts LSP ; message de succès remplacé par **« X installé avec succès »** ; messages d'erreur `NEEDS_PYTHON`/`NEEDS_NODE` reformulés en une phrase claire (action exécutable conservée).
+  - **`src/themes/materialIcons.ts`** : réécriture complète sur la base des **SVG officiels du Material Icon Theme** (`github.com/PKief/vscode-material-icon-theme`), **couleur intégrée** (`fill`), au lieu des couples forme+couleur génériques.
+    - `ICONS` : catalogue autonome de SVG complets (web, data, langages, shell/build/infra, `lock`, `pdf`, `zip`, `image`).
+    - `FILE_NAMES` (nom exact) et `FILE_EXTENSIONS` (extension) : mappings déclaratifs exhaustifs (Dockerfile, Makefile, tsconfig, Cargo, go.mod, requirements.txt, Gemfile, LICENSE, README…).
+    - `ICON_KEY_ALIASES` : pont explicite entre les clés d'icône du registre `lib/languages.ts` (`tsx`, `jsx`) et le catalogue (`react_ts`, `react`).
+    - `pickKey` : priorité **langage → nom exact → extension → repli** (`file`/`folder`).
+    - `iconDataUri` : encode un SVG complet en data-URI `image/svg+xml` (cache mémoire) ; **API publique `resolveMaterialIcon` conservée** (repli toujours non-null).
+
+- **Décisions techniques :**
+  - **Icônes Material officielles plutôt que glyphes maison** : fidélité au comportement VS Code (extension préinstallée), reconnaissance immédiate des langages, zéro dépendance réseau.
+  - **Catalogue auto-contenu (SVG + couleur intégrée)** : élimine la paire forme/couleur qui rendait le mapping fragile ; chaque clé EST l'icône finale.
+  - **SVG générés côté code** (jamais lus sur disque) → aucune source non fiable ; rendu via `<img src=…>` (média passif, pas de markup vivant).
+  - **Alias explicites** (`ICON_KEY_ALIASES`) plutôt que renommage des clés du registre : évite de coupler le registre de langages au catalogue d'icônes.
+
+- **Impacts & Dépendances :**
+  - `src/themes/materialIcons.ts` (réécrit), `src/App.tsx` (toasts). Interface `resolveMaterialIcon(name, isDir, expanded, languageIcon)` **inchangée** → `FileIcon.tsx` non modifié.
+  - Le thème d'icônes d'extension reste **prioritaire** (`FileIcon` : thème → bundle Material), conforme à VS Code.
+
+- **Prochaines étapes :**
+  - Poursuivre le câblage LSP (candidats à valider avec l'utilisateur : Markdown resté sans serveur, `gopls`/`clangd` grisés hors périmètre auto-installable…).
+  - Envisager une distinction visuelle dossier ouvert/fermé si le thème courant le requiert.
+
+---
+
 ### [2026-10-12T23:20] | Correctif « Node.js introuvable » (nvm/`n`, npm-cli.js) — débloque les serveurs LSP npm
 
 - **Contexte :**

@@ -425,7 +425,7 @@ function App() {
           : info.needs === 'NEEDS_LLVM_TOOLCHAIN'
             ? 'LLVM toolchain required (clangd ships with LLVM)'
             : 'Java toolchain required (install a JDK, then jdtls)';
-      showToast(`${info.label} — ${reason}`, 'info');
+      showToast(`${info.label} : ${reason}`, 'info');
       return;
     }
 
@@ -448,7 +448,7 @@ function App() {
           .then(() => {
             invalidateLspClient(info.id);
             setLspGeneration(g => g + 1);
-            showToast(`${label} installé — complétion activée`, 'success');
+            showToast(`${label} installé avec succès`, 'success');
           })
           .catch((e: unknown) => {
             // Rust renvoie un JSON structuré { code, reason } : on le traduit en
@@ -465,12 +465,12 @@ function App() {
             }
             if (reason === 'NEEDS_PYTHON') {
               showToast(
-                `${label} — Python introuvable : installe Python 3 puis réessaie (le serveur s'installera automatiquement).`,
+                `${label} : Python introuvable, installe Python 3 puis réessaie (le serveur s'installera automatiquement).`,
                 'error',
               );
             } else if (reason === 'NEEDS_NODE') {
               showToast(
-                `${label} — Node.js introuvable : installe Node puis réessaie (le serveur s'installera automatiquement).`,
+                `${label} : Node.js introuvable, installe Node puis réessaie (le serveur s'installera automatiquement).`,
                 'error',
               );
             } else if (code === 'LSP_NOT_AUTO_INSTALLABLE') {
