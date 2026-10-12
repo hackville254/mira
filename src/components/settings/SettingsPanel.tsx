@@ -922,7 +922,14 @@ function ServerStatusBadge({ status }: { status: LspProbeResult | 'loading' | 'e
     if (status.found) {
       color = "var(--origin-semantic-success, #2ea043)";
       label = "found";
-      title = `Found via ${status.source ?? "PATH"}\n${status.path ?? ""}`;
+      const src = status.source === 'extension'
+        ? 'bundled extension'
+        : status.source === 'serverPath'
+          ? 'configured path'
+          : status.source === 'app'
+            ? 'local install'
+            : 'PATH';
+      title = `Found via ${src}\n${status.path ?? ""}`;
     } else {
       color = "var(--origin-semantic-error, #f85149)";
       label = "not found";
@@ -955,9 +962,8 @@ function LspSection() {
 
   /** Interroge la disponibilité de tous les serveurs configurés. */
   const runProbe = useCallback(async (servers: LspServerConfig[]) => {
-    const initial: Record<string, 'loading'> = {};
-    for (const s of servers) initial[s.serverId] = 'loading';
-    setProbe(initial);
+    // On ne met à jour le state qu'à la résolution de chaque probe : l'absence
+    // d'entrée est interprétée comme « en cours » par le badge de statut.
     await Promise.all(servers.map(async s => {
       try {
         const result = await probeLspServer(s.serverId, s.serverPath);
@@ -1111,10 +1117,16 @@ function LspSection() {
 
               {(() => {
                 const info = KNOWN_SERVERS.find(s => s.id === server.serverId);
-                if (!info) return null;
+                if (!info?.needs) return null;
+                const reason =
+                  info.needs === 'NEEDS_GO_TOOLCHAIN'
+                    ? 'Go toolchain required (gopls installs via "go install")'
+                    : info.needs === 'NEEDS_LLVM_TOOLCHAIN'
+                      ? 'LLVM toolchain required (clangd ships with LLVM)'
+                      : 'Java toolchain required (install a JDK, then jdtls)';
                 return (
-                  <div style={{ fontSize: 11.5, color: "var(--origin-fg-subtle)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
-                    {info.installCommand}
+                  <div style={{ fontSize: 11.5, color: "var(--origin-fg-subtle)", marginTop: 4, fontFamily: "var(--font-sans)" }}>
+                    {reason}
                   </div>
                 );
               })()}

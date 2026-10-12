@@ -309,7 +309,10 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
       {extensions.map(ext => {
         const rec = recordById.get(ext.id);
         const state = rec?.state ?? "inactive";
-        const canRun = !!ext.main;
+        // Le bouton Activer n'a de sens que si un entrypoint est déclaré ET
+        // résolvable, et que les prérequis (`extensionDependencies`) sont
+        // satisfaits. On grise dans les deux cas : rien d'utile à exécuter.
+        const canRun = !!ext.main && state !== "unsupported" && state !== "prerequisites-missing";
         const expanded = expandedId === ext.id;
         const hasLog = (rec?.log.length ?? 0) > 0;
         return (
@@ -324,6 +327,8 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
                 <span style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>v{ext.version}</span>
                 {state === "active" && <ActiveBadge />}
                 {state === "error" && <ErrorBadge />}
+                {state === "unsupported" && <UnsupportedBadge />}
+                {state === "prerequisites-missing" && <PrereqBadge />}
               </div>
               {ext.publisher && (
                 <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -351,6 +356,16 @@ function InstalledList({ extensions, loading, error, busy, recordById, onUninsta
               {state === "error" && rec?.error && (
                 <div style={{ fontSize: "10px", color: "var(--origin-semantic-error)", marginTop: 4, lineHeight: 1.4 }}>
                   {rec.error}
+                </div>
+              )}
+              {state === "unsupported" && (
+                <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", marginTop: 4, lineHeight: 1.4 }}>
+                  Code non supporté en mode léger. Les contributions (thèmes, grammaires, snippets) restent actives.
+                </div>
+              )}
+              {state === "prerequisites-missing" && (
+                <div style={{ fontSize: "10px", color: "var(--origin-fg-subtle)", marginTop: 4, lineHeight: 1.4 }}>
+                  {rec?.error ?? "Dépendances manquantes."} — installe la ou les extensions requises pour l'activer.
                 </div>
               )}
             </div>
@@ -414,6 +429,32 @@ function ErrorBadge() {
   return (
     <span className="flex items-center gap-1" style={{ fontSize: "10px", padding: "1px 5px", borderRadius: 3, background: "color-mix(in srgb, var(--origin-semantic-error) 18%, transparent)", color: "var(--origin-semantic-error)", flexShrink: 0 }}>
       <AlertTriangle size={9} /> error
+    </span>
+  );
+}
+
+/**
+ * État « code non supporté en mode léger » : l'extension est valide, mais son
+ * entrypoint exécutable est introuvable. Ce n'est PAS une erreur — les
+ * contributions passives restent actives. Badge neutre volontairement.
+ */
+function UnsupportedBadge() {
+  return (
+    <span className="flex items-center gap-1" style={{ fontSize: "10px", padding: "1px 5px", borderRadius: 3, background: "var(--origin-bg-hover)", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>
+      <FileCode2 size={9} /> code léger
+    </span>
+  );
+}
+
+/**
+ * État « prérequis manquants » : une `extensionDependencies` déclarée n'est pas
+ * installée. Ce n'est PAS une erreur — l'extension reste installée et activable
+ * dès que la dépendance est présente. Badge neutre, action = installer la dépend.
+ */
+function PrereqBadge() {
+  return (
+    <span className="flex items-center gap-1" style={{ fontSize: "10px", padding: "1px 5px", borderRadius: 3, background: "var(--origin-bg-hover)", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>
+      <Puzzle size={9} /> dépendance
     </span>
   );
 }

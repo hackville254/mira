@@ -83,14 +83,13 @@ fn validate_argv_component(value: &str, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Résout un programme nu via le PATH (comme `which`). Retourne `true` si un
-/// fichier exécutable correspondant existe. Purement une vérification : le
-/// binaire trouvé n'est PAS exécuté ici.
+/// Résout un programme nu via le PATH **enrichi** (comme `which`). Retourne
+/// `true` si un fichier exécutable correspondant existe. Purement une
+/// vérification : le binaire trouvé n'est PAS exécuté ici.
+///
+/// On interroge le PATH enrichi et non celui du process : lancée depuis le GUI,
+/// l'app ne voit pas `~/.cargo/bin`, `/opt/homebrew/bin`, etc.
 fn program_in_path(program: &str) -> bool {
-    let path_var = match std::env::var_os("PATH") {
-        Some(v) => v,
-        None => return false,
-    };
     #[cfg(windows)]
     let extensions: Vec<String> = std::env::var("PATHEXT")
         .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
@@ -99,7 +98,7 @@ fn program_in_path(program: &str) -> bool {
         .filter(|e| !e.is_empty())
         .collect();
 
-    for dir in std::env::split_paths(&path_var) {
+    for dir in crate::env_path::enriched_dirs() {
         #[cfg(windows)]
         {
             for ext in &extensions {
@@ -206,6 +205,9 @@ pub fn terminal_create_task(
         cmd.arg(arg);
     }
     cmd.cwd(&cwd);
+    // PATH enrichi : une app GUI n'hérite pas du PATH du shell, donc `node`,
+    // `cargo`, etc. seraient introuvables dans le PTY sans cette injection.
+    cmd.env("PATH", crate::env_path::enriched_path_os().to_string_lossy().as_ref());
 
     let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
@@ -253,6 +255,9 @@ pub fn terminal_create(
 
     let mut cmd = CommandBuilder::new(default_shell());
     cmd.cwd(&cwd);
+    // Idem tâche : le shell interactif doit hériter du PATH enrichi (surtout sous
+    // macOS où un shell non-login ne relit pas les rc utilisateur).
+    cmd.env("PATH", crate::env_path::enriched_path_os().to_string_lossy().as_ref());
 
     // Slave dropped after spawn so master gets EOF on shell exit
     let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;

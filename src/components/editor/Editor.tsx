@@ -18,6 +18,7 @@ import { createHunkControls } from '../../lib/hunkControls';
 import { getLanguageExtension, languageLabel } from './languageSupport';
 import { useExtensions } from '../../context/ExtensionsContext';
 import { createLspExtension } from '../../lib/lspCm6';
+import type { MissingServerInfo } from '../../lib/lspCm6';
 import { isLspSupported } from '../../lib/lsp';
 import { resolveLspConfig, findServerForFile } from '../../lib/lspConfigStore';
 import { useToast } from '../ui/Toast';
@@ -240,7 +241,12 @@ interface Props {
   // LSP props
   rootPath?: string | null;
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
-  onMissingServer?: (language: string, installCmd: string) => void;
+  onMissingServer?: (info: MissingServerInfo) => void;
+  /**
+   * Incrémenté quand un serveur LSP vient d'être installé : force la recréation
+   * de l'extension LSP pour activer la complétion sans action de l'utilisateur.
+   */
+  lspGeneration?: number;
   // AI inline autocomplete
   getAiCompletion?: AiCompletionFn;
   // DAP debugging
@@ -250,7 +256,7 @@ interface Props {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const Editor = forwardRef<EditorHandle, Props>(function Editor(
-  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, getAiCompletion, onToggleBreakpoint }, ref
+  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, lspGeneration, getAiCompletion, onToggleBreakpoint }, ref
 ) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const viewRef        = useRef<EditorView | null>(null);
@@ -563,7 +569,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         args,
         serverPath,
         onDefinitionJump: (fp, ln, col) => onDefinitionJumpRef.current?.(fp, ln, col),
-        onMissingServer: (srv, cmd) => onMissingServerRef.current?.(srv, cmd),
+        onMissingServer: info => onMissingServerRef.current?.(info),
       });
       if (cancelled) return;
       const v = viewRef.current;
@@ -576,7 +582,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       // eslint-disable-next-line react-hooks/exhaustive-deps -- lspCompartment is a stable ref, never reassigned
       if (v) v.dispatch({ effects: lspCompartment.current.reconfigure([]) });
     };
-  }, [path, rootPath]);
+  }, [path, rootPath, lspGeneration]);
 
   // DAP breakpoint gutter — install/teardown per file path
   useEffect(() => {

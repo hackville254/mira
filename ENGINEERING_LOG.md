@@ -5,6 +5,43 @@
 
 ---
 
+### [2026-10-12T20:40] | LSP : résolution multi-source, erreur structurée & support des serveurs embarqués dans les extensions VS Code
+
+- **Contexte :**
+  Symptôme rapporté : « Python (pylsp) language server not found » — sans savoir si la cause était l'absence d'extension ou autre chose. Diagnostic : le binaire `pylsp` n'est **pas** sur la machine. Trois faiblesses réelles (au-delà du binaire manquant) : (1) la détection d'absence se faisait en **parsant le texte** du message d'erreur (`os error 2`, « not found »…) — fragile, localisé, dépendant de l'OS ; (2) **aucun diagnostic proactif** — on ne découvrait le manque qu'à l'ouverture d'un fichier ; (3) le lancement n'avait **qu'une seule source** (PATH), donc une extension VS Code embarquant son serveur n'avait aucun effet. Objectif : rendre le LSP fiable de bout en bout et tirer parti des extensions `.vsix` déjà installables (marketplace Open VSX + fichier).
+
+- **Modifications effectuées :**
+  - `src-tauri/src/lsp.rs` :
+    - **Résolution multi-source** `resolve_lsp_binary(app, server_id, bare_name, serverPath)` par ordre de précédence : **(1)** `serverPath` explicite (config, chemin absolu délibéré) → **(2)** binaires embarqués dans l'app (`<app_data>/lsp-servers/<serverId>/`) → **(3)** **PATH** système → **(4)** **extensions installées** (`<app_data>/extensions/*/{node_modules/.bin,bin,server,out,dist,racine}`). Pure résolution de chemin, **aucun processus lancé**.
+    - **Erreur structurée** `LspBinaryError { code: "LSP_BINARY_NOT_FOUND", serverId, binary, searched }` sérialisée en JSON — contrat **stable**, remplace l'heuristique sur le texte.
+    - Nouvelle commande **`lsp_probe`** (`LspProbeResult` : `found`, `path`, `source`, `searched`) : interroge la disponibilité d'un serveur **sans le spawner** ; `classify_source` distingue `serverPath` / `app` / `extension` / `PATH`.
+    - `lsp_start` accepte désormais `serverPath` et résout via l'allowlist (le binaire reste imposé par Rust, jamais par le frontend).
+  - `src/lib/lspProbe.ts` (**nouveau**) : `parseLspBinaryError` (parse le JSON structuré) + `probeLspServer`.
+  - `src/lib/lspConfig.ts` : `serverPath` ajouté au schéma `LspServerConfigSchema` ; constante `LSP_BINARY_NOT_FOUND`.
+  - `src/lib/lspCm6.ts` : `isMissingBinaryError` ne parse **plus** de texte → compare le **code** via `parseLspBinaryError` ; `serverPath` propagé à `lsp_start`.
+  - `src/components/editor/Editor.tsx` : passe `resolved.config.serverPath` à `createLspExtension`.
+  - `src/components/settings/SettingsPanel.tsx` : **badge de statut par serveur** (found / not found / n-a, avec la source en tooltip), bouton **Rescan servers**, champ **Server path (optional — overrides PATH)**.
+  - `src/App.tsx` : `handleMissingServer` n'ouvre le terminal d'installation que si la commande du catalogue est **réellement exécutable** (les entrées « See https://… » comme clangd/jdtls affichent l'info au lieu d'un bouton mort).
+
+- **Décisions Techniques :**
+  - **Code d'erreur stable plutôt que parsing de texte** : le seul contrat fiable entre Rust et le webview. Fin des faux négatifs selon la locale/OS.
+  - **Probe séparé du spawn** : diagnostic collectif et sans effet de bord ; l'UI connaît l'état avant d'ouvrir un fichier.
+  - **Extensions en dernier recours (après PATH)** : le comportement reste **prévisible** — si l'utilisateur a le binaire dans son PATH (pip/npm/rustup), il gagne ; les extensions ne servent que de repli. On évite qu'un serveur bundlé périmé masque une install volontaire.
+  - **Périmètre « serveurs embarqués » assumé** : on ne scanne **que** des emplacements déterministes d'une extension, et on ne devine jamais un id de binaire (imposé par l'allowlist). Le **shim complet de `vscode-languageclient`** (exécution de `main.js` + transports IPC) a été écarté : coût démesuré pour un résultat fragile — reporté, non requis pour couvrir la majorité des serveurs packagés.
+  - **Sécurité** : aucune extension n'est exécutée ni son code chargé lors de la résolution ; le nom de binaire vient de l'allowlist Rust ; `serverPath` est validé (absolu + existant) et ne peut jamais désigner un programme arbitraire hors allowlist.
+
+- **Impacts & Dépendances :**
+  - Backend : `lsp.rs` (résolution + `lsp_probe`), `lib.rs` (`generate_handler!`). Frontend : `lspProbe.ts` (nouveau), `lspConfig.ts`, `lspCm6.ts`, `Editor.tsx`, `SettingsPanel.tsx`, `App.tsx`.
+  - `lsp_start` gagne un paramètre `serverPath` (optionnel) : rétrocompatible (les appels sans `serverPath` retombent sur PATH).
+  - Validation : `cargo check` **OK**, `tsc --noEmit` **0 erreur**, `eslint` **0 erreur** (warning `set-state-in-effect` corrigé en retirant le reset synchrone du probe), `build:frontend` **OK**.
+
+- **Prochaines étapes :**
+  - Proposition **automatique** à l'installation d'une extension de type language-server (détection dans `contributes` / heuristique) pour préremplir la config LSP en un clic.
+  - Éventuel : shim `vscode-languageclient` si un besoin réel d'extensions pilotées par `main.js` se confirme.
+  - Étendre l'allowlist d'adapters/serveurs si de nouveaux cas remontent.
+
+---
+
 ### [2026-10-12T18:15] | Icônes Material natives par défaut + détection de langage dans l'explorateur
 
 - **Contexte :**

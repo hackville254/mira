@@ -9,6 +9,7 @@ import { LanguageServerClient, languageServerWithTransport } from 'codemirror-la
 import type { Transport } from 'codemirror-languageserver';
 import { getLspLanguageId, pathToUri, type LspServerId } from './lsp';
 import { KNOWN_SERVERS } from './lspConfig';
+import type { KnownServer } from './lspConfig';
 import { parseLspBinaryError } from './lspProbe';
 
 // ── Tauri IPC Transport ───────────────────────────────────────────────────────
@@ -88,11 +89,18 @@ class TauriLspTransport implements Transport {
   }
 }
 
-// ── Install commands ──────────────────────────────────────────────────────────
+// ── Serveur LSP introuvable ────────────────────────────────────────────────────
+// POLITIQUE PRODUIT : plus aucune commande shell manuelle. Quand un binaire est
+// introuvable, on remonte les métadonnées du catalogue (`needs`) pour que l'UI
+// propose une installation en un clic (`lsp_install`) ou explique pourquoi le
+// serveur n'est pas installable automatiquement.
 
-const INSTALL_COMMANDS: Record<string, string> = Object.fromEntries(
-  KNOWN_SERVERS.map(s => [s.id, s.installCommand]),
-);
+export interface MissingServerInfo {
+  id: LspServerId;
+  label: string;
+  /** Code d'explication si le serveur n'est pas installable par l'app. */
+  needs?: KnownServer['needs'];
+}
 
 function isMissingBinaryError(err: unknown): boolean {
   // Contract : Rust renvoie une erreur STRUCTURÉE (code stable) quand le binaire
@@ -150,6 +158,23 @@ async function getOrCreateClient(
   return promise;
 }
 
+/**
+ * Invalide le(s) client(s) LSP d'un serveur venant d'être installé, pour que la
+ * prochaine ouverture de fichier redémarre le serveur sur le nouveau binaire.
+ * Appelé après `lsp_install` : c'est ce qui rend l'activation « zéro action »
+ * (l'utilisateur n'a pas à rouvrir le projet).
+ */
+export function invalidateLspClient(serverId: LspServerId): void {
+  const prefix = `${serverId}::`;
+  for (const [key, entry] of _clientMap) {
+    if (key.startsWith(prefix)) {
+      entry.client.close();
+      _clientMap.delete(key);
+    }
+  }
+  _missingNotified.delete(serverId);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function posToOffset(doc: any, pos: { line: number; character: number }): number {
@@ -179,7 +204,7 @@ export interface LspExtensionOptions {
   /** Chemin explicite du binaire du serveur (prioritaire sur le PATH). */
   serverPath?: string;
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
-  onMissingServer?: (serverId: LspServerId, installCmd: string) => void;
+  onMissingServer?: (info: MissingServerInfo) => void;
 }
 
 export async function createLspExtension(opts: LspExtensionOptions): Promise<Extension> {
@@ -191,7 +216,12 @@ export async function createLspExtension(opts: LspExtensionOptions): Promise<Ext
   } catch (err) {
     if (isMissingBinaryError(err) && !_missingNotified.has(serverId)) {
       _missingNotified.add(serverId);
-      opts.onMissingServer?.(serverId, INSTALL_COMMANDS[serverId] ?? '');
+      const known = KNOWN_SERVERS.find(s => s.id === serverId);
+      opts.onMissingServer?.({
+        id: serverId,
+        label: known?.label ?? serverId,
+        needs: known?.needs,
+      });
     }
     return [];
   }

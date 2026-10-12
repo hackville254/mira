@@ -12,6 +12,7 @@ import WebPreviewPane from "../editor/WebPreviewPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../terminal/TerminalPanel";
 import SettingsPanel from "../settings/SettingsPanel";
 import type { AiCompletionFn } from "../../lib/aiAutocomplete";
+import type { MissingServerInfo } from "../../lib/lspCm6";
 
 type ToolTabId =
   | "terminal" | "editor" | "docview" | "settings" | "diffview" | "agents" | "browser";
@@ -56,7 +57,9 @@ interface AgentModeViewProps {
   setCursorPositions: (updater: (prev: Record<string, { line: number; col: number }>) => Record<string, { line: number; col: number }>) => void;
   openAiDiffTab: (data: AiDiffTabInput) => void;
   getAiCompletion?: AiCompletionFn;
-  handleMissingServer?: (language: string, installCmd: string) => void;
+  handleMissingServer?: (info: MissingServerInfo) => void;
+  /** Incrémenté après l'installation d'un serveur LSP → recrée l'extension LSP. */
+  lspGeneration?: number;
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
   // Terminal
   terminalRef: React.RefObject<TerminalPanelHandle | null>;
@@ -79,7 +82,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
     editorRef, cursorPositions, pinnedContext,
     openTab, openTabAtLine, closeTab, setActiveTab, handleEditorChange,
     handleSave, handleNewFile, setPinnedContext, setCursorPositions, openAiDiffTab,
-    getAiCompletion, handleMissingServer, onDefinitionJump,
+    getAiCompletion, handleMissingServer, onDefinitionJump, lspGeneration,
     terminalRef, terminalHeight, setTerminalHeight, setTerminalOpen,
   } = props;
 
@@ -396,6 +399,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
                     rootPath={folderPath}
                     onDefinitionJump={onDefinitionJump}
                     onMissingServer={handleMissingServer}
+                    lspGeneration={lspGeneration}
                     getAiCompletion={getAiCompletion}
                   />
                 ) : activeTab && fileErrors[activeTab] ? (

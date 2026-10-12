@@ -34,6 +34,10 @@ export interface ExtensionInfo {
   commands?: DeclaredCommand[];
   /** Raw `activationEvents` strings. */
   activation_events?: string[];
+  /** Ids of extensions this one requires (`extensionDependencies`). */
+  extension_dependencies?: string[];
+  /** Ids bundled by this one (`extensionPack`). Informational. */
+  extension_pack?: string[];
 }
 
 /** Root folder where extensions are installed. */

@@ -27,8 +27,11 @@ import type { AiCompletionFn } from "./lib/aiAutocomplete";
 import { getBranch } from "./lib/git";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { languageLabel } from "./components/editor/languageSupport";
-import { KNOWN_SERVERS } from "./lib/lspConfig";
+import type { MissingServerInfo } from "./lib/lspCm6";
+import { invalidateLspClient } from "./lib/lspCm6";
 import { resolveRunConfig, trustWorkspace } from "./lib/runConfigStore";
 import { pickTaskForFile, substituteArgs } from "./lib/runTasks";
 import { useWorkspace } from "./context/WorkspaceContext";
@@ -101,6 +104,9 @@ function App() {
   const terminalRef    = useRef<TerminalPanelHandle>(null);
   const pendingDiffRef = useRef<{ code: string; targetPath: string } | null>(null);
   const [pendingDiffTick, setPendingDiffTick] = useState(0);
+  // Incrémenté après l'installation d'un serveur LSP : force les éditeurs à
+  // recréer leur extension LSP (activation « zéro action » de la complétion).
+  const [lspGeneration, setLspGeneration] = useState(0);
   const [_zoom,          setZoom]          = useState(1.0);
   const [pinnedContext,  setPinnedContext]  = useState<EditorContext | null>(null);
   const [cursorPositions, setCursorPositions] = useState<Record<string, { line: number; col: number }>>({});
@@ -406,19 +412,51 @@ function App() {
     else terminalRef.current?.addTab();
   }
 
-  function handleMissingServer(serverId: string, installCmd: string) {
-    const known = KNOWN_SERVERS.find(s => s.id === serverId);
-    const langName = known?.label ?? serverId;
-    // Open terminal now so TerminalPanel is mounted by the time the user clicks Install
-    setTerminalOpen(true);
-    showToast(
-      `${langName} language server not found`,
-      'info',
-      {
-        label: 'Install',
-        onClick: () => { terminalRef.current?.runInNewTab(installCmd); },
+  // ── Serveur LSP introuvable : installation en un clic ──────────────────────
+  // POLITIQUE PRODUIT : jamais de commande shell manuelle. Si le serveur est
+  // installable par l'app, on propose un bouton « Installer » qui appelle
+  // `lsp_install` (téléchargement vérifié côté Rust). Sinon on explique pourquoi
+  // en une phrase courte (chaîne d'outils externe requise).
+  async function handleMissingServer(info: MissingServerInfo) {
+    if (info.needs) {
+      const reason =
+        info.needs === 'NEEDS_GO_TOOLCHAIN'
+          ? 'Go toolchain required (install Go, then gopls via "go install")'
+          : info.needs === 'NEEDS_LLVM_TOOLCHAIN'
+            ? 'LLVM toolchain required (clangd ships with LLVM)'
+            : 'Java toolchain required (install a JDK, then jdtls)';
+      showToast(`${info.label} — ${reason}`, 'info');
+      return;
+    }
+
+    showToast(`${info.label} language server not found`, 'info', {
+      label: 'Installer',
+      onClick: () => {
+        const label = info.label;
+        // Progression live : Rust émet `lsp://install-progress`. Le toast se met
+        // à jour en place (l'utilisateur voit le pourcentage sur un gros download).
+        let unlisten: (() => void) | null = null;
+        listen<{ serverId: string; phase: string; percent: number }>(
+          'lsp://install-progress',
+          ev => {
+            if (ev.payload.serverId !== info.id) return;
+            showToast(`Installation de ${label}… ${ev.payload.percent}%`, 'info');
+          },
+        ).then(fn => { unlisten = fn; });
+
+        invoke('lsp_install', { serverId: info.id })
+          .then(() => {
+            invalidateLspClient(info.id);
+            setLspGeneration(g => g + 1);
+            showToast(`${label} installé — complétion activée`, 'success');
+          })
+          .catch((e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            showToast(`Échec de l'installation : ${msg}`, 'error');
+          })
+          .finally(() => { unlisten?.(); });
       },
-    );
+    });
   }
 
   // ── Run : lance la tâche adaptée au fichier actif ──────────────────────────
@@ -551,6 +589,7 @@ function App() {
           openAiDiffTab={openAiDiffTab}
           getAiCompletion={getAiCompletion}
           handleMissingServer={handleMissingServer}
+          lspGeneration={lspGeneration}
           onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
           terminalRef={terminalRef}
           terminalHeight={terminalHeight}
@@ -615,6 +654,7 @@ function App() {
                       rootPath={folderPath}
                       onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
                       onMissingServer={handleMissingServer}
+                      lspGeneration={lspGeneration}
                       getAiCompletion={getAiCompletion}
                       onToggleBreakpoint={(fp, line) => debugCtx.toggleBreakpoint(fp, line)}
                     />

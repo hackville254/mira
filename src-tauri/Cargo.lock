@@ -2973,12 +2973,15 @@ name = "origin"
 version = "0.1.4"
 dependencies = [
  "dpi",
+ "flate2",
  "keyring",
  "portable-pty",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -56,74 +56,77 @@ export type LspServerConfig = z.infer<typeof LspServerConfigSchema>;
 export type LspConfig = z.infer<typeof LspConfigSchema>;
 
 // ── Catalogue des serveurs connus (miroir de l'allowlist Rust) ───────────────
-// Ce catalogue est purement descriptif : il fournit le nom du binaire et la
-// commande d'installation affichés à l'utilisateur. La source d'autorité
-// (exécution) reste `lsp.rs`.
+// Ce catalogue est purement descriptif (libellés, extensions). L'**autorité**
+// (exécution et téléchargement) reste `lsp.rs` / `lsp_index.rs`.
+//
+// POLITIQUE PRODUIT : aucune `installCommand` manuelle. L'app installe
+// elle-même les serveurs supportés (un clic) ; les serveurs sans installation
+// automatique fiable (gopls, clangd) sont grisés avec une explication courte.
 
 export interface KnownServer {
   /** Id stable, aligné sur `lsp_exe_and_args` côté Rust. */
   id: string;
   /** Libellé affiché. */
   label: string;
-  /** Commande d'installation suggérée (exécutée via le terminal intégré). */
-  installCommand: string;
+  /**
+   * Code d'explication si ce serveur n'a PAS d'installation automatique
+   * (ex. "NEEDS_GO_TOOLCHAIN"). Absent = installable par l'app (un clic).
+   * L'UI grise le bouton et affiche une phrase courte, jamais « error ».
+   */
+  needs?: 'NEEDS_GO_TOOLCHAIN' | 'NEEDS_LLVM_TOOLCHAIN' | 'NEEDS_JAVA_TOOLCHAIN';
 }
 
 export const KNOWN_SERVERS: KnownServer[] = [
   {
     id: 'typescript-language-server',
     label: 'TypeScript / JavaScript (typescript-language-server)',
-    installCommand: 'npm install -g typescript-language-server typescript',
   },
   {
     id: 'rust-analyzer',
     label: 'Rust (rust-analyzer)',
-    installCommand: 'rustup component add rust-analyzer',
   },
   {
     id: 'pylsp',
     label: 'Python (pylsp)',
-    installCommand: 'python -m pip install python-lsp-server',
+  },
+  {
+    id: 'basedpyright',
+    label: 'Python (basedpyright)',
   },
   {
     id: 'gopls',
     label: 'Go (gopls)',
-    installCommand: 'go install golang.org/x/tools/gopls@latest',
+    needs: 'NEEDS_GO_TOOLCHAIN',
   },
   {
     id: 'clangd',
     label: 'C / C++ (clangd)',
-    installCommand: 'See https://clangd.llvm.org/installation',
+    needs: 'NEEDS_LLVM_TOOLCHAIN',
   },
   {
     id: 'jdtls',
     label: 'Java (Eclipse JDT LS)',
-    installCommand: 'See https://github.com/eclipse-jdtls/eclipse.jdt.ls',
+    needs: 'NEEDS_JAVA_TOOLCHAIN',
   },
   {
     id: 'bash-language-server',
     label: 'Shell (bash-language-server)',
-    installCommand: 'npm install -g bash-language-server',
   },
   {
     id: 'vscode-json-language-server',
     label: 'JSON (vscode-json-language-server)',
-    installCommand: 'npm install -g vscode-langservers-extracted',
   },
   {
     id: 'vscode-css-language-server',
     label: 'CSS / SCSS / Less (vscode-css-language-server)',
-    installCommand: 'npm install -g vscode-langservers-extracted',
   },
   {
     id: 'vscode-html-language-server',
     label: 'HTML (vscode-html-language-server)',
-    installCommand: 'npm install -g vscode-langservers-extracted',
   },
   {
     id: 'yaml-language-server',
     label: 'YAML (yaml-language-server)',
-    installCommand: 'npm install -g yaml-language-server',
   },
 ];
 

@@ -50,9 +50,10 @@ fn parse_version(raw: &str) -> String {
     best
 }
 
-/// Résout le chemin absolu d'un binaire en parcourant le PATH (sans shell).
+/// Résout le chemin absolu d'un binaire en parcourant le PATH **enrichi** (sans
+/// shell). On utilise le PATH enrichi et non celui du process : sous GUI, ce
+/// dernier n'inclut pas `~/.cargo/bin`, `/opt/homebrew/bin`, etc.
 fn resolve_path(exe: &str) -> Option<String> {
-    let path_var = std::env::var_os("PATH")?;
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT".to_string())
@@ -62,7 +63,7 @@ fn resolve_path(exe: &str) -> Option<String> {
     } else {
         vec![String::new()]
     };
-    for dir in std::env::split_paths(&path_var) {
+    for dir in crate::env_path::enriched_dirs() {
         for ext in &exts {
             let candidate = dir.join(format!("{exe}{ext}"));
             if candidate.is_file() {

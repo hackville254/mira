@@ -1,12 +1,18 @@
 mod ai;
 mod dap;
+// `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
+// réseau (`tests/lsp_install_e2e.rs`) de télécharger réellement un binaire LSP
+// et de vérifier son empreinte. Cela n'ajoute aucune commande `invoke`.
+pub mod downloader;
 mod env;
+mod env_path;
 mod extensions;
 mod extensions_market;
 mod fs;
 mod git;
 mod keychain;
 mod lsp;
+pub mod lsp_index;
 mod search;
 mod system;
 mod terminal;
@@ -159,6 +165,8 @@ pub fn run() {
             lsp::lsp_notify,
             lsp::lsp_stop,
             lsp::lsp_probe,
+            lsp::lsp_install,
+            lsp::lsp_catalog,
             dap::dap_start,
             dap::dap_request,
             dap::dap_stop,
