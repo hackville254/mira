@@ -158,6 +158,7 @@ pub fn run() {
             lsp::lsp_request,
             lsp::lsp_notify,
             lsp::lsp_stop,
+            lsp::lsp_probe,
             dap::dap_start,
             dap::dap_request,
             dap::dap_stop,

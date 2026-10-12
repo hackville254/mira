@@ -543,12 +543,14 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     (async () => {
       let serverId: string;
       let args: string[] | undefined;
+      let serverPath: string | undefined;
       try {
         const config = await resolveLspConfig(rootPath);
         const resolved = findServerForFile(config, path);
         if (!resolved) return;
         serverId = resolved.serverId;
         args = resolved.config.args;
+        serverPath = resolved.config.serverPath;
       } catch {
         return;
       }
@@ -559,6 +561,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         rootPath,
         serverId,
         args,
+        serverPath,
         onDefinitionJump: (fp, ln, col) => onDefinitionJumpRef.current?.(fp, ln, col),
         onMissingServer: (srv, cmd) => onMissingServerRef.current?.(srv, cmd),
       });

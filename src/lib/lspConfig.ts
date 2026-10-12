@@ -21,6 +21,13 @@ import { z } from 'zod';
 /** Préfixe réservé : identifie un serveur LSP interne supporté. */
 export const SERVER_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 
+/**
+ * Code d'erreur structuré renvoyé par Rust quand le binaire d'un serveur est
+ * introuvable (`LSP_BINARY_NOT_FOUND`). Le frontend compare ce code stable au
+ * lieu de parser un message libre (fragile, localisé, dépendant de l'OS).
+ */
+export const LSP_BINARY_NOT_FOUND = 'LSP_BINARY_NOT_FOUND';
+
 export const LspServerConfigSchema = z.object({
   /** Id d'un serveur supporté (doit exister dans l'allowlist Rust). */
   serverId: z.string().regex(SERVER_ID_PATTERN),
@@ -30,6 +37,11 @@ export const LspServerConfigSchema = z.object({
   languageId: z.string().min(1).max(64),
   /** Argument additionnels passés au serveur (ex. ["--stdio"]). */
   args: z.array(z.string().min(1).max(256)).max(32).optional(),
+  /**
+   * Chemin explicite du binaire du serveur (absolu). Prioritaire sur le PATH
+   * lorsqu'il est fourni — utile pour un serveur installé localement au projet.
+   */
+  serverPath: z.string().min(1).max(1024).optional(),
   /** Active/désactive ce serveur sans le supprimer. */
   enabled: z.boolean().optional(),
 });

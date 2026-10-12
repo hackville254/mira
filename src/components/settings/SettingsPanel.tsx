@@ -16,6 +16,7 @@ import {
   WORKSPACE_LSP_PATH,
 } from "../../lib/lspConfigStore";
 import type { LspConfig, LspServerConfig } from "../../lib/lspConfig";
+import { probeLspServer, type LspProbeResult } from "../../lib/lspProbe";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -908,12 +909,66 @@ const monoInputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+/** Badge de disponibilité du binaire d'un serveur LSP (issu du probe Rust). */
+function ServerStatusBadge({ status }: { status: LspProbeResult | 'loading' | 'error' | undefined }) {
+  let color = "var(--origin-fg-subtle)";
+  let label = "…";
+  let title = "Checking availability…";
+  if (status === 'error') {
+    color = "var(--origin-fg-subtle)";
+    label = "n/a";
+    title = "Could not run the availability check";
+  } else if (status && status !== 'loading') {
+    if (status.found) {
+      color = "var(--origin-semantic-success, #2ea043)";
+      label = "found";
+      title = `Found via ${status.source ?? "PATH"}\n${status.path ?? ""}`;
+    } else {
+      color = "var(--origin-semantic-error, #f85149)";
+      label = "not found";
+      title = `Searched: ${status.searched.join(", ") || "PATH"}`;
+    }
+  } else if (status === 'loading') {
+    label = "…";
+  }
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize: 10, color, border: "1px solid currentColor", borderRadius: 4,
+        padding: "0 4px", whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 function LspSection() {
   // État local, initialisé depuis la config globale (localStorage).
   const [config, setConfig] = useState<LspConfig>(() => loadGlobalLspConfig());
   const [saved, setSaved] = useState(false);
+  // Diagnostic par serveur : statut de disponibilité du binaire (probe Rust).
+  const [probe, setProbe] = useState<Record<string, LspProbeResult | 'loading' | 'error'>>({});
 
   const knownIds = useMemo(() => new Set(KNOWN_SERVERS.map(s => s.id)), []);
+
+  /** Interroge la disponibilité de tous les serveurs configurés. */
+  const runProbe = useCallback(async (servers: LspServerConfig[]) => {
+    const initial: Record<string, 'loading'> = {};
+    for (const s of servers) initial[s.serverId] = 'loading';
+    setProbe(initial);
+    await Promise.all(servers.map(async s => {
+      try {
+        const result = await probeLspServer(s.serverId, s.serverPath);
+        setProbe(prev => ({ ...prev, [s.serverId]: result }));
+      } catch {
+        setProbe(prev => ({ ...prev, [s.serverId]: 'error' }));
+      }
+    }));
+  }, []);
+
+  useEffect(() => { void runProbe(config.servers); }, [runProbe, config.servers]);
 
   function persist(next: LspConfig) {
     setConfig(next);
@@ -980,8 +1035,25 @@ function LspSection() {
       <p style={{ fontSize: 12, color: "var(--origin-fg-muted)", margin: "6px 0 16px", lineHeight: 1.6 }}>
         Language servers provide diagnostics, completion, hover and go-to-definition. A server can only
         run if it is part of the built-in allow-list — this panel only binds known servers to file
-        extensions and controls how they are launched.
+        extensions and controls how they are launched. The status badge shows whether the server binary
+        was found on this machine.
       </p>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <button
+          onClick={() => void runProbe(config.servers)}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "5px 10px", borderRadius: 6, fontSize: 12,
+            border: "1px solid var(--origin-border-default)",
+            backgroundColor: "transparent", color: "var(--origin-fg-default)", cursor: "pointer",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+        >
+          <RefreshCw size={12} /> Rescan servers
+        </button>
+      </div>
 
       {saved && (
         <div style={{
@@ -1029,6 +1101,7 @@ function LspSection() {
                     unknown
                   </span>
                 )}
+                <ServerStatusBadge status={probe[server.serverId]} />
                 <div style={{ flex: 1 }} />
                 <Toggle on={!disabled} onToggle={() => toggleEnabled(idx)} />
                 <TinyButton onClick={() => removeServer(idx)} title="Remove server" danger>
@@ -1072,6 +1145,21 @@ function LspSection() {
                     defaultValue={(server.args ?? []).join(" ")}
                     placeholder="--stdio"
                     onBlur={e => commitArgs(idx, e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                    style={monoInputStyle}
+                  />
+                </label>
+                <label style={{ flex: "2 1 260px", minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "var(--origin-fg-subtle)", marginBottom: 4 }}>
+                    Server path <span style={{ opacity: 0.7 }}>(optional — overrides PATH)</span>
+                  </div>
+                  <input
+                    defaultValue={server.serverPath ?? ""}
+                    placeholder="/absolute/path/to/server"
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      updateServer(idx, { serverPath: v || undefined });
+                    }}
                     onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
                     style={monoInputStyle}
                   />

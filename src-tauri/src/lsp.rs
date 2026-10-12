@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicI64, Ordering},
@@ -95,6 +96,151 @@ fn lsp_exe_and_args(server_id: &str) -> Option<(&'static str, &'static [&'static
     }
 }
 
+/// Code d'erreur structuré : binaire du serveur introuvable.
+///
+/// Le frontend ne doit **jamais** déduire un manque de binaire en parsant un
+/// message libre (fragile, localisé, dépendant de l'OS). On renvoie un objet
+/// sérialisé avec un code stable ; `isMissingBinaryError` devient une simple
+/// comparaison de code.
+pub const ERR_BINARY_NOT_FOUND: &str = "LSP_BINARY_NOT_FOUND";
+
+/// Erreur de résolution d'un binaire LSP, sérialisée vers le frontend.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct LspBinaryError {
+    /// Code stable (`LSP_BINARY_NOT_FOUND`).
+    pub code: &'static str,
+    /// Id du serveur concerné.
+    pub server_id: String,
+    /// Nom du binaire recherché.
+    pub binary: String,
+    /// Emplacements consultés (pour le diagnostic utilisateur).
+    pub searched: Vec<String>,
+}
+
+impl LspBinaryError {
+    fn to_json(&self) -> String {
+        // Sérialisation infaillible d'une struct de champs simples.
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            format!(r#"{{"code":"{}","serverId":"{}"}}"#, ERR_BINARY_NOT_FOUND, self.server_id)
+        })
+    }
+}
+
+/// Résout la source d'exécution d'un serveur LSP, par ordre de précédence :
+///
+///  1. **Chemin local explicite** (`serverPath` de la config workspace/globale) —
+///     s'il est fourni il fait autorité : c'est un choix utilisateur délibéré,
+///     versionnable dans le projet. Doit être absolu et exister.
+///  2. **Binaires embarqués dans l'app** (`<app_data>/lsp-servers/<serverId>/…`) —
+///     permet à une future installation locale de fonctionner sans toucher au PATH.
+///  3. **PATH système** — le cas courant (`pip install`, `npm -g`, `rustup`…).
+///
+/// Retourne le chemin effectif à exécuter, ou une {@link LspBinaryError} si rien
+/// n'a été trouvé. Ne lance jamais de processus : pure résolution de chemin.
+fn resolve_lsp_binary(
+    app: &tauri::AppHandle,
+    server_id: &str,
+    bare_name: &str,
+    server_path: Option<&str>,
+) -> Result<PathBuf, LspBinaryError> {
+    use tauri::Manager;
+
+    let mut searched: Vec<String> = Vec::new();
+
+    // 1. Chemin local explicite.
+    if let Some(p) = server_path.map(str::trim).filter(|p| !p.is_empty()) {
+        let path = Path::new(p);
+        if path.is_absolute() && path.is_file() {
+            return Ok(path.to_path_buf());
+        }
+        // Chemin explicite invalide : on le signale et on poursuit la recherche
+        // (un chemin périmé ne doit pas bloquer un serveur installé ailleurs).
+        searched.push(format!("{p} (serverPath — absent/relatif)"));
+    }
+
+    // 2. Binaires embarqués dans le dossier de données de l'app.
+    if let Ok(base) = app.path().app_data_dir() {
+        let dir = base.join("lsp-servers").join(server_id);
+        let candidate = pick_executable(&dir, bare_name);
+        if let Some(p) = candidate {
+            return Ok(p);
+        }
+        searched.push(dir.display().to_string());
+    }
+
+    // 3. PATH système.
+    if let Some(p) = find_in_path(bare_name) {
+        return Ok(p);
+    }
+    searched.push("PATH".to_string());
+
+    Err(LspBinaryError {
+        code: ERR_BINARY_NOT_FOUND,
+        server_id: server_id.to_string(),
+        binary: bare_name.to_string(),
+        searched,
+    })
+}
+
+/// Cherche un exécutable `bare_name` dans un dossier dédié (avec extension
+/// Windows). Retourne le premier fichier correspondant.
+fn pick_executable(dir: &Path, bare_name: &str) -> Option<PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        for ext in [".exe", ".cmd", ".bat", ".com", ""] {
+            let p = dir.join(format!("{bare_name}{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        return None;
+    }
+    #[cfg(not(windows))]
+    {
+        let p = dir.join(bare_name);
+        if p.is_file() {
+            return Some(p);
+        }
+        None
+    }
+}
+
+/// Cherche `bare_name` dans le PATH et retourne son chemin absolu s'il existe.
+/// Équivalent `which` — vérification d'existence uniquement, sans exécution.
+fn find_in_path(bare_name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let extensions: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
+        .split(';')
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    for dir in std::env::split_paths(&path_var) {
+        #[cfg(windows)]
+        {
+            for ext in &extensions {
+                let p = dir.join(format!("{bare_name}{ext}"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let p = dir.join(bare_name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 /// Valide un argument supplémentaire fourni par le frontend.
 ///
 /// Interdit : chaîne vide, NUL, et sauts de ligne (empêchent toute tentative
@@ -115,6 +261,7 @@ pub async fn lsp_start(
     language: String,
     root_path: String,
     args: Option<Vec<String>>,
+    server_path: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, LspState>,
 ) -> Result<(), String> {
@@ -127,6 +274,12 @@ pub async fn lsp_start(
     let (exe, default_args) = lsp_exe_and_args(&language)
         .ok_or_else(|| format!("No LSP server configured for '{}'", language))?;
 
+    // Résolution multi-source : chemin local → binaires embarqués → PATH.
+    // En cas d'échec on renvoie une erreur STRUCTURÉE (code stable) que le
+    // frontend reconnaît sans parser de texte.
+    let resolved = resolve_lsp_binary(&app, &language, exe, server_path.as_deref())
+        .map_err(|e| e.to_json())?;
+
     // Arguments effectifs : ceux fournis (validés) sinon ceux par défaut.
     let extra: Vec<String> = match args {
         Some(list) => {
@@ -136,13 +289,14 @@ pub async fn lsp_start(
         None => default_args.iter().map(|s| s.to_string()).collect(),
     };
 
-    let mut cmd = make_lsp_process(exe);
+    let exe_str = resolved.to_string_lossy().to_string();
+    let mut cmd = make_lsp_process(&exe_str);
     for arg in &extra { cmd.arg(arg); }
     cmd.current_dir(&root_path);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn {} ({}): {}", exe, language, e))?;
+        .map_err(|e| format!("Failed to spawn {} ({}): {}", exe_str, language, e))?;
 
     let stdin  = child.stdin.take().ok_or("stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("stdout unavailable")?;
@@ -273,4 +427,80 @@ pub async fn lsp_stop(
 ) -> Result<(), String> {
     state.0.lock().unwrap().remove(&language);
     Ok(())
+}
+
+/// Résultat de diagnostic pour un serveur LSP (commande `lsp_probe`).
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct LspProbeResult {
+    /// Id du serveur interrogé.
+    pub server_id: String,
+    /// Binaire recherché.
+    pub binary: String,
+    /// Vrai si une source exécutable a été trouvée.
+    pub found: bool,
+    /// Chemin absolu retenu, si trouvé.
+    pub path: Option<String>,
+    /// Source retenue : "serverPath" | "app" | "PATH".
+    pub source: Option<String>,
+    /// Emplacements consultés (toujours renseigné).
+    pub searched: Vec<String>,
+}
+
+/// Interroge la disponibilité d'un serveur LSP **sans le lancer**.
+///
+/// Permet à l'UI de connaître l'état de chaque langage à l'avance (au lieu de
+/// ne le découvrir qu'à l'ouverture d'un fichier). Purement en lecture seule.
+#[tauri::command]
+pub async fn lsp_probe(
+    server_id: String,
+    server_path: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<LspProbeResult, String> {
+    let (exe, _) = lsp_exe_and_args(&server_id)
+        .ok_or_else(|| format!("No LSP server configured for '{}'", server_id))?;
+
+    match resolve_lsp_binary(&app, &server_id, exe, server_path.as_deref()) {
+        Ok(path) => {
+            // Détermine la source retenue à des fins de diagnostic.
+            let source = classify_source(&path, server_path.as_deref(), &app, &server_id);
+            Ok(LspProbeResult {
+                server_id,
+                binary: exe.to_string(),
+                found: true,
+                path: Some(path.to_string_lossy().to_string()),
+                source: Some(source),
+                searched: Vec::new(),
+            })
+        }
+        Err(e) => Ok(LspProbeResult {
+            server_id: e.server_id,
+            binary: e.binary,
+            found: false,
+            path: None,
+            source: None,
+            searched: e.searched,
+        }),
+    }
+}
+
+/// Classe la source d'un binaire résolu, pour l'affichage (serverPath / app / PATH).
+fn classify_source(
+    resolved: &Path,
+    server_path: Option<&str>,
+    app: &tauri::AppHandle,
+    server_id: &str,
+) -> String {
+    use tauri::Manager;
+    if let Some(p) = server_path.map(str::trim).filter(|p| !p.is_empty()) {
+        if resolved == Path::new(p) {
+            return "serverPath".to_string();
+        }
+    }
+    if let Ok(base) = app.path().app_data_dir() {
+        let dir = base.join("lsp-servers").join(server_id);
+        if resolved.starts_with(&dir) {
+            return "app".to_string();
+        }
+    }
+    "PATH".to_string()
 }

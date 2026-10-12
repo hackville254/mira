@@ -9,6 +9,7 @@ import { LanguageServerClient, languageServerWithTransport } from 'codemirror-la
 import type { Transport } from 'codemirror-languageserver';
 import { getLspLanguageId, pathToUri, type LspServerId } from './lsp';
 import { KNOWN_SERVERS } from './lspConfig';
+import { parseLspBinaryError } from './lspProbe';
 
 // ── Tauri IPC Transport ───────────────────────────────────────────────────────
 // Routes codemirror-languageserver JSON-RPC messages through the existing
@@ -94,16 +95,9 @@ const INSTALL_COMMANDS: Record<string, string> = Object.fromEntries(
 );
 
 function isMissingBinaryError(err: unknown): boolean {
-  const msg = String(err).toLowerCase();
-  return (
-    msg.includes('not found') ||
-    msg.includes('no such file') ||
-    msg.includes('enoent') ||
-    msg.includes('cannot find') ||
-    msg.includes('program not found') ||
-    msg.includes('os error 2') ||
-    msg.includes('the system cannot find')
-  );
+  // Contract : Rust renvoie une erreur STRUCTURÉE (code stable) quand le binaire
+  // est introuvable. Aucune heuristique sur le texte — voir `lspProbe.ts`.
+  return parseLspBinaryError(err) !== null;
 }
 
 // Tracks which servers have already shown the install notification this session
@@ -124,6 +118,7 @@ async function getOrCreateClient(
   serverId: LspServerId,
   rootPath: string,
   args?: string[],
+  serverPath?: string,
 ): Promise<ClientEntry> {
   const key = `${serverId}::${rootPath}`;
 
@@ -137,7 +132,7 @@ async function getOrCreateClient(
   const workspaceName = rootPath.split(/[/\\]/).pop() ?? 'workspace';
 
   const promise = (async () => {
-    await invoke('lsp_start', { language: serverId, rootPath, args });
+    await invoke('lsp_start', { language: serverId, rootPath, args, serverPath: serverPath ?? null });
     const transport = new TauriLspTransport(serverId);
     const client    = new LanguageServerClient({
       transport,
@@ -181,16 +176,18 @@ export interface LspExtensionOptions {
   serverId: LspServerId;
   /** Argument additionnels (remplacent les défauts du serveur si fournis). */
   args?: string[];
+  /** Chemin explicite du binaire du serveur (prioritaire sur le PATH). */
+  serverPath?: string;
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
   onMissingServer?: (serverId: LspServerId, installCmd: string) => void;
 }
 
 export async function createLspExtension(opts: LspExtensionOptions): Promise<Extension> {
-  const { filePath, rootPath, serverId, args, onDefinitionJump } = opts;
+  const { filePath, rootPath, serverId, args, serverPath, onDefinitionJump } = opts;
 
   let entry: ClientEntry;
   try {
-    entry = await getOrCreateClient(serverId, rootPath, args);
+    entry = await getOrCreateClient(serverId, rootPath, args, serverPath);
   } catch (err) {
     if (isMissingBinaryError(err) && !_missingNotified.has(serverId)) {
       _missingNotified.add(serverId);
