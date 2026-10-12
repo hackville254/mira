@@ -471,6 +471,81 @@ function installConsole(ctx: QuickJSContext, onLog: LogFn): void {
  */
 function installWebGlobals(ctx: QuickJSContext): void {
   runSetup(ctx, `
+    // process: Node.js bundles produced for the desktop extension host read
+    // process.platform / process.env / process.cwd() at module load. VS Code's
+    // web extension host does NOT expose process either (see VS Code "Web
+    // Extensions" docs: Node.js globals such as process, os, setImmediate,
+    // path, util, url are unavailable) — web extensions must polyfill it
+    // themselves. Origin's QuickJS sandbox sits in the same category, so we
+    // provide the same kind of inert polyfill: enough surface to let a bundle
+    // initialise, with ZERO host access (no real env/PATH, no stdin/stdout, no
+    // FS reads). Anything host-bound stays gated behind the vscode bridge.
+    if (typeof globalThis.process === 'undefined') {
+      var __originNoop = function(){};
+      var __originEnv = { __proto__: null };
+      var __originProcess = {
+        platform: 'linux',
+        arch: 'x64',
+        type: 'extensionHost',
+        // Keep the shape features expect, without inventing a real runtime.
+        version: 'v20.0.0',
+        versions: { node: '20.0.0', v8: '0.0.0', electron: '0.0.0' },
+        env: __originEnv,
+        argv: ['node', 'extensionHost'],
+        execPath: '/usr/bin/node',
+        cwd: function(){ return __originExtDir || '/'; },
+        chdir: __originNoop,
+        nextTick: function(fn){ var a = Array.prototype.slice.call(arguments, 1); return Promise.resolve().then(function(){ fn.apply(null, a); }); },
+        hrtime: Object.assign(function(){ return [0, 0]; }, { bigint: function(){ return BigInt(0); } }),
+        memoryUsage: function(){ return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0 }; },
+        uptime: function(){ return 0; },
+        // EventEmitter surface: registration is accepted but never invoked, so a
+        // bundle registering shutdown hooks cannot observe the host.
+        on: __originNoop, once: __originNoop, off: __originNoop,
+        removeListener: __originNoop, removeAllListeners: __originNoop,
+        emit: function(){ return false; },
+        listeners: function(){ return []; },
+        // Explicitly absent host handles: accessed lazily so reading them is a
+        // no-op object rather than a crash.
+        stdin: { on: __originNoop, read: function(){ return null; } },
+        stdout: { write: function(){ return true; }, on: __originNoop },
+        stderr: { write: function(){ return true; }, on: __originNoop },
+      };
+      globalThis.process = __originProcess;
+    }
+    // global alias — Node bundles reference it directly.
+    if (typeof globalThis.global === 'undefined') {
+      globalThis.global = globalThis;
+    }
+    // setImmediate / clearImmediate — present in Node, absent in QuickJS.
+    if (typeof globalThis.setImmediate !== 'function') {
+      globalThis.setImmediate = function(fn){ var a = Array.prototype.slice.call(arguments, 1); return Promise.resolve().then(function(){ fn.apply(null, a); }); };
+      globalThis.clearImmediate = function(){};
+    }
+    // Buffer — minimal, pure-JS shim for the subset bundles touch at load time
+    // (from/alloc/concat + utf8 via TextEncoder). No host memory is referenced.
+    if (typeof globalThis.Buffer === 'undefined') {
+      var __originBuffer = {
+        from: function(value){
+          if (value && value.__originIsBuffer) return value;
+          var bytes = typeof value === 'string'
+            ? new TextEncoder().encode(value)
+            : (value && value.buffer ? new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength) : new Uint8Array(value || 0));
+          return { __originIsBuffer: true, data: bytes, length: bytes.length, toString: function(){ try { return new TextDecoder().decode(bytes); } catch(e){ return ''; } }, toJSON: function(){ return { type: 'Buffer', data: Array.prototype.slice.call(bytes) }; } };
+        },
+        alloc: function(size){ return globalThis.Buffer.from(new Uint8Array(size || 0)); },
+        concat: function(list){
+          var total = 0, i;
+          for (i = 0; i < list.length; i++) total += (list[i] && list[i].length) || 0;
+          var out = new Uint8Array(total), off = 0;
+          for (i = 0; i < list.length; i++) { var d = list[i] && list[i].data ? list[i].data : new Uint8Array(0); out.set(d, off); off += d.length; }
+          return globalThis.Buffer.from(out);
+        },
+        isBuffer: function(v){ return !!(v && v.__originIsBuffer); },
+        byteLength: function(s){ return (typeof s === 'string' ? new TextEncoder().encode(s) : s || []).length; },
+      };
+      globalThis.Buffer = __originBuffer;
+    }
     if (typeof globalThis.structuredClone !== 'function') {
       globalThis.structuredClone = globalThis.structuredClone || function(value, options) {
         if (value === null || typeof value !== 'object') return value;

@@ -451,8 +451,33 @@ function App() {
             showToast(`${label} installé — complétion activée`, 'success');
           })
           .catch((e: unknown) => {
-            const msg = e instanceof Error ? e.message : String(e);
-            showToast(`Échec de l'installation : ${msg}`, 'error');
+            // Rust renvoie un JSON structuré { code, reason } : on le traduit en
+            // message actionnable plutôt que d'afficher le JSON brut.
+            const raw = e instanceof Error ? e.message : String(e);
+            let code = '';
+            let reason = '';
+            try {
+              const parsed = JSON.parse(raw) as { code?: string; reason?: string };
+              code = parsed.code ?? '';
+              reason = parsed.reason ?? '';
+            } catch {
+              // Message non structuré : on l'affiche tel quel.
+            }
+            if (reason === 'NEEDS_PYTHON') {
+              showToast(
+                `${label} — Python introuvable : installe Python 3 puis réessaie (le serveur s'installera automatiquement).`,
+                'error',
+              );
+            } else if (reason === 'NEEDS_NODE') {
+              showToast(
+                `${label} — Node.js introuvable : installe Node puis réessaie (le serveur s'installera automatiquement).`,
+                'error',
+              );
+            } else if (code === 'LSP_NOT_AUTO_INSTALLABLE') {
+              showToast(`${label} ne s'installe pas automatiquement.`, 'info');
+            } else {
+              showToast(`Échec de l'installation : ${raw}`, 'error');
+            }
           })
           .finally(() => { unlisten?.(); });
       },

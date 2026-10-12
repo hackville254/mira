@@ -161,11 +161,19 @@ fn resolve_lsp_binary(
     }
 
     // 2. Binaires embarqués dans le dossier de données de l'app.
+    //    On couvre le dossier racine (binaire décompressé, ex. rust-analyzer)
+    //    ET les sous-dossiers de venv (`bin` Unix / `Scripts` Windows), utilisés
+    //    par les serveurs installés via pip dans un environnement isolé (pylsp).
     if let Ok(base) = app.path().app_data_dir() {
         let dir = base.join("lsp-servers").join(server_id);
-        let candidate = pick_executable(&dir, bare_name);
-        if let Some(p) = candidate {
-            return Ok(p);
+        for sub in [Some("bin"), Some("Scripts"), None] {
+            let target = match sub {
+                Some(s) => dir.join(s),
+                None => dir.clone(),
+            };
+            if let Some(p) = pick_executable(&target, bare_name) {
+                return Ok(p);
+            }
         }
         searched.push(dir.display().to_string());
     }
@@ -623,6 +631,13 @@ fn find_node() -> Option<PathBuf> {
     None
 }
 
+/// Détecte un interpréteur Python utilisable (PATH enrichi), pour créer un venv
+/// isolé et installer `pylsp` via pip — sans droits admin, sans toucher au
+/// système. On privilégie `python3` (nom canonique sur macOS/Linux modernes).
+fn find_python() -> Option<PathBuf> {
+    find_in_path("python3").or_else(|| find_in_path("python"))
+}
+
 /// Entrée du catalogue d'installation, exposée au frontend pour piloter l'UI
 /// (bouton « Installer », ou état grisé avec explication courte).
 #[derive(serde::Serialize, Clone, Debug)]
@@ -691,7 +706,7 @@ pub async fn lsp_catalog(app: tauri::AppHandle) -> Result<Vec<LspCatalogEntry>, 
             match crate::lsp_index::component_for(id) {
                 Some(comp) => {
                     let ok = crate::lsp_index::is_installable(comp, os, arch)
-                        || matches!(id, "basedpyright" | "typescript-language-server");
+                        || matches!(id, "basedpyright" | "typescript-language-server" | "pylsp");
                     (ok, comp.approx_mb, None)
                 }
                 None => (
@@ -765,6 +780,25 @@ pub async fn lsp_install(server_id: String, app: tauri::AppHandle) -> Result<Lsp
             })?;
             emit_install_progress(&app, &server_id, "download", 10);
             let installed = install_via_npm(&node, &server_id, &dest).await?;
+            emit_install_progress(&app, &server_id, "done", 100);
+            return Ok(LspInstallResult {
+                server_id,
+                path: installed.to_string_lossy().to_string(),
+                bytes: 0,
+            });
+        }
+        // pylsp : venv Python isolé dans app-data + pip install. On exige un
+        // Python présent ; sinon action exécutable (installer Python) plutôt
+        // qu'un échec sec — politique « zéro travail ».
+        if server_id == "pylsp" {
+            let python = find_python().ok_or_else(|| {
+                format!(
+                    r#"{{"code":"{}","serverId":"{}","reason":"NEEDS_PYTHON"}}"#,
+                    ERR_UNSUPPORTED_PLATFORM, server_id
+                )
+            })?;
+            emit_install_progress(&app, &server_id, "download", 10);
+            let installed = install_via_pip(&python, &dest).await?;
             emit_install_progress(&app, &server_id, "done", 100);
             return Ok(LspInstallResult {
                 server_id,
@@ -907,4 +941,84 @@ async fn install_via_npm(node: &Path, server_id: &str, dest: &Path) -> Result<Pa
         r#"{{"code":"{}","message":"exe npm introuvable après install"}}"#,
         crate::downloader::ERR_EXTRACT_FAILED
     ))
+}
+
+/// Installe `pylsp` (python-lsp-server) dans un **venv isolé** créé dans
+/// app-data, via `python -m venv` puis `<venv>/bin/pip install`. Aucune action
+/// système : pas de `pip install` global, pas de droits admin, pas de pollution
+/// du Python de l'utilisateur. Retourne le chemin de l'exécutable `pylsp` du venv
+/// (`bin/pylsp` sur Unix, `Scripts/pylsp.exe` sur Windows).
+async fn install_via_pip(python: &Path, dest: &Path) -> Result<PathBuf, String> {
+    // Repart d'un environnement propre : un venv partiel ne doit pas masquer
+    // une installation neuve. On ne touche que notre dossier app-data.
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(dest);
+    }
+    std::fs::create_dir_all(dest).map_err(|e| {
+        format!(r#"{{"code":"{}","message":"{}"}}"#, crate::downloader::ERR_EXTRACT_FAILED, e)
+    })?;
+
+    // 1. Créer le venv isolé dans app-data.
+    let out = tokio::process::Command::new(python)
+        .arg("-m")
+        .arg("venv")
+        .arg(dest)
+        .env("PATH", crate::env_path::enriched_path_os())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| {
+            format!(r#"{{"code":"{}","message":"venv spawn: {}"}}"#, crate::downloader::ERR_DOWNLOAD_FAILED, e)
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            r#"{{"code":"{}","message":"python -m venv a échoué (code {:?})"}}"#,
+            crate::downloader::ERR_DOWNLOAD_FAILED,
+            out.status.code()
+        ));
+    }
+
+    // 2. Localiser le python/pip du venv (noms dépendants de l'OS).
+    let venv_python = pick_executable(&dest.join("bin"), "python")
+        .or_else(|| pick_executable(&dest.join("Scripts"), "python"))
+        .ok_or_else(|| {
+            format!(
+                r#"{{"code":"{}","message":"python du venv introuvable"}}"#,
+                crate::downloader::ERR_EXTRACT_FAILED
+            )
+        })?;
+
+    // 3. pip install python-lsp-server (paquet officiel et ouvert, pas Pylance).
+    let out = tokio::process::Command::new(&venv_python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("--no-input")
+        .arg("--disable-pip-version-check")
+        .arg("python-lsp-server")
+        .env("PATH", crate::env_path::enriched_path_os())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| {
+            format!(r#"{{"code":"{}","message":"pip spawn: {}"}}"#, crate::downloader::ERR_DOWNLOAD_FAILED, e)
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            r#"{{"code":"{}","message":"pip install a échoué (code {:?})"}}"#,
+            crate::downloader::ERR_DOWNLOAD_FAILED,
+            out.status.code()
+        ));
+    }
+
+    // 4. Exécutable attendu dans le venv. `pick_executable` gère l'extension
+    //    Windows (.exe/.cmd/.bat) via le même chemin de résolution que le reste.
+    pick_executable(&dest.join("bin"), "pylsp")
+        .or_else(|| pick_executable(&dest.join("Scripts"), "pylsp"))
+        .ok_or_else(|| {
+            format!(
+                r#"{{"code":"{}","message":"exe pylsp introuvable après install"}}"#,
+                crate::downloader::ERR_EXTRACT_FAILED
+            )
+        })
 }

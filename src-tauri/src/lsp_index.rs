@@ -149,6 +149,15 @@ pub const COMPONENTS: &[Component] = &[
         approx_mb: 30,
         artifacts: &[],
     },
+    // pylsp s'installe via `pip` dans un **venv isolé** dans app-data (décision
+    // « garder pylsp »). Pas d'artefact direct : la commande `lsp_install`
+    // orchestre python → venv → pip install dans app-data, sans droits admin.
+    Component {
+        id: "pylsp",
+        install_dir: "pylsp",
+        approx_mb: 20,
+        artifacts: &[],
+    },
 ];
 
 // ── Empreintes figées (release rust-analyzer 2025-01-06) ─────────────────────
@@ -303,5 +312,19 @@ mod tests {
         }
         // Sur une cible non couverte, on doit obtenir None proprement (pas de panic).
         assert!(select_artifact(ra, "plan9", "mips").is_none());
+    }
+
+    #[test]
+    fn pip_and_npm_servers_are_registered_without_direct_artifacts() {
+        // pylsp (pip), basedpyright et typescript-language-server (npm) sont
+        // installés par `lsp_install`, pas par un artefact direct : ils doivent
+        // néanmoins exister dans COMPONENTS pour être `auto_installable`.
+        for id in ["pylsp", "basedpyright", "typescript-language-server"] {
+            let comp = component_for(id).unwrap_or_else(|| panic!("{id} doit être enregistré"));
+            assert!(comp.artifacts.is_empty(), "{id} ne doit pas avoir d'artefact direct");
+        }
+        // Un serveur non installable reste hors COMPONENTS.
+        assert!(component_for("gopls").is_none());
+        assert!(component_for("clangd").is_none());
     }
 }

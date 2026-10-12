@@ -5,6 +5,65 @@
 
 ---
 
+### [2026-10-12T22:10] | Runtime d'extensions : polyfill Node `process` (correctif `'process' is not defined`)
+
+- **Contexte :**
+  L'activation de l'extension `ms-python.python` échouait sur `extension failed to load: 'process' is not defined`. Cause racine : le sandbox QuickJS injecte les globals web (`structuredClone`, timers, `TextEncoder`…) et le shim `vscode`, mais **aucun global `process` / `global` / `setImmediate` / `Buffer`**. Le bundle `.vsix` de MS-Python est produit par webpack/esbuild pour Node.js et référence `process.platform` / `process.env` / `process.cwd()` **dès le chargement du module** → `ReferenceError` qui **avorte l'évaluation complète** (message générique levé par `evalModule`).
+
+- **Modifications effectuées :**
+  - `src/lib/extensions/runtime.ts` (`installWebGlobals`) : ajout d'un **polyfill Node inerte** fourni avant l'eval du bundle :
+    - `process` : `platform`/`arch`/`type`/`version`/`versions`/`argv`/`execPath` figés, `env` = objet **vide**, `cwd()` = dossier d'extension, `nextTick`/`hrtime`/`memoryUsage`/`uptime` neutres, surface EventEmitter (`on`/`once`/`off`/`emit`…) en no-op, `stdin`/`stdout`/`stderr` non fonctionnels (jamais les handles hôte).
+    - `global` = alias de `globalThis`.
+    - `setImmediate` / `clearImmediate` (microtask).
+    - `Buffer` : sous-ensemble pur JS (`from`/`alloc`/`concat`/`isBuffer`/`byteLength`) encodé via `TextEncoder`/`TextDecoder` — aucune mémoire hôte référencée.
+
+- **Décisions Techniques :**
+  - **Modèle VS Code confirmé par la doc officielle** : le *web extension host* (WebWorker) n'expose **pas** `process`/`os`/`setImmediate`/`path`/`util`/`url` — les web extensions doivent fournir elles-mêmes un polyfill (`process/browser` via webpack). Origin étant dans la même catégorie (sandbox sans accès Node), il doit **fournir le polyfill côté runtime** plutôt que d'exiger du packager. Zed, lui, n'exécute pas de JS `.vsix` (extensions Rust/WASM) — non applicable.
+  - **Inerte par conception** : le polyfill ne donne **aucun accès hôte** (pas d'`env`/PATH réel, pas de FS, pas de `stdout` réel). Toute capacité host-bound reste **exclusivement** derrière le bridge `vscode.*` (déjà capability-gated + consentement). Le polyfill débloque le *chargement*, pas les *privilèges*.
+  - **Placement dans `installWebGlobals`** : regroupe tous les globals « de chargement » au même endroit, cohérent avec l'existant, appliqué avant `installVscodeShim` et l'eval.
+
+- **Impacts & Dépendances :**
+  - Frontend uniquement : `src/lib/extensions/runtime.ts`. Aucun changement Rust/API.
+  - Les extensions qui *utilisaient* `process` sans le référencer (cas de chargement) sont désormais débloquées. Une extension qui attendrait un `process` **fonctionnel** (spawn, I/O réel) restera bridée — ce qui est l'objectif de sécurité.
+
+- **Prochaines étapes :**
+  - Réactiver `ms-python.python` et confirmer visuellement le chargement (au-delà de l'erreur de référence).
+  - Surveiller d'autres globals Node potentiellement référencés (ex. `require('child_process')`, `worker_threads`) s'ils apparaissent au chargement d'autres bundles.
+
+---
+
+### [2026-10-12T21:55] | LSP : rendre l'installation automatique de `pylsp` réelle (correctif `NO_AUTO_INSTALL`)
+
+- **Contexte :**
+  L'utilisateur a cliqué « Installer » sur le serveur **pylsp** et a reçu `{"code":"LSP_NOT_AUTO_INSTALLABLE","serverId":"pylsp","reason":"NO_AUTO_INSTALL"}`. Cause racine : `pylsp` est listé dans le catalogue front (`lspConfig.ts`) **et** dans l'allowlist d'exécution (`lsp_exe_and_args`), mais il était **absent** de `lsp_index::COMPONENTS` (autorité de téléchargement). Résultat : `component_for("pylsp")` → `None`, `auto_installable: false` côté catalogue, et `lsp_install` refusait avec la raison par défaut `NO_AUTO_INSTALL`. Incohérence front/back : l'UI proposait une action qui ne pouvait pas aboutir.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/lsp_index.rs` : composant `pylsp` ajouté à `COMPONENTS` (`install_dir: "pylsp"`, `approx_mb: 20`, **artefacts vides** — installé via pip, comme basedpyright via npm). Nouveau test `pip_and_npm_servers_are_registered_without_direct_artifacts`.
+  - `src-tauri/src/lsp.rs` :
+    - `find_python()` : détecte `python3` puis `python` dans le PATH enrichi.
+    - `install_via_pip(python, dest)` : crée un **venv isolé** dans app-data (`python -m venv`), puis `<venv>/bin/python -m pip install python-lsp-server` ; retourne l'exécutable `pylsp` (`bin/` Unix, `Scripts/` Windows). Aucun `pip install` global, aucun droit admin.
+    - `lsp_install` : nouvelle branche `pylsp` dans le cas sans artefact (miroir de la branche npm), avec raison exécutable `NEEDS_PYTHON` si aucun Python n'est présent.
+    - `resolve_lsp_binary` : la recherche app-data couvre désormais `bin` / `Scripts` (venv) **en plus** de la racine du dossier serveur.
+    - `lsp_catalog` : `pylsp` ajouté au `matches!` des serveurs installés sans artefact direct → `auto_installable: true`.
+  - `src/App.tsx` : le `.catch` de `lsp_install` **parse le JSON structuré** de Rust et affiche un message actionnable (`NEEDS_PYTHON` / `NEEDS_NODE` / `LSP_NOT_AUTO_INSTALLABLE`) au lieu du JSON brut.
+
+- **Décisions Techniques :**
+  - **Venv isolé plutôt que `pip install --user`** : un environnement autonome dans `<app_data>/lsp-servers/pylsp/` est supprimable d'un bloc (désinstallation propre), ne pollue jamais le Python système, et son script `pylsp` a un **shebang absolu** (vérifié : `#!/…/venv/bin/python`) — il reste correct même lancé par l'app GUI.
+  - **Même schéma que npm** : `pylsp` suit exactement le modèle de `basedpyright` (composant sans artefact + orchestration d'un gestionnaire de paquets local). Cohérence architecturale, pas de chemin spécial.
+  - **Résolution étendue à `bin`/`Scripts`** : nécessaire pour qu'un venv soit trouvé sans shim textuel fragile (descripteur non portable sous Windows).
+  - **Erreurs actionnables** : `NEEDS_PYTHON` n'est pas un échec sec mais une instruction (« installe Python 3 puis réessaie »), conforme à la politique « zéro travail pour l'utilisateur ».
+
+- **Impacts & Dépendances :**
+  - Backend : `lsp_index.rs` (registre composants), `lsp.rs` (résolution + install + catalogue). Frontend : `App.tsx` (traduction des erreurs structurées).
+  - `resolve_lsp_binary` gagne 2 sous-dossiers de recherche : purement additif, aucun risque de régression sur rust-analyzer (racine toujours consultée).
+  - Validation : `cargo test --lib` **53 passed** (+1), `npm test` **100 passed**, `tsc --noEmit` **0 erreur**, `eslint` **0 erreur** (warnings préexistants inchangés). Flux pip validé manuellement (Python 3.14) : `pylsp v1.15.0` installé et résolu dans le venv ; ressources temporaires nettoyées.
+
+- **Prochaines étapes :**
+  - Envisager `pip install` incrémental (réutiliser un venv existant) pour accélérer les réinstallations — non nécessaire en v1 (le dossier est repart de zéro volontairement).
+  - Téléchargement d'un Node portable embarqué (v1 non branché) — même logique pour pylsp si Python système absent.
+
+---
+
 ### [2026-10-12T21:35] | Extensions : consentement des binaires tiers & garde de prérequis (ext-guard + ext-consent)
 
 - **Contexte :**
