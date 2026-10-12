@@ -5,7 +5,42 @@
 
 ---
 
-### [2026-10-12T17:00] | Explorateur — réécriture complète « parité VS Code »
+### [2026-10-12T23:00] | Éditeur — affichage des médias (image / PDF / binaire) + icônes
+
+- **Contexte :**
+  Ouvrir une image ou un PDF dans l'éditeur tentait de lire le fichier comme du texte UTF-8 → écran d'erreur « stream did not contain valid UTF-8 ». Besoin : afficher correctement les médias (images, PDF) et les autres fichiers binaires, et disposer d'icônes d'onglet distinctes.
+
+- **Modifications effectuées :**
+  - **`src-tauri/Cargo.toml`** : ajout `base64 = "0.22"`.
+  - **`src-tauri/src/fs.rs`** : nouvelle commande `read_file_base64(path, workspace_root)` — passe par `assert_in_workspace`, refuse au-delà de `MAX_BINARY_BYTES = 50 Mo`, lit les bytes et renvoie du base64 (jamais de chemin exposé à la webview).
+  - **`src-tauri/src/lib.rs`** : enregistrement `fs::read_file_base64` dans `generate_handler!`.
+  - **`src/lib/fs.ts`** : wrapper `readFileBase64(path, scope?)`.
+  - **`src/lib/fileKind.ts`** (CRÉÉ) : module pur `FileKind = 'text' | 'image' | 'pdf' | 'binary'`, `extensionOf`, `imageMimeOf` (svg→image/svg+xml), `fileKindOf` (sentinelles `__…` → `text`), `isBinaryReadable`.
+  - **`src/hooks/useTabs.ts`** : nouvel état `binaryData: Record<string, { base64, mime }>` ; l'effet de chargement route selon `fileKindOf` (binaire lisible → `readFileBase64`, binaire pur → pas de lecture, sinon texte).
+  - **`src/components/editor/ImageViewerPane.tsx`** (CRÉÉ) : data URL depuis base64, fond damier (transparence), zoom molette `Ctrl/Cmd` + boutons, « Ajuster » via `ResizeObserver`, état d'erreur.
+  - **`src/components/editor/PdfViewerPane.tsx`** (CRÉÉ) : base64 → `Blob` → `URL.createObjectURL` → `<embed type="application/pdf">` (contourne la limite de longueur des data URLs) ; URL révoquée au démontage.
+  - **`src/components/editor/UnsupportedFilePane.tsx`** (CRÉÉ) : message clair pour les binaires sans lecteur.
+  - **`src/App.tsx`** / **`src/components/ai/AgentModeView.tsx`** : 3 nouvelles branches de routage (image / pdf / binaire) insérées avant la branche texte.
+  - **Icônes** : aucune modification nécessaire — `materialIcons.ts` mappe déjà `pdf`→`pdf` et les extensions image→`image` ; `TabBar` passe déjà `tab.name` à `FileIcon`.
+
+- **Décisions techniques :**
+  - **Base64 via commande Rust plutôt que le protocole `asset:`** : `convertFileSrc`/`assetProtocol` exigerait un scope couvrant dynamiquement tout le workspace (accès fichier large accordé à la webview, surface d'attaque accrue). Le base64 garde `assert_in_workspace` (autorité backend) et n'expose aucun chemin exploitable dans la webview.
+  - **Limite anti-DoS 50 Mo** : borne la taille du fichier lu, évite la saturation mémoire côté Rust et côté webview (une data URL géante figerait le rendu).
+  - **Classification par extension (module pur)** : évite de tenter de décoder du binaire en texte et rend le routage testable sans DOM.
+  - **Corrections eslint ciblées** : `set-state-in-effect` supprimé (PdfViewerPane), `refs` au rendu supprimé (ImageViewerPane) au profit d'un effet de « fit » déclenché par des primitives `naturalW/naturalH`.
+
+- **Impacts & Dépendances :**
+  - `src-tauri/Cargo.toml` + `lib.rs` : handlers ajoutés → **recompiler le binaire Tauri**.
+  - `useTabs()` expose désormais `binaryData` ; les vues (`App.tsx`, `AgentModeView.tsx`) le reçoivent en prop.
+  - Dette technique connue (préexistante) : le routage d'onglets est **dupliqué** entre `App.tsx` et `AgentModeView.tsx` — les 3 branches ont été répliquées dans les deux.
+  - Validation : `tsc` 0 erreur, `eslint` 0 warning sur les fichiers médias (2 warnings préexistants subsistent dans `App.tsx`), `vitest` **147/147**, `cargo build --lib` OK.
+
+- **Prochaines étapes :**
+  - Test fonctionnel à l'exécution (binaire Tauri recompilé) : ouvrir une image, un PDF, un binaire.
+  - Envisager de factoriser le routage d'onglets (supprimer la duplication App/AgentModeView).
+  - Chantier D (non entamé) : `gopls` / `clangd`.
+
+---
 
 - **Contexte :**
   Deux bugs bloquants signalés : (1) impossible de créer un fichier/dossier **dans** un dossier (vide ou nouveau) depuis l'explorateur ; (2) le **drag & drop** pour déplacer un fichier/dossier vers un dossier ne fonctionnait pas. Objectif : refonte propre de l'explorateur pour une parité VS Code complète (création, DnD interne + import OS, presse-papier, renommage inline, menu contextuel, raccourcis, virtualisation grands projets).

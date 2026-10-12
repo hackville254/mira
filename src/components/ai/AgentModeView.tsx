@@ -9,6 +9,10 @@ import EditorEmptyState from "../editor/EditorEmptyState";
 import EditorWelcome from "../editor/EditorWelcome";
 import AiDiffPane, { type AiDiffTabData } from "../editor/AiDiffPane";
 import WebPreviewPane from "../editor/WebPreviewPane";
+import ImageViewerPane from "../editor/ImageViewerPane";
+import PdfViewerPane from "../editor/PdfViewerPane";
+import UnsupportedFilePane from "../editor/UnsupportedFilePane";
+import { fileKindOf } from "../../lib/fileKind";
 import TerminalPanel, { type TerminalPanelHandle } from "../terminal/TerminalPanel";
 import SettingsPanel from "../settings/SettingsPanel";
 import type { AiCompletionFn } from "../../lib/aiAutocomplete";
@@ -41,6 +45,8 @@ interface AgentModeViewProps {
   activeTab: string | null;
   fileContents: Record<string, string>;
   fileErrors: Record<string, string>;
+  /** Contenu binaire (image/PDF) en base64 par chemin. */
+  binaryData: Record<string, { base64: string; mime: string }>;
   jumpRequest?: { path: string; line: number; col: number; key: number } | null;
   fileTreeVersion: number;
   editorRef: React.RefObject<EditorHandle | null>;
@@ -78,7 +84,7 @@ interface AgentModeViewProps {
 export default function AgentModeView(props: AgentModeViewProps) {
   const {
     folderPath,
-    tabs, activeTab, fileContents, fileErrors, jumpRequest, fileTreeVersion,
+    tabs, activeTab, fileContents, binaryData, fileErrors, jumpRequest, fileTreeVersion,
     editorRef, cursorPositions, pinnedContext,
     openTab, openTabAtLine, closeTab, setActiveTab, handleEditorChange,
     handleSave, handleNewFile, setPinnedContext, setCursorPositions, openAiDiffTab,
@@ -383,6 +389,35 @@ export default function AgentModeView(props: AgentModeViewProps) {
                   })()
                 ) : activeTab === "__preview__" ? (
                   <WebPreviewPane />
+                ) : activeTab && fileKindOf(activeTab) === "image" ? (
+                  binaryData[activeTab] ? (
+                    <ImageViewerPane
+                      base64={binaryData[activeTab].base64}
+                      mime={binaryData[activeTab].mime}
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                    />
+                  ) : (
+                    <UnsupportedFilePane
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      reason={fileErrors[activeTab]}
+                    />
+                  )
+                ) : activeTab && fileKindOf(activeTab) === "pdf" ? (
+                  binaryData[activeTab] ? (
+                    <PdfViewerPane
+                      base64={binaryData[activeTab].base64}
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                    />
+                  ) : (
+                    <UnsupportedFilePane
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      reason={fileErrors[activeTab]}
+                    />
+                  )
+                ) : activeTab && fileKindOf(activeTab) === "binary" ? (
+                  <UnsupportedFilePane
+                    fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                  />
                 ) : activeTab && fileContents[activeTab] !== undefined ? (
                   <Editor
                     ref={editorRef}

@@ -38,6 +38,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+base64 = "0.22"
 
 [profile.release]
 opt-level   = "z"      # optimize for size (not speed)

@@ -12,6 +12,10 @@ import Editor, { type EditorHandle, type EditorContext } from "./components/edit
 import AiDiffPane, { type AiDiffTabData } from "./components/editor/AiDiffPane";
 import WebPreviewPane from "./components/editor/WebPreviewPane";
 import MarkdownPreviewPane from "./components/editor/MarkdownPreviewPane";
+import ImageViewerPane from "./components/editor/ImageViewerPane";
+import PdfViewerPane from "./components/editor/PdfViewerPane";
+import UnsupportedFilePane from "./components/editor/UnsupportedFilePane";
+import { fileKindOf } from "./lib/fileKind";
 import StatusBar from "./components/StatusBar";
 import TerminalPanel, { type TerminalPanelHandle } from "./components/terminal/TerminalPanel";
 import CommandPalette from "./components/palette/CommandPalette";
@@ -59,6 +63,7 @@ function App() {
     tabs, setTabs: _setTabs,
     activeTab, setActiveTab,
     fileContents,
+    binaryData,
     fileErrors,
     jumpRequest,
     fileTreeVersion,
@@ -600,6 +605,7 @@ function App() {
           activeTab={activeTab}
           fileContents={fileContents}
           fileErrors={fileErrors}
+          binaryData={binaryData}
           jumpRequest={jumpRequest}
           fileTreeVersion={fileTreeVersion}
           editorRef={editorRef}
@@ -677,6 +683,47 @@ function App() {
                         />
                       );
                     })()
+                  ) : activeTab && fileKindOf(activeTab) === 'image' ? (
+                    binaryData[activeTab] ? (
+                      <ImageViewerPane
+                        base64={binaryData[activeTab].base64}
+                        mime={binaryData[activeTab].mime}
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      />
+                    ) : fileErrors[activeTab] ? (
+                      <UnsupportedFilePane
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                        reason={fileErrors[activeTab]}
+                      />
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center">
+                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
+                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
+                        </span>
+                      </div>
+                    )
+                  ) : activeTab && fileKindOf(activeTab) === 'pdf' ? (
+                    binaryData[activeTab] ? (
+                      <PdfViewerPane
+                        base64={binaryData[activeTab].base64}
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                      />
+                    ) : fileErrors[activeTab] ? (
+                      <UnsupportedFilePane
+                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                        reason={fileErrors[activeTab]}
+                      />
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center">
+                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
+                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
+                        </span>
+                      </div>
+                    )
+                  ) : activeTab && fileKindOf(activeTab) === 'binary' ? (
+                    <UnsupportedFilePane
+                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
+                    />
                   ) : activeTab && fileContents[activeTab] !== undefined ? (
                     <Editor
                       ref={editorRef}

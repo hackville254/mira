@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { readFile, writeFile } from "../lib/fs";
+import { readFile, readFileBase64, writeFile } from "../lib/fs";
+import { fileKindOf, imageMimeOf, isBinaryReadable } from "../lib/fileKind";
 import type { Tab } from "../components/editor/TabBar";
 import { useToast } from "../components/ui/Toast";
 
@@ -10,7 +11,9 @@ export function useTabs() {
   const [tabs, setTabs]               = useState<Tab[]>([]);
   const [activeTab, setActiveTab]     = useState<string | null>(null);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
-  const [fileErrors, setFileErrors]   = useState<Record<string, string>>({});
+  const [fileErrors, setFileErrors] = useState<Record<string, string>>({});
+  /** Contenu binaire (image/PDF) en base64 par chemin, séparé du texte éditable. */
+  const [binaryData, setBinaryData] = useState<Record<string, { base64: string; mime: string }>>({});
   const [jumpRequest, setJumpRequest] = useState<{ path: string; line: number; col: number; key: number } | null>(null);
   const [fileTreeVersion, setFileTreeVersion] = useState(0);
   const untitledCount = useRef(0);
@@ -24,8 +27,24 @@ export function useTabs() {
   fileContentsRef.current = fileContents;
 
   useEffect(() => {
-    if (!activeTab || fileContents[activeTab] !== undefined) return;
-    if (activeTab.startsWith('__untitled__') || activeTab.startsWith('__diff__') || activeTab.startsWith('__preview__') || activeTab.startsWith('__mdpreview__')) return;
+    if (!activeTab || activeTab.startsWith('__')) return;
+    // Fichier binaire affichable (image/PDF) : chargé en base64, hors du cache
+    // texte éditable.
+    if (isBinaryReadable(activeTab)) {
+      if (binaryData[activeTab] !== undefined) return;
+      readFileBase64(activeTab)
+        .then(base64 => setBinaryData(prev => ({ ...prev, [activeTab]: { base64, mime: imageMimeOf(activeTab) } })))
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          const name = activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab;
+          showToast(`Failed to read ${name}: ${msg}`, 'error');
+          setFileErrors(prev => ({ ...prev, [activeTab]: msg }));
+        });
+      return;
+    }
+    // Fichier binaire sans lecteur dédié : pas de lecture, on affiche un message.
+    if (fileKindOf(activeTab) === 'binary') return;
+    if (fileContents[activeTab] !== undefined) return;
     readFile(activeTab)
       .then(content => setFileContents(prev => ({ ...prev, [activeTab]: content })))
       .catch((e) => {
@@ -36,7 +55,7 @@ export function useTabs() {
         setFileContents(prev => ({ ...prev, [activeTab]: '' }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- showToast is stable; including it would re-run this file-load effect needlessly
-  }, [activeTab, fileContents]);
+  }, [activeTab, fileContents, binaryData]);
 
   function openTab(path: string) {
     const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -170,6 +189,7 @@ export function useTabs() {
     tabs, setTabs,
     activeTab, setActiveTab,
     fileContents, setFileContents,
+    binaryData,
     fileErrors,
     jumpRequest,
     fileTreeVersion,

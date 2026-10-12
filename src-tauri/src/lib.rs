@@ -118,6 +118,7 @@ pub fn run() {
             keychain::delete_secret,
             fs::read_dir,
             fs::read_file,
+            fs::read_file_base64,
             fs::write_file,
             fs::rename_path,
             fs::delete_path,

@@ -94,6 +94,36 @@ pub fn read_file(path: String, workspace_root: Option<String>) -> Result<String,
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// Taille maximale d'un fichier binaire renvoyé au front (base64) : au-delà, on
+/// refuse plutôt que d'allouer des centaines de Mo en mémoire (anti-DoS).
+const MAX_BINARY_BYTES: u64 = 50 * 1024 * 1024; // 50 Mo
+
+/// Lit un fichier **binaire** (image, PDF…) et le renvoie en base64.
+///
+/// Pourquoi base64 et pas le protocole `asset:` de Tauri : `convertFileSrc`
+/// exigerait de déclarer un scope `assetProtocol` couvrant dynamiquement le
+/// workspace de l'utilisateur — soit ouvrir un accès fichier large à la webview.
+/// Ici, la même garde `assert_in_workspace` que les autres commandes FS
+/// s'applique, et la webview ne reçoit que des bytes déjà encodés, sans chemin
+/// exploitable.
+#[tauri::command]
+pub fn read_file_base64(path: String, workspace_root: Option<String>) -> Result<String, String> {
+    if let Some(root) = workspace_root {
+        assert_in_workspace(&path, &root)?;
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_BINARY_BYTES {
+        return Err(format!(
+            "file too large ({} MB > {} MB limit)",
+            meta.len() / (1024 * 1024),
+            MAX_BINARY_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    use base64::Engine as _;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 #[tauri::command]
 pub fn write_file(path: String, content: String, workspace_root: Option<String>) -> Result<(), String> {
     if let Some(root) = workspace_root {

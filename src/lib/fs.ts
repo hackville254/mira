@@ -28,6 +28,15 @@ export async function readFile(path: string, scope?: FsScope): Promise<string> {
   return invoke<string>('read_file', { path, ...scopeArg(scope) });
 }
 
+/**
+ * Lit un fichier binaire (image, PDF…) et renvoie son contenu encodé en base64.
+ * Le backend applique la même garde de confinement que `readFile` et refuse les
+ * fichiers au-delà d'une taille limite (anti-DoS mémoire).
+ */
+export async function readFileBase64(path: string, scope?: FsScope): Promise<string> {
+  return invoke<string>('read_file_base64', { path, ...scopeArg(scope) });
+}
+
 export async function writeFile(path: string, content: string, scope?: FsScope): Promise<void> {
   return invoke<void>('write_file', { path, content, ...scopeArg(scope) });
 }

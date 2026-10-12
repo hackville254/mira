@@ -2972,6 +2972,7 @@ dependencies = [
 name = "origin"
 version = "0.1.4"
 dependencies = [
+ "base64 0.22.1",
  "dpi",
  "flate2",
  "keyring",
