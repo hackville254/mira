@@ -154,10 +154,10 @@ export const LANGUAGES: LanguageDef[] = [
 
   // ── Shell / infra ─────────────────────────────────────────────────────────
   { id: 'shellscript', label: 'Shell Script', extensions: ['sh', 'bash', 'zsh'], parser: () => legacy(shell), lsp: 'bash-language-server', languageId: 'shellscript', icon: 'shell' },
-  { id: 'dockerfile', label: 'Dockerfile', extensions: ['dockerfile'], filenames: ['Dockerfile'], parser: () => legacy(dockerFile), icon: 'docker' },
+  { id: 'dockerfile', label: 'Dockerfile', extensions: ['dockerfile'], filenames: ['Dockerfile'], parser: () => legacy(dockerFile), lsp: 'dockerfile-language-server-nodejs', languageId: 'dockerfile', icon: 'docker' },
   { id: 'makefile', label: 'Makefile', extensions: ['mk'], filenames: ['Makefile'], parser: () => [], icon: 'makefile' },
   { id: 'sql', label: 'SQL', extensions: ['sql'], parser: () => legacy(sql), icon: 'database' },
-  { id: 'yaml', label: 'YAML', extensions: ['yaml', 'yml'], parser: () => legacy(yaml), icon: 'yaml' },
+  { id: 'yaml', label: 'YAML', extensions: ['yaml', 'yml'], parser: () => legacy(yaml), lsp: 'yaml-language-server', languageId: 'yaml', icon: 'yaml' },
   { id: 'toml', label: 'TOML', extensions: ['toml'], parser: () => legacy(toml), icon: 'toml' },
   { id: 'ini', label: 'INI', extensions: ['ini', 'cfg'], parser: () => legacy(properties), icon: 'settings' },
   { id: 'protobuf', label: 'Protobuf', extensions: ['proto'], parser: () => legacy(protobuf), icon: 'protobuf' },

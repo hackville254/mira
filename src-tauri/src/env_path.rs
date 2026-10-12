@@ -47,7 +47,91 @@ fn well_known_dirs() -> Vec<PathBuf> {
     dirs.push(PathBuf::from("/usr/bin"));
     dirs.push(PathBuf::from("/bin"));
 
+    // Gestionnaires de version Node (nvm, `n`, fnm, volta, asdf).
+    // Ceux-ci modifient le PATH depuis les rc du shell ; un shell de login
+    // peut ne pas les charger (early-return non-interactif). On les résout
+    // donc **explicitement** pour que `node`/`npm` soient toujours visibles.
+    dirs.extend(node_manager_dirs(&home));
+
     dirs
+}
+
+/// Dossiers « bin » des gestionnaires de version Node usuels.
+///
+/// `nvm` empile un dossier par version (`~/.nvm/versions/node/<v>/bin`) : on
+/// sélectionne la **version active** (`alias/default`) si elle est résolue,
+/// sinon la plus récente par tri sémantique — pour ne pas dépendre de l'ordre
+/// du système de fichiers.
+fn node_manager_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    // `n` : `~/n/bin` (binaires globaux) et `~/n/versions/node/<v>/bin`.
+    dirs.push(home.join("n/bin"));
+    dirs.extend(latest_version_bin(&home.join("n/versions/node")));
+
+    // nvm : `~/.nvm/alias/default` désigne la version active. L'alias est
+    // souvent **partiel** (`24`, `v24`, `lts/*`, `node`) : on le résout contre
+    // les versions réellement installées. Repli final : la plus récente.
+    let nvm_root = home.join(".nvm/versions/node");
+    if let Some(alias) = nvm_alias(&home.join(".nvm/alias/default")) {
+        if let Some(dir) = resolve_nvm_alias(&nvm_root, &alias) {
+            dirs.push(dir);
+        }
+    }
+    dirs.extend(latest_version_bin(&nvm_root));
+
+    // fnm, volta, asdf (multiversion). On privilégie les alias courants.
+    dirs.push(home.join(".fnm/aliases/default/bin"));
+    dirs.push(home.join(".volta/bin"));
+    dirs.push(home.join(".asdf/shims"));
+
+    dirs
+}
+
+/// Lit `~/.nvm/alias/default` (ex. `v24.21.0` ou `24.21.0`) et retourne le nom
+/// de dossier canonique `vX.Y.Z`, ou `None` si le fichier est absent/vide.
+fn nvm_active_version(alias_file: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(alias_file).ok()?;
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    Some(if v.starts_with('v') { v.to_string() } else { format!("v{v}") })
+}
+
+/// Liste les sous-dossiers de versions `vX.Y.Z` d'un root Node et retourne les
+/// `<v>/bin` correspondants, **du plus récent au plus ancien** (tri sémantique).
+/// Utilisé en repli quand l'alias actif n'est pas disponible.
+fn latest_version_bin(root: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut versions: Vec<(u64, u64, u64, PathBuf)> = Vec::new();
+    for entry in read.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(v) = parse_semver(&name) {
+            versions.push((v.0, v.1, v.2, entry.path().join("bin")));
+        }
+    }
+    versions.sort_by(|a, b| (b.0, b.1, b.2).cmp(&(a.0, a.1, a.2)));
+    versions.into_iter().map(|(_, _, _, p)| p).collect()
+}
+
+/// Parse `vX.Y.Z` (ou `X.Y.Z`) en triplet numérique. `None` si non conforme.
+fn parse_semver(name: &str) -> Option<(u64, u64, u64)> {
+    let s = name.strip_prefix('v').unwrap_or(name);
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 /// Interroge un shell de login pour récupérer son `$PATH` (`zsh -lc` / `bash -lc`).
@@ -161,4 +245,75 @@ pub fn enriched_path_os() -> std::ffi::OsString {
 /// Répertoires du PATH enrichi (ordre de priorité conservé).
 pub fn enriched_dirs() -> &'static [PathBuf] {
     cached_path().as_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_semver_accepts_v_prefix_and_plain() {
+        assert_eq!(parse_semver("v24.21.0"), Some((24, 21, 0)));
+        assert_eq!(parse_semver("24.21.0"), Some((24, 21, 0)));
+        // Patch optionnel.
+        assert_eq!(parse_semver("v20.10"), Some((20, 10, 0)));
+        // Non conforme → None (pas de panic).
+        assert_eq!(parse_semver("node"), None);
+        assert_eq!(parse_semver("v1.2.3.4"), None);
+        assert_eq!(parse_semver(""), None);
+    }
+
+    #[test]
+    fn latest_version_bin_sorts_descending() {
+        let tmp = std::env::temp_dir().join(format!("origin_envpath_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for v in ["v18.2.0", "v24.21.0", "v20.10.0", "not-a-version"] {
+            std::fs::create_dir_all(tmp.join(v)).unwrap();
+        }
+        let bins = latest_version_bin(&tmp);
+        let names: Vec<String> = bins.iter().map(|p| {
+            p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string()
+        }).collect();
+        assert_eq!(names, vec!["v24.21.0", "v20.10.0", "v18.2.0"]);
+        // Chaque entrée pointe vers un sous-dossier `bin`.
+        assert!(bins.iter().all(|p| p.ends_with("bin")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn latest_version_bin_missing_root_is_empty() {
+        let missing = std::env::temp_dir().join("origin_envpath_absent_xyz");
+        assert!(latest_version_bin(&missing).is_empty());
+    }
+
+    #[test]
+    fn nvm_active_version_reads_and_normalizes() {
+        let tmp = std::env::temp_dir().join(format!("origin_nvm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let alias = tmp.join("default");
+
+        std::fs::write(&alias, "24.21.0\n").unwrap();
+        assert_eq!(nvm_active_version(&alias), Some("v24.21.0".to_string()));
+
+        std::fs::write(&alias, "v20.10.0").unwrap();
+        assert_eq!(nvm_active_version(&alias), Some("v20.10.0".to_string()));
+
+        std::fs::write(&alias, "  \n").unwrap();
+        assert_eq!(nvm_active_version(&alias), None);
+
+        let _ = std::fs::remove_file(&alias);
+        assert_eq!(nvm_active_version(&alias), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn node_manager_dirs_includes_common_locations() {
+        let home = PathBuf::from("/tmp/fake-home");
+        let dirs = node_manager_dirs(&home);
+        assert!(dirs.contains(&home.join("n/bin")));
+        assert!(dirs.contains(&home.join(".volta/bin")));
+        assert!(dirs.contains(&home.join(".asdf/shims")));
+        assert!(dirs.contains(&home.join(".fnm/aliases/default/bin")));
+    }
 }

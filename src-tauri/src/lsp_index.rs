@@ -158,6 +158,50 @@ pub const COMPONENTS: &[Component] = &[
         approx_mb: 20,
         artifacts: &[],
     },
+    // Serveurs web/config extraits de VS Code, distribués par le paquet npm
+    // `vscode-langservers-extracted` (licence ISC). Un seul paquet fournit trois
+    // binaires (css/html/json) ; chaque `serverId` est néanmoins un composant à
+    // part entière pour rester aligné sur l'allowlist d'exécution et le routage
+    // par langage (`languages.ts`). Aucun artefact direct : install via npm.
+    Component {
+        id: "vscode-css-language-server",
+        install_dir: "vscode-langservers-extracted",
+        approx_mb: 20,
+        artifacts: &[],
+    },
+    Component {
+        id: "vscode-html-language-server",
+        install_dir: "vscode-langservers-extracted",
+        approx_mb: 20,
+        artifacts: &[],
+    },
+    Component {
+        id: "vscode-json-language-server",
+        install_dir: "vscode-langservers-extracted",
+        approx_mb: 20,
+        artifacts: &[],
+    },
+    // YAML : paquet npm `yaml-language-server` (licence MIT).
+    Component {
+        id: "yaml-language-server",
+        install_dir: "yaml-language-server",
+        approx_mb: 15,
+        artifacts: &[],
+    },
+    // Shell : paquet npm `bash-language-server` (licence MIT).
+    Component {
+        id: "bash-language-server",
+        install_dir: "bash-language-server",
+        approx_mb: 15,
+        artifacts: &[],
+    },
+    // Dockerfile : paquet npm `dockerfile-language-server-nodejs` (licence MIT).
+    Component {
+        id: "dockerfile-language-server-nodejs",
+        install_dir: "dockerfile-language-server-nodejs",
+        approx_mb: 15,
+        artifacts: &[],
+    },
 ];
 
 // ── Empreintes figées (release rust-analyzer 2025-01-06) ─────────────────────
@@ -316,10 +360,21 @@ mod tests {
 
     #[test]
     fn pip_and_npm_servers_are_registered_without_direct_artifacts() {
-        // pylsp (pip), basedpyright et typescript-language-server (npm) sont
-        // installés par `lsp_install`, pas par un artefact direct : ils doivent
-        // néanmoins exister dans COMPONENTS pour être `auto_installable`.
-        for id in ["pylsp", "basedpyright", "typescript-language-server"] {
+        // pylsp (pip), basedpyright/typescript-language-server (npm) ainsi que
+        // les serveurs web/config (vscode-*, yaml, bash, dockerfile, tous npm)
+        // sont installés par `lsp_install`, pas par un artefact direct : ils
+        // doivent néanmoins exister dans COMPONENTS pour être `auto_installable`.
+        for id in [
+            "pylsp",
+            "basedpyright",
+            "typescript-language-server",
+            "vscode-css-language-server",
+            "vscode-html-language-server",
+            "vscode-json-language-server",
+            "yaml-language-server",
+            "bash-language-server",
+            "dockerfile-language-server-nodejs",
+        ] {
             let comp = component_for(id).unwrap_or_else(|| panic!("{id} doit être enregistré"));
             assert!(comp.artifacts.is_empty(), "{id} ne doit pas avoir d'artefact direct");
         }

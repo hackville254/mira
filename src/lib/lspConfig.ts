@@ -128,6 +128,10 @@ export const KNOWN_SERVERS: KnownServer[] = [
     id: 'yaml-language-server',
     label: 'YAML (yaml-language-server)',
   },
+  {
+    id: 'dockerfile-language-server-nodejs',
+    label: 'Dockerfile (dockerfile-language-server-nodejs)',
+  },
 ];
 
 const KNOWN_SERVER_IDS = new Set(KNOWN_SERVERS.map(s => s.id));
@@ -137,7 +141,8 @@ export function isKnownServerId(id: string): boolean {
   return KNOWN_SERVER_IDS.has(id);
 }
 
-// ── Configuration par défaut (3 serveurs historiques) ───────────────────────
+// ── Configuration par défaut ────────────────────────────────────────────────
+// Serveurs activés par défaut, tous installables en un clic (npm/pip/artefact).
 
 export const DEFAULT_LSP_CONFIG: LspConfig = {
   version: 1,
@@ -157,6 +162,42 @@ export const DEFAULT_LSP_CONFIG: LspConfig = {
       serverId: 'pylsp',
       extensions: ['py', 'pyw', 'pyi'],
       languageId: 'python',
+    },
+    {
+      serverId: 'vscode-json-language-server',
+      extensions: ['json', 'jsonc'],
+      languageId: 'json',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'vscode-css-language-server',
+      extensions: ['css', 'scss', 'less'],
+      languageId: 'css',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'vscode-html-language-server',
+      extensions: ['html', 'htm'],
+      languageId: 'html',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'yaml-language-server',
+      extensions: ['yaml', 'yml'],
+      languageId: 'yaml',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'bash-language-server',
+      extensions: ['sh', 'bash', 'zsh'],
+      languageId: 'shellscript',
+      args: ['start'],
+    },
+    {
+      serverId: 'dockerfile-language-server-nodejs',
+      extensions: ['dockerfile'],
+      languageId: 'dockerfile',
+      args: ['--stdio'],
     },
   ],
 };

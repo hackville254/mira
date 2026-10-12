@@ -94,6 +94,7 @@ fn lsp_exe_and_args(server_id: &str) -> Option<(&'static str, &'static [&'static
         "vscode-css-language-server"  => Some(("vscode-css-language-server", &["--stdio"])),
         "vscode-html-language-server" => Some(("vscode-html-language-server", &["--stdio"])),
         "yaml-language-server"        => Some(("yaml-language-server", &["--stdio"])),
+        "dockerfile-language-server-nodejs" => Some(("dockerfile-language-server-nodejs", &["--stdio"])),
         _ => None,
     }
 }
@@ -161,12 +162,24 @@ fn resolve_lsp_binary(
     }
 
     // 2. Binaires embarqués dans le dossier de données de l'app.
-    //    On couvre le dossier racine (binaire décompressé, ex. rust-analyzer)
-    //    ET les sous-dossiers de venv (`bin` Unix / `Scripts` Windows), utilisés
-    //    par les serveurs installés via pip dans un environnement isolé (pylsp).
+    //    Le dossier est nommé d'après `install_dir` (et non `server_id`) car
+    //    plusieurs serveurs npm partagent un même paquet — css/html/json vivent
+    //    tous trois sous `vscode-langservers-extracted`. On couvre :
+    //      * `node_modules/.bin` — binaires créés par `npm install --prefix` ;
+    //      * `bin` / `Scripts`       — venv Python isolé (pylsp) ;
+    //      * racine                   — binaire nu décompressé (rust-analyzer).
     if let Ok(base) = app.path().app_data_dir() {
-        let dir = base.join("lsp-servers").join(server_id);
-        for sub in [Some("bin"), Some("Scripts"), None] {
+        let install_dir = crate::lsp_index::component_for(server_id)
+            .map(|c| c.install_dir)
+            .unwrap_or(server_id);
+        let dir = base.join("lsp-servers").join(install_dir);
+        let sub_dirs = [
+            Some("node_modules/.bin"),
+            Some("bin"),
+            Some("Scripts"),
+            None,
+        ];
+        for sub in sub_dirs {
             let target = match sub {
                 Some(s) => dir.join(s),
                 None => dir.clone(),
@@ -570,7 +583,12 @@ fn classify_source(
         }
     }
     if let Ok(base) = app.path().app_data_dir() {
-        let dir = base.join("lsp-servers").join(server_id);
+        // Le dossier d'install est nommé d'après `install_dir` (peut différer du
+        // `server_id` lorsque plusieurs serveurs partagent un paquet npm).
+        let install_dir = crate::lsp_index::component_for(server_id)
+            .map(|c| c.install_dir)
+            .unwrap_or(server_id);
+        let dir = base.join("lsp-servers").join(install_dir);
         if resolved.starts_with(&dir) {
             return "app".to_string();
         }
@@ -683,6 +701,7 @@ pub async fn lsp_catalog(app: tauri::AppHandle) -> Result<Vec<LspCatalogEntry>, 
         "vscode-css-language-server",
         "vscode-html-language-server",
         "yaml-language-server",
+        "dockerfile-language-server-nodejs",
     ];
 
     let (os, arch) = crate::lsp_index::platform_key();
@@ -705,8 +724,11 @@ pub async fn lsp_catalog(app: tauri::AppHandle) -> Result<Vec<LspCatalogEntry>, 
         let (auto_installable, approx_mb, reason) =
             match crate::lsp_index::component_for(id) {
                 Some(comp) => {
+                    // Un composant sans artefact direct reste installable dès lors
+                    // qu'une voie locale existe (npm via Node, ou pip via Python).
                     let ok = crate::lsp_index::is_installable(comp, os, arch)
-                        || matches!(id, "basedpyright" | "typescript-language-server" | "pylsp");
+                        || npm_packages_for(id).is_some()
+                        || id == "pylsp";
                     (ok, comp.approx_mb, None)
                 }
                 None => (
@@ -767,11 +789,12 @@ pub async fn lsp_install(server_id: String, app: tauri::AppHandle) -> Result<Lsp
     let install_root = base.join("lsp-servers");
     let dest = install_root.join(comp.install_dir);
 
-    // 2. Cas Node+npm : basedpyright / typescript-language-server. On exige un
+    // 2. Cas Node+npm : basedpyright / typescript-language-server et les
+    //    serveurs web/config (vscode-*, yaml, bash, dockerfile). On exige un
     //    Node présent ; sinon on renvoie une action exécutable (installer Node)
     //    plutôt qu'un échec sec — conforme à la politique « zéro travail ».
     if artifact.is_none() {
-        if server_id == "basedpyright" || server_id == "typescript-language-server" {
+        if npm_packages_for(&server_id).is_some() {
             let node = find_node().ok_or_else(|| {
                 format!(
                     r#"{{"code":"{}","serverId":"{}","reason":"NEEDS_NODE"}}"#,
@@ -868,20 +891,52 @@ pub async fn lsp_install(server_id: String, app: tauri::AppHandle) -> Result<Lsp
     })
 }
 
-/// Installe un serveur npm (`basedpyright`, `typescript-language-server`) dans
-/// app-data via `npm install --prefix`, sans droits admin et sans toucher au
-/// système. Retourne le chemin de l'exécutable installé dans `node_modules/.bin`.
+/// Paquets npm à installer pour un `serverId`, ou `None` si ce serveur ne
+/// s'installe pas via npm. **Source unique** : sert à la fois à décider du
+/// routage (`lsp_install`) et à construire la commande `npm install`.
+fn npm_packages_for(server_id: &str) -> Option<&'static [&'static str]> {
+    match server_id {
+        "basedpyright" => Some(&["basedpyright"]),
+        "typescript-language-server" => Some(&["typescript-language-server", "typescript"]),
+        // Un seul paquet fournit trois binaires (css/html/json).
+        "vscode-css-language-server"
+        | "vscode-html-language-server"
+        | "vscode-json-language-server" => Some(&["vscode-langservers-extracted"]),
+        "yaml-language-server" => Some(&["yaml-language-server"]),
+        "bash-language-server" => Some(&["bash-language-server"]),
+        "dockerfile-language-server-nodejs" => Some(&["dockerfile-language-server-nodejs"]),
+        _ => None,
+    }
+}
+
+/// Noms de binaires attendus dans `node_modules/.bin` après installation, par
+/// ordre de préférence (le premier trouvé gagne).
+fn npm_bin_names(server_id: &str) -> &'static [&'static str] {
+    match server_id {
+        "basedpyright" => &["basedpyright-langserver", "basedpyright"],
+        "typescript-language-server" => &["typescript-language-server"],
+        "vscode-css-language-server" => &["vscode-css-language-server"],
+        "vscode-html-language-server" => &["vscode-html-language-server"],
+        "vscode-json-language-server" => &["vscode-json-language-server"],
+        "yaml-language-server" => &["yaml-language-server"],
+        "bash-language-server" => &["bash-language-server"],
+        "dockerfile-language-server-nodejs" => &["dockerfile-language-server-nodejs"],
+        _ => &[],
+    }
+}
+
+/// Installe un serveur npm (`basedpyright`, `typescript-language-server`, et les
+/// serveurs web/config) dans app-data via `npm install --prefix`, sans droits
+/// admin et sans toucher au système. Retourne le chemin de l'exécutable installé
+/// dans `node_modules/.bin`.
 async fn install_via_npm(node: &Path, server_id: &str, dest: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dest).map_err(|e| {
         format!(r#"{{"code":"{}","message":"{}"}}"#, crate::downloader::ERR_EXTRACT_FAILED, e)
     })?;
 
     // Paquets officiels et ouverts (pas de composant propriétaire).
-    let packages: &[&str] = match server_id {
-        "basedpyright" => &["basedpyright"],
-        "typescript-language-server" => &["typescript-language-server", "typescript"],
-        _ => return Err(format!(r#"{{"code":"{}","message":"npm: id inconnu"}}"#, ERR_UNKNOWN_SERVER)),
-    };
+    let packages: &[&str] = npm_packages_for(server_id)
+        .ok_or_else(|| format!(r#"{{"code":"{}","message":"npm: id inconnu"}}"#, ERR_UNKNOWN_SERVER))?;
 
     // npm doit être invoqué via le node détecté. On ne passe PAS par un shell :
     // on localise `npm-cli.js` à côté de node, ou on retombe sur `npm` du PATH.
@@ -927,12 +982,7 @@ async fn install_via_npm(node: &Path, server_id: &str, dest: &Path) -> Result<Pa
 
     // Exécutable attendu dans le dossier .bin local.
     let bin = dest.join("node_modules").join(".bin");
-    let names: &[&str] = match server_id {
-        "basedpyright" => &["basedpyright-langserver", "basedpyright"],
-        "typescript-language-server" => &["typescript-language-server"],
-        _ => &[],
-    };
-    for n in names {
+    for n in npm_bin_names(server_id) {
         if let Some(p) = pick_executable(&bin, n) {
             return Ok(p);
         }

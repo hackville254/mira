@@ -5,6 +5,40 @@
 
 ---
 
+### [2026-10-12T22:40] | LSP : câblage des serveurs « à moitié finis » + langages légers (JSON/CSS/HTML/YAML/Shell/Dockerfile)
+
+- **Contexte :**
+  Cinq serveurs LSP étaient **supportés par l'allowlist d'exécution** Rust (`lsp_exe_and_args`) et routés par `languages.ts`, mais **absents de l'autorité de téléchargement** (`lsp_index::COMPONENTS`) et du catalogue front (`KNOWN_SERVERS` / `DEFAULT_LSP_CONFIG`) : ils restaient donc invisibles/inertes. Parallèlement, Dockerfile (langage déjà déclaré) n'avait aucun serveur câblé alors que `dockerfile-language-server-nodejs` est léger (npm). Objectif : activer ces serveurs « déjà à moitié finis » et les langages absents légers, sans travail manuel utilisateur.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/lsp_index.rs`** : ajout à `COMPONENTS` (tous `artifacts: &[]`, install via npm) de `vscode-css/html/json-language-server` (paquet partagé `vscode-langservers-extracted`, ISC), `yaml-language-server` (MIT), `bash-language-server` (MIT), `dockerfile-language-server-nodejs` (MIT). Test `pip_and_npm_servers_are_registered_without_direct_artifacts` étendu à 9 ids ; gopls/clangd vérifiés hors COMPONENTS.
+  - **`src-tauri/src/lsp.rs`** :
+    - `lsp_exe_and_args` : ligne `dockerfile-language-server-nodejs` → `("dockerfile-language-server-nodejs", ["--stdio"])`.
+    - `lsp_catalog` : `SERVER_IDS` complété ; condition `auto_installable` généralisée via `npm_packages_for(id).is_some() || id == "pylsp"` (plus de liste figée `basedpyright|typescript|pylsp`).
+    - Nouvelles fonctions **source unique** `npm_packages_for` (paquets) et `npm_bin_names` (binaires dans `node_modules/.bin`), utilisées à la fois par le routage `lsp_install` et par `install_via_npm` (refactoré).
+    - **`resolve_lsp_binary`** : le dossier app-data est désormais résolu via `component.install_dir` (et non `server_id`) — indispensable car css/html/json **partagent** le dossier `vscode-langservers-extracted`. Recherche étendue à `node_modules/.bin` (binaires produits par `npm install --prefix`), en plus de `bin`/`Scripts`/racine.
+    - **`classify_source`** : même alignement `install_dir` pour étiqueter correctement la source « app » d'un binaire npm partagé.
+  - **`src/lib/lspConfig.ts`** : ajout de `dockerfile-language-server-nodejs` à `KNOWN_SERVERS` ; `DEFAULT_LSP_CONFIG` étendu de 3 → 9 serveurs (ajout json/jsonc, css/scss/less, html/htm, yaml/yml, sh/bash/zsh, dockerfile) avec `languageId` et args corrects (`start` pour bash, `--stdio` ailleurs).
+  - **`src/lib/languages.ts`** : `lsp:` + `languageId` ajoutés sur `dockerfile` → `dockerfile-language-server-nodejs` et `yaml` → `yaml-language-server`. Markdown **volontairement laissé sans LSP** (aucun serveur dans l'allowlist).
+
+- **Décisions Techniques :**
+  - **`install_dir` ≠ `server_id`** : pour ne pas télécharger trois fois le même paquet, css/html/json partagent un dossier physique ; la résolution et la classification devaient donc suivre `install_dir` **sinon** le binaire installé serait resté introuvable (régression silencieuse). C'est le point d'alignement clé corrigé ici.
+  - **`npm_packages_for` comme source unique** : évite la divergence historique entre « ce qu'on décide d'installer » et « ce qu'on exécute », en centralisant paquets et noms de binaires par `serverId`.
+  - **Zéro travail utilisateur** : tous ces serveurs sont npm → installables en un clic si Node est présent ; sinon le backend renvoie `NEEDS_NODE` (action exécutable), jamais un échec sec.
+  - **Sécurité inchangée** : l'autorité reste l'allowlist `lsp_exe_and_args` (exécution) + `COMPONENTS` (téléchargement), tous deux figés à la compilation ; le front ne peut pas faire exécuter un binaire arbitraire.
+  - **Markdown exclu** : décision de ne pas câbler `vscode-markdown-language-server` (non présent dans l'allowlist) — hors périmètre « léger sûr » de cette passe.
+
+- **Impacts & Dépendances :**
+  - Rust : `lsp.rs`, `lsp_index.rs`. Front : `lspConfig.ts`, `languages.ts`.
+  - Nouveaux serveurs visibles dans Settings et le catalogue LSP ; un fichier `.yaml`/`.yml`/`Dockerfile` déclenche désormais un serveur (installation proposée au premier usage si absent).
+  - Dépendance runtime : **Node** (déjà requise par basedpyright/typescript-language-server) pour ces six serveurs npm.
+
+- **Prochaines étapes :**
+  - Vérifier en exécution réelle l'installation + démarrage d'un serveur npm partagé (ex. CSS) pour confirmer la résolution `node_modules/.bin` sous `vscode-langservers-extracted`.
+  - (Futur, non câblé v1) Node portable embarqué pour supprimer la dépendance à un Node système.
+
+---
+
 ### [2026-10-12T22:10] | Runtime d'extensions : polyfill Node `process` (correctif `'process' is not defined`)
 
 - **Contexte :**
