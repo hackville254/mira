@@ -141,6 +141,7 @@ pub fn run() {
             system::sys_memory,
             env::detect_dev_environment,
             terminal::terminal_create,
+            terminal::terminal_create_task,
             terminal::terminal_shell_name,
             terminal::terminal_write,
             terminal::terminal_resize,

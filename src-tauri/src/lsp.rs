@@ -73,19 +73,48 @@ fn make_lsp_process(exe: &str) -> tokio::process::Command {
     cmd
 }
 
-fn lsp_exe_and_args(language: &str) -> Option<(&'static str, &'static [&'static str])> {
-    match language {
-        "typescript" | "javascript" => Some(("typescript-language-server", &["--stdio"])),
-        "rust"   => Some(("rust-analyzer", &[])),
-        "python" => Some(("pylsp", &[])),
+/// Allowlist des serveurs LSP internalisés.
+///
+/// `serverId` provient du frontend (config utilisateur) : ce mapping est la
+/// **seule** autorité d'exécution. Un `serverId` inconnu est rejeté, donc le
+/// frontend ne peut jamais faire exécuter un binaire arbitraire.
+fn lsp_exe_and_args(server_id: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match server_id {
+        "typescript-language-server" => Some(("typescript-language-server", &["--stdio"])),
+        "rust-analyzer"              => Some(("rust-analyzer", &[])),
+        "pylsp"                      => Some(("pylsp", &[])),
+        "gopls"                      => Some(("gopls", &[])),
+        "clangd"                     => Some(("clangd", &[])),
+        "jdtls"                      => Some(("jdtls", &[])),
+        "bash-language-server"       => Some(("bash-language-server", &["start"])),
+        "vscode-json-language-server" => Some(("vscode-json-language-server", &["--stdio"])),
+        "vscode-css-language-server"  => Some(("vscode-css-language-server", &["--stdio"])),
+        "vscode-html-language-server" => Some(("vscode-html-language-server", &["--stdio"])),
+        "yaml-language-server"        => Some(("yaml-language-server", &["--stdio"])),
         _ => None,
     }
+}
+
+/// Valide un argument supplémentaire fourni par le frontend.
+///
+/// Interdit : chaîne vide, NUL, et sauts de ligne (empêchent toute tentative
+/// d'injection dans un log ou un framing). Le processus est lancé sans shell,
+/// donc il n'y a pas de risque d'interprétation métacaractère ; cette validation
+/// est une défense en profondeur.
+fn validate_lsp_arg(arg: &str) -> Result<(), String> {
+    if arg.is_empty() { return Err("empty LSP argument".into()); }
+    if arg.len() > 512 { return Err("LSP argument too long".into()); }
+    if arg.contains('\0') || arg.contains('\n') || arg.contains('\r') {
+        return Err("LSP argument contains forbidden control characters".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn lsp_start(
     language: String,
     root_path: String,
+    args: Option<Vec<String>>,
     app: tauri::AppHandle,
     state: tauri::State<'_, LspState>,
 ) -> Result<(), String> {
@@ -93,11 +122,22 @@ pub async fn lsp_start(
         return Ok(());
     }
 
-    let (exe, args) = lsp_exe_and_args(&language)
+    // `language` porte en réalité le `serverId` (voir lib/lspConfig). L'allowlist
+    // ci-dessous est l'autorité : tout id inconnu est refusé avant tout spawn.
+    let (exe, default_args) = lsp_exe_and_args(&language)
         .ok_or_else(|| format!("No LSP server configured for '{}'", language))?;
 
+    // Arguments effectifs : ceux fournis (validés) sinon ceux par défaut.
+    let extra: Vec<String> = match args {
+        Some(list) => {
+            for a in &list { validate_lsp_arg(a)?; }
+            list
+        }
+        None => default_args.iter().map(|s| s.to_string()).collect(),
+    };
+
     let mut cmd = make_lsp_process(exe);
-    for arg in args { cmd.arg(arg); }
+    for arg in &extra { cmd.arg(arg); }
     cmd.current_dir(&root_path);
 
     let mut child = cmd

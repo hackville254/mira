@@ -53,38 +53,78 @@ fn encode_dap_msg(msg: &serde_json::Value) -> Vec<u8> {
 }
 
 /// Returns (exe, args) for a given adapter type.
-/// adapter_path overrides the default binary path when provided.
-fn dap_exe_and_args(adapter: &str, adapter_path: Option<&str>) -> Option<(String, Vec<String>)> {
-    match adapter {
-        "codelldb" => Some((
-            adapter_path.unwrap_or("codelldb").to_string(),
-            vec!["--stdio".to_string()],
-        )),
-        "debugpy" => Some((
-            adapter_path.unwrap_or("python").to_string(),
-            vec!["-m".to_string(), "debugpy.adapter".to_string()],
-        )),
+///
+/// `adapter_id` provient du frontend (config utilisateur) : cette allowlist est
+/// la **seule** autorité d'exécution. Un id inconnu est rejeté, donc le frontend
+/// ne peut jamais faire exécuter un binaire arbitraire.
+/// `adapter_path` (chemin absolu vers le binaire) reste optionnel : il ne change
+/// que le chemin, jamais la nature de l'adaptateur lancé.
+fn dap_exe_and_args(adapter_id: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    match adapter_id {
+        "codelldb"   => Some((&["codelldb"], &["--stdio"])),
+        // debugpy s'installe comme module Python : on passe par `python -m`.
+        "debugpy"    => Some((&["python", "python3"], &["-m", "debugpy.adapter"])),
+        "delve"      => Some((&["dlv"], &["dap"])),
+        "netcoredbg" => Some((&["netcoredbg"], &["--interpreter=vscode"])),
+        "js-debug"   => Some((&["js-debug-adapter"], &[])),
+        "php-debug"  => Some((&["php-debug-adapter"], &[])),
+        "kotlin-debug-adapter" => Some((&["kotlin-debug-adapter"], &[])),
         _ => None,
     }
 }
 
+/// Valide un composant d'argv fourni par le frontend (défense en profondeur).
+///
+/// Le processus est lancé **sans shell** (argv direct), donc il n'y a pas de
+/// risque d'interprétation métacaractère ; on interdit malgré tout les entrées
+/// qui casseraient le framing ou les logs (NUL, sauts de ligne, vide, trop long).
+fn validate_dap_arg(arg: &str) -> Result<(), String> {
+    if arg.is_empty() { return Err("empty DAP argument".into()); }
+    if arg.len() > 4096 { return Err("DAP argument too long".into()); }
+    if arg.contains('\0') || arg.contains('\n') || arg.contains('\r') {
+        return Err("DAP argument contains forbidden control characters".into());
+    }
+    Ok(())
+}
+
+/// Valide un chemin de binaire fourni par l'utilisateur (`adapter_path`).
+fn validate_adapter_path(path: &str) -> Result<(), String> {
+    if path.is_empty() { return Err("empty adapter path".into()); }
+    if path.len() > 4096 { return Err("adapter path too long".into()); }
+    if path.contains('\0') || path.contains('\n') || path.contains('\r') {
+        return Err("adapter path contains forbidden control characters".into());
+    }
+    Ok(())
+}
+
+
 /// Spawn a debug adapter child process.
 ///
-/// codelldb is a native binary — CreateProcess resolves it directly, no cmd /C needed.
-/// debugpy uses 'python' which is often a .cmd shim on Windows (pyenv, conda); wrap in cmd /C.
-fn make_dap_process(adapter: &str, exe: &str, args: &[String]) -> tokio::process::Command {
+/// Le binaire est lancé **sans shell** : `Command::new(exe).arg(..)` construit un
+/// argv, donc aucune injection métacaractère n'est possible.
+///
+/// Exception Windows : certains adaptateurs distribués via npm (`js-debug-adapter`,
+/// `php-debug-adapter`…) sont des shims `.cmd` que `CreateProcess` ne sait pas
+/// résoudre via PATHEXT. Dans ce cas seulement on délègue à `cmd /C`, ce qui est
+/// sûr car `exe` provient de l'allowlist et les args ont été validés.
+fn make_dap_process(exe: &str, args: &[String]) -> tokio::process::Command {
     #[cfg(target_os = "windows")]
-    let mut cmd = if adapter == "debugpy" {
-        let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(exe);
-        for a in args { c.arg(a); }
-        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        c
-    } else {
-        let mut c = tokio::process::Command::new(exe);
-        for a in args { c.arg(a); }
-        c.creation_flags(0x08000000);
-        c
+    let mut cmd = {
+        // Les shims npm sont des .cmd : on passe par cmd.exe pour la résolution PATHEXT.
+        let uses_cmd_shim = exe.starts_with("js-debug") || exe.starts_with("php-debug")
+            || exe.ends_with(".cmd") || exe.ends_with(".bat");
+        if uses_cmd_shim {
+            let mut c = tokio::process::Command::new("cmd");
+            c.arg("/C").arg(exe);
+            for a in args { c.arg(a); }
+            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            c
+        } else {
+            let mut c = tokio::process::Command::new(exe);
+            for a in args { c.arg(a); }
+            c.creation_flags(0x08000000);
+            c
+        }
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -113,10 +153,23 @@ pub async fn dap_start(
         return Ok(()); // session already running
     }
 
-    let (exe, args) = dap_exe_and_args(&adapter, adapter_path.as_deref())
+    let (exe_candidates, default_args) = dap_exe_and_args(&adapter)
         .ok_or_else(|| format!("No DAP adapter configured for '{}'", adapter))?;
 
-    let mut cmd = make_dap_process(&adapter, &exe, &args);
+    // Chemin du binaire : valeur utilisateur (validée) sinon 1ᵉʳ candidat de l'allowlist.
+    let exe: String = match adapter_path.as_deref() {
+        Some(p) if !p.trim().is_empty() => {
+            validate_adapter_path(p)?;
+            p.to_string()
+        }
+        _ => exe_candidates[0].to_string(),
+    };
+
+    // Arguments par défaut de l'allowlist (jamais ceux du frontend : bornés ici).
+    let args: Vec<String> = default_args.iter().map(|s| s.to_string()).collect();
+    for a in &args { validate_dap_arg(a)?; }
+
+    let mut cmd = make_dap_process(&exe, &args);
 
     let mut child = cmd
         .spawn()

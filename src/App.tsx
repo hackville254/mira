@@ -28,6 +28,9 @@ import { getBranch } from "./lib/git";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { languageLabel } from "./components/editor/languageSupport";
+import { KNOWN_SERVERS } from "./lib/lspConfig";
+import { resolveRunConfig, trustWorkspace } from "./lib/runConfigStore";
+import { pickTaskForFile, substituteArgs } from "./lib/runTasks";
 import { useWorkspace } from "./context/WorkspaceContext";
 import { useDebugContext } from "./context/DebugContext";
 import { useDiagnostics } from "./context/DiagnosticsContext";
@@ -312,6 +315,7 @@ function App() {
     zoomIn:            () => handleZoomIn(),
     zoomOut:           () => handleZoomOut(),
     zoomReset:         () => handleZoomReset(),
+    runFile:           () => { void handleRunActiveFile(); },
     startDebug:        () => { setSidebarOpen(true); },
     stopDebug:         () => debugCtx.stopSession(),
     stepOver:          () => debugCtx.stepOver?.(),
@@ -402,9 +406,9 @@ function App() {
     else terminalRef.current?.addTab();
   }
 
-  function handleMissingServer(language: string, installCmd: string) {
-    const names: Record<string, string> = { typescript: 'TypeScript', rust: 'Rust', python: 'Python' };
-    const langName = names[language] ?? language;
+  function handleMissingServer(serverId: string, installCmd: string) {
+    const known = KNOWN_SERVERS.find(s => s.id === serverId);
+    const langName = known?.label ?? serverId;
     // Open terminal now so TerminalPanel is mounted by the time the user clicks Install
     setTerminalOpen(true);
     showToast(
@@ -415,6 +419,45 @@ function App() {
         onClick: () => { terminalRef.current?.runInNewTab(installCmd); },
       },
     );
+  }
+
+  // ── Run : lance la tâche adaptée au fichier actif ──────────────────────────
+  // Les tâches du workspace ne sont exécutées qu'après confirmation explicite.
+  const [trustPrompt, setTrustPrompt] = useState<
+    { label: string; program: string; args: string[]; raw: string | null } | null
+  >(null);
+
+  function startTask(label: string, program: string, args: string[]) {
+    setTerminalOpen(true);
+    // Laisse le panneau se monter avant de créer l'onglet de tâche.
+    setTimeout(() => terminalRef.current?.runTaskInNewTab(label, program, args), 60);
+  }
+
+  async function handleRunActiveFile() {
+    if (!activeTab || activeTab.startsWith('__')) {
+      showToast('No file to run', 'info');
+      return;
+    }
+    if (!folderPath) {
+      showToast('Open a folder to run tasks', 'info');
+      return;
+    }
+
+    const { config, needsTrust, workspaceRaw } = await resolveRunConfig(folderPath);
+    const task = pickTaskForFile(config.tasks, activeTab);
+    if (!task) {
+      showToast('No task configured for this file', 'info');
+      return;
+    }
+
+    const ctx = { file: activeTab, workspaceFolder: folderPath };
+    const args = (task.args ?? []).map(a => substituteArgs(a, ctx));
+
+    if (needsTrust) {
+      setTrustPrompt({ label: task.label, program: task.program, args, raw: workspaceRaw });
+      return;
+    }
+    startTask(task.label, task.program, args);
   }
 
   // Zoom in/out/reset handled below.
@@ -465,6 +508,7 @@ function App() {
     onNewTerminalTab: handleNewTerminalTab,
     onClearTerminal: () => terminalRef.current?.clearActive(),
     onKillTerminal: () => terminalRef.current?.killActive(),
+    onRunFile: handleRunActiveFile,
     onStartDebugging: () => {
       setSidebarOpen(true);
     },
@@ -661,6 +705,86 @@ function App() {
         />
       )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {trustPrompt && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 10000,
+            backgroundColor: "rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onClick={() => setTrustPrompt(null)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 460, maxWidth: "90vw",
+              borderRadius: 10, padding: "20px 22px",
+              backgroundColor: "var(--origin-bg-panel)",
+              border: "1px solid var(--origin-border-default)",
+              boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--origin-fg-default)", marginBottom: 8 }}>
+              Run a task from this workspace?
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--origin-fg-muted)", lineHeight: 1.6, marginBottom: 12 }}>
+              A task defined in this project wants to run a command. Only allow this if you trust the
+              repository.
+            </div>
+            <pre style={{
+              margin: 0, padding: "10px 12px", borderRadius: 8,
+              backgroundColor: "var(--origin-bg-base)",
+              border: "1px solid var(--origin-border-default)",
+              color: "var(--origin-fg-default)", fontSize: 12,
+              fontFamily: "var(--font-mono)", overflowX: "auto", whiteSpace: "pre-wrap",
+            }}>
+              {trustPrompt.program} {trustPrompt.args.join(" ")}
+            </pre>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+              <button
+                onClick={() => setTrustPrompt(null)}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                  border: "1px solid var(--origin-border-default)",
+                  backgroundColor: "transparent", color: "var(--origin-fg-default)",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const p = trustPrompt;
+                  setTrustPrompt(null);
+                  startTask(p.label, p.program, p.args);
+                }}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                  border: "1px solid var(--origin-border-default)",
+                  backgroundColor: "transparent", color: "var(--origin-fg-default)",
+                }}
+              >
+                Run once
+              </button>
+              <button
+                onClick={() => {
+                  const p = trustPrompt;
+                  setTrustPrompt(null);
+                  if (folderPath && p.raw) trustWorkspace(folderPath, p.raw);
+                  startTask(p.label, p.program, p.args);
+                }}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                  border: "none",
+                  backgroundColor: "var(--origin-accent-blue)",
+                  color: "#fff", fontWeight: 500,
+                }}
+              >
+                Always trust this workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </CommandContext.Provider>
   );

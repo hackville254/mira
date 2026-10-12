@@ -5,6 +5,21 @@ export function terminalCreate(cwd: string, cols: number, rows: number): Promise
   return invoke("terminal_create", { cwd, cols, rows });
 }
 
+/**
+ * Lance une tâche (`Run`) dans un PTY dédié, **sans shell** : `program` + `args`
+ * sont passés en argv direct (pas d'injection possible). Côté Rust, le programme
+ * est validé contre une allowlist d'interpréteurs.
+ */
+export function terminalCreateTask(
+  cwd: string,
+  program: string,
+  args: string[],
+  cols: number,
+  rows: number,
+): Promise<number> {
+  return invoke("terminal_create_task", { cwd, program, args, cols, rows });
+}
+
 export function terminalShellName(): Promise<string> {
   return invoke("terminal_shell_name");
 }

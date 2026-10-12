@@ -45,8 +45,8 @@ import { sass } from '@codemirror/legacy-modes/mode/sass';
 import { xml } from '@codemirror/legacy-modes/mode/xml';
 import { properties } from '@codemirror/legacy-modes/mode/properties';
 
-/** Identifiant de serveur LSP interne (aligné sur `lsp_exe_and_args` côté Rust). */
-export type LspLanguage = 'typescript' | 'rust' | 'python';
+/** Identifiant d'un serveur LSP interne (aligné sur l'allowlist `lsp.rs`). */
+export type LspServerId = string;
 
 /**
  * Adapte un mode CM5 (`@codemirror/legacy-modes`) en extension CodeMirror 6.
@@ -77,9 +77,15 @@ export interface LanguageDef {
    */
   parser: () => Extension;
   /** Serveur LSP interne capable de traiter ce langage, si disponible. */
-  lsp?: LspLanguage;
+  lsp?: LspServerId;
   /** languageId envoyé à un serveur LSP (par défaut : `id`). */
   languageId?: string;
+  /**
+   * Clé d'icône Material (bundle natif `themes/materialIcons.ts`) associée au
+   * langage. Permet à l'explorateur de résoudre une icône par **langage** et non
+   * par extension brute, en cohérence avec la coloration et le LSP.
+   */
+  icon?: string;
 }
 
 /**
@@ -92,64 +98,69 @@ export const LANGUAGES: LanguageDef[] = [
   {
     id: 'typescript', label: 'TypeScript', extensions: ['ts', 'mts', 'cts'],
     parser: () => javascript({ typescript: true }),
-    lsp: 'typescript', languageId: 'typescript',
+    lsp: 'typescript-language-server', languageId: 'typescript',
+    icon: 'typescript',
   },
   {
     id: 'typescriptreact', label: 'TypeScript JSX', extensions: ['tsx'],
     parser: () => javascript({ typescript: true, jsx: true }),
-    lsp: 'typescript', languageId: 'typescriptreact',
+    lsp: 'typescript-language-server', languageId: 'typescriptreact',
+    icon: 'react_ts',
   },
   {
     id: 'javascript', label: 'JavaScript', extensions: ['js', 'mjs', 'cjs'],
     parser: () => javascript(),
-    lsp: 'typescript', languageId: 'javascript',
+    lsp: 'typescript-language-server', languageId: 'javascript',
+    icon: 'javascript',
   },
   {
     id: 'javascriptreact', label: 'JavaScript JSX', extensions: ['jsx'],
     parser: () => javascript({ jsx: true }),
-    lsp: 'typescript', languageId: 'javascriptreact',
+    lsp: 'typescript-language-server', languageId: 'javascriptreact',
+    icon: 'react',
   },
-  { id: 'css', label: 'CSS', extensions: ['css'], parser: () => css() },
-  { id: 'scss', label: 'SCSS', extensions: ['scss'], parser: () => css() },
-  { id: 'sass', label: 'Sass', extensions: ['sass'], parser: () => legacy(sass) },
-  { id: 'html', label: 'HTML', extensions: ['html', 'htm'], parser: () => html() },
-  { id: 'json', label: 'JSON', extensions: ['json', 'jsonc'], parser: () => json() },
-  { id: 'markdown', label: 'Markdown', extensions: ['md', 'mdx'], parser: () => markdown() },
-  { id: 'xml', label: 'XML', extensions: ['xml', 'svg'], parser: () => legacy(xml) },
+  { id: 'css', label: 'CSS', extensions: ['css'], parser: () => css(), lsp: 'vscode-css-language-server', languageId: 'css', icon: 'css' },
+  { id: 'scss', label: 'SCSS', extensions: ['scss'], parser: () => css(), lsp: 'vscode-css-language-server', languageId: 'scss', icon: 'sass' },
+  { id: 'sass', label: 'Sass', extensions: ['sass'], parser: () => legacy(sass), icon: 'sass' },
+  { id: 'html', label: 'HTML', extensions: ['html', 'htm'], parser: () => html(), lsp: 'vscode-html-language-server', languageId: 'html', icon: 'html' },
+  { id: 'json', label: 'JSON', extensions: ['json', 'jsonc'], parser: () => json(), lsp: 'vscode-json-language-server', languageId: 'json', icon: 'json' },
+  { id: 'markdown', label: 'Markdown', extensions: ['md', 'mdx'], parser: () => markdown(), icon: 'markdown' },
+  { id: 'xml', label: 'XML', extensions: ['xml', 'svg'], parser: () => legacy(xml), icon: 'xml' },
 
   // ── Systèmes / backend ────────────────────────────────────────────────────
-  { id: 'rust', label: 'Rust', extensions: ['rs'], parser: () => rust(), lsp: 'rust', languageId: 'rust' },
+  { id: 'rust', label: 'Rust', extensions: ['rs'], parser: () => rust(), lsp: 'rust-analyzer', languageId: 'rust', icon: 'rust' },
   {
     id: 'python', label: 'Python', extensions: ['py', 'pyw', 'pyi'],
-    parser: () => python(), lsp: 'python', languageId: 'python',
+    parser: () => python(), lsp: 'pylsp', languageId: 'python',
+    icon: 'python',
   },
-  { id: 'go', label: 'Go', extensions: ['go'], parser: () => legacy(go) },
-  { id: 'c', label: 'C', extensions: ['c', 'h'], parser: () => legacy(c) },
-  { id: 'cpp', label: 'C++', extensions: ['cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx'], parser: () => legacy(cpp) },
-  { id: 'java', label: 'Java', extensions: ['java'], parser: () => legacy(java) },
-  { id: 'csharp', label: 'C#', extensions: ['cs'], parser: () => legacy(csharp) },
-  { id: 'scala', label: 'Scala', extensions: ['scala', 'sc'], parser: () => legacy(scala) },
-  { id: 'kotlin', label: 'Kotlin', extensions: ['kt', 'kts'], parser: () => legacy(kotlin) },
-  { id: 'swift', label: 'Swift', extensions: ['swift'], parser: () => legacy(swift) },
-  { id: 'dart', label: 'Dart', extensions: ['dart'], parser: () => legacy(dart) },
-  { id: 'ruby', label: 'Ruby', extensions: ['rb', 'rake'], filenames: ['Rakefile', 'Gemfile'], parser: () => legacy(ruby) },
-  { id: 'php', label: 'PHP', extensions: ['php'], parser: () => [] },
-  { id: 'lua', label: 'Lua', extensions: ['lua'], parser: () => legacy(lua) },
-  { id: 'perl', label: 'Perl', extensions: ['pl', 'pm'], parser: () => legacy(perl) },
-  { id: 'r', label: 'R', extensions: ['r'], parser: () => legacy(r) },
-  { id: 'erlang', label: 'Erlang', extensions: ['erl', 'hrl'], parser: () => legacy(erlang) },
-  { id: 'haskell', label: 'Haskell', extensions: ['hs'], parser: () => legacy(haskell) },
-  { id: 'clojure', label: 'Clojure', extensions: ['clj', 'cljs', 'cljc'], parser: () => legacy(clojure) },
+  { id: 'go', label: 'Go', extensions: ['go'], parser: () => legacy(go), lsp: 'gopls', languageId: 'go', icon: 'go' },
+  { id: 'c', label: 'C', extensions: ['c', 'h'], parser: () => legacy(c), lsp: 'clangd', languageId: 'c', icon: 'c' },
+  { id: 'cpp', label: 'C++', extensions: ['cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx'], parser: () => legacy(cpp), lsp: 'clangd', languageId: 'cpp', icon: 'cpp' },
+  { id: 'java', label: 'Java', extensions: ['java'], parser: () => legacy(java), lsp: 'jdtls', languageId: 'java', icon: 'java' },
+  { id: 'csharp', label: 'C#', extensions: ['cs'], parser: () => legacy(csharp), icon: 'csharp' },
+  { id: 'scala', label: 'Scala', extensions: ['scala', 'sc'], parser: () => legacy(scala), icon: 'scala' },
+  { id: 'kotlin', label: 'Kotlin', extensions: ['kt', 'kts'], parser: () => legacy(kotlin), icon: 'kotlin' },
+  { id: 'swift', label: 'Swift', extensions: ['swift'], parser: () => legacy(swift), icon: 'swift' },
+  { id: 'dart', label: 'Dart', extensions: ['dart'], parser: () => legacy(dart), icon: 'dart' },
+  { id: 'ruby', label: 'Ruby', extensions: ['rb', 'rake'], filenames: ['Rakefile', 'Gemfile'], parser: () => legacy(ruby), icon: 'ruby' },
+  { id: 'php', label: 'PHP', extensions: ['php'], parser: () => [], icon: 'php' },
+  { id: 'lua', label: 'Lua', extensions: ['lua'], parser: () => legacy(lua), icon: 'lua' },
+  { id: 'perl', label: 'Perl', extensions: ['pl', 'pm'], parser: () => legacy(perl), icon: 'perl' },
+  { id: 'r', label: 'R', extensions: ['r'], parser: () => legacy(r), icon: 'r' },
+  { id: 'erlang', label: 'Erlang', extensions: ['erl', 'hrl'], parser: () => legacy(erlang), icon: 'erlang' },
+  { id: 'haskell', label: 'Haskell', extensions: ['hs'], parser: () => legacy(haskell), icon: 'haskell' },
+  { id: 'clojure', label: 'Clojure', extensions: ['clj', 'cljs', 'cljc'], parser: () => legacy(clojure), icon: 'clojure' },
 
   // ── Shell / infra ─────────────────────────────────────────────────────────
-  { id: 'shellscript', label: 'Shell Script', extensions: ['sh', 'bash', 'zsh'], parser: () => legacy(shell) },
-  { id: 'dockerfile', label: 'Dockerfile', extensions: ['dockerfile'], filenames: ['Dockerfile'], parser: () => legacy(dockerFile) },
-  { id: 'makefile', label: 'Makefile', extensions: ['mk'], filenames: ['Makefile'], parser: () => [] },
-  { id: 'sql', label: 'SQL', extensions: ['sql'], parser: () => legacy(sql) },
-  { id: 'yaml', label: 'YAML', extensions: ['yaml', 'yml'], parser: () => legacy(yaml) },
-  { id: 'toml', label: 'TOML', extensions: ['toml'], parser: () => legacy(toml) },
-  { id: 'ini', label: 'INI', extensions: ['ini', 'cfg'], parser: () => legacy(properties) },
-  { id: 'protobuf', label: 'Protobuf', extensions: ['proto'], parser: () => legacy(protobuf) },
+  { id: 'shellscript', label: 'Shell Script', extensions: ['sh', 'bash', 'zsh'], parser: () => legacy(shell), lsp: 'bash-language-server', languageId: 'shellscript', icon: 'shell' },
+  { id: 'dockerfile', label: 'Dockerfile', extensions: ['dockerfile'], filenames: ['Dockerfile'], parser: () => legacy(dockerFile), icon: 'docker' },
+  { id: 'makefile', label: 'Makefile', extensions: ['mk'], filenames: ['Makefile'], parser: () => [], icon: 'makefile' },
+  { id: 'sql', label: 'SQL', extensions: ['sql'], parser: () => legacy(sql), icon: 'database' },
+  { id: 'yaml', label: 'YAML', extensions: ['yaml', 'yml'], parser: () => legacy(yaml), icon: 'yaml' },
+  { id: 'toml', label: 'TOML', extensions: ['toml'], parser: () => legacy(toml), icon: 'toml' },
+  { id: 'ini', label: 'INI', extensions: ['ini', 'cfg'], parser: () => legacy(properties), icon: 'settings' },
+  { id: 'protobuf', label: 'Protobuf', extensions: ['proto'], parser: () => legacy(protobuf), icon: 'protobuf' },
 ];
 
 // ── Index dérivés (construits une seule fois) ────────────────────────────────
@@ -211,7 +222,7 @@ export function getLanguageExtension(path: string | null | undefined): Extension
 }
 
 /** Serveur LSP interne capable de traiter un chemin, ou `null`. */
-export function getLspLanguage(path: string | null | undefined): LspLanguage | null {
+export function getLspServerId(path: string | null | undefined): LspServerId | null {
   return resolveLanguage(path)?.lsp ?? null;
 }
 
@@ -221,9 +232,24 @@ export function getLspLanguageId(path: string | null | undefined): string {
   return def?.languageId ?? def?.id ?? 'plaintext';
 }
 
-/** Liste de tous les identifiants LSP internes couverts par le registre. */
-export function getSupportedLspLanguages(): LspLanguage[] {
-  const set = new Set<LspLanguage>();
+/** Indique si un chemin est pris en charge par un serveur LSP interne. */
+export function isLspSupported(path: string | null | undefined): boolean {
+  return resolveLanguage(path)?.lsp != null;
+}
+
+/** Liste de tous les identifiants de serveurs LSP couverts par le registre. */
+export function getSupportedLspServerIds(): LspServerId[] {
+  const set = new Set<LspServerId>();
   for (const lang of LANGUAGES) if (lang.lsp) set.add(lang.lsp);
   return [...set];
+}
+
+/** Clé d'icône Material associée à un chemin, ou `null` si le langage est inconnu. */
+export function getLanguageIcon(path: string | null | undefined): string | null {
+  return resolveLanguage(path)?.icon ?? null;
+}
+
+/** Libellé du langage associé à un chemin (alias explicite de `languageLabel`). */
+export function getLanguageLabel(path: string | null | undefined): string {
+  return languageLabel(path);
 }

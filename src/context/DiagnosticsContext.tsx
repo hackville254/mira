@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- exports the useDiagnostics hook alongside the provider component */
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { onLspNotification, type LspLanguage } from '../lib/lsp';
-import { getSupportedLspLanguages } from '../lib/languages';
+import { onLspNotification, type LspServerId } from '../lib/lsp';
+import { getSupportedLspServerIds } from '../lib/languages';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,9 @@ export interface DiagnosticsContextType {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const LSP_LANGUAGES: LspLanguage[] = getSupportedLspLanguages();
+// Écoute les notifications de tous les serveurs LSP connus du registre.
+// (Le canal d'événement est keyé par serverId, pas par langage.)
+const LSP_SERVER_IDS: LspServerId[] = getSupportedLspServerIds();
 
 /**
  * Convertit un URI `file://` en chemin local absolu.
@@ -94,13 +96,14 @@ export function useDiagnostics(): DiagnosticsContextType {
 export function DiagnosticsProvider({ children }: { children: React.ReactNode }) {
   const [byFile, setByFile] = useState<DiagnosticsByFile>(() => new Map());
 
-  // Écoute les notifications LSP `textDocument/publishDiagnostics` des 3 langues.
+  // Écoute les notifications LSP `textDocument/publishDiagnostics` de tous les
+  // serveurs connus (canal keyé par serverId).
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     let cancelled = false;
 
-    for (const lang of LSP_LANGUAGES) {
-      onLspNotification(lang, (msg: { method?: string; params?: { uri?: string; diagnostics?: RawDiagnostic[] } }) => {
+    for (const serverId of LSP_SERVER_IDS) {
+      onLspNotification(serverId, (msg: { method?: string; params?: { uri?: string; diagnostics?: RawDiagnostic[] } }) => {
         if (msg?.method !== 'textDocument/publishDiagnostics') return;
         const uri = msg.params?.uri;
         if (!uri) return;

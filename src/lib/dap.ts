@@ -4,7 +4,8 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 
 // ── Adapter types ─────────────────────────────────────────────────────────────
 
-export type DapAdapterType = 'codelldb' | 'debugpy';
+/** Id d'adaptateur DAP. Doit appartenir à l'allowlist Rust (`dap.rs`). */
+export type DapAdapterType = string;
 
 export type DapSessionStatus =
   | 'idle'

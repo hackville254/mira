@@ -9,6 +9,13 @@ import { useTheme, builtinThemes } from "../../themes/ThemeContext";
 import type { OriginTheme } from "../../themes/types";
 import { detectDevEnvironment, type ToolInfo } from "../../lib/env";
 import { loadDevEnvPrefs, saveDevEnvPrefs, type DevEnvPrefs } from "../../lib/devEnv";
+import { KNOWN_SERVERS, isKnownServerId } from "../../lib/lspConfig";
+import {
+  loadGlobalLspConfig,
+  saveGlobalLspConfig,
+  WORKSPACE_LSP_PATH,
+} from "../../lib/lspConfigStore";
+import type { LspConfig, LspServerConfig } from "../../lib/lspConfig";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -18,7 +25,7 @@ const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 type Section =
   | "account" | "general" | "trae-mobile" | "dev-env" | "permission"
   | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "browser"
-  | "indexing" | "skills" | "rules" | "hooks" | "beta" | "about";
+  | "indexing" | "skills" | "rules" | "hooks" | "languages" | "beta" | "about";
 
 interface NavDef {
   id: Section;
@@ -45,7 +52,8 @@ const NAV_ITEMS: NavDef[] = [
   { id: "indexing",     label: "Indexing & Docs",         icon: <Database size={14} />,            keywords: "indexing docs" },
   { id: "skills",       label: "Skills & Commands",       icon: <Command size={14} />,             keywords: "skills commands keyboard" },
   { id: "rules",        label: "Rules & Memories",        icon: <ScrollText size={14} />,          keywords: "rules memories" },
-  { id: "hooks",        label: "Hooks",                   icon: <Anchor size={14} />,              keywords: "hooks", dividerAfter: true },
+  { id: "hooks",        label: "Hooks",                   icon: <Anchor size={14} />,              keywords: "hooks" },
+  { id: "languages",    label: "Languages & LSP",         icon: <Code2 size={14} />,               keywords: "languages lsp language server intellisense diagnostics completion hover", dividerAfter: true },
   { id: "beta",         label: "Beta",                    icon: <FlaskConical size={14} />,        keywords: "beta experimental", dividerAfter: true },
   { id: "about",        label: "About TraeCode",          icon: <Info size={14} />,                keywords: "about" },
 ];
@@ -859,6 +867,241 @@ function GeneralSection() {
   );
 }
 
+// ── Languages & LSP Section ──────────────────────────────────────────────────
+
+/** Petit bouton d'action réutilisé dans la liste des serveurs. */
+function TinyButton({ onClick, title, children, danger }: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: 26, height: 26, borderRadius: 6, cursor: "pointer",
+        border: "1px solid var(--origin-border-default)",
+        backgroundColor: "transparent",
+        color: danger ? "var(--origin-semantic-error, #f85149)" : "var(--origin-fg-muted)",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+      onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const monoInputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "5px 8px",
+  borderRadius: 6,
+  border: "1px solid var(--origin-border-default)",
+  backgroundColor: "var(--origin-bg-sidebar)",
+  color: "var(--origin-fg-default)",
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+  outline: "none",
+};
+
+function LspSection() {
+  // État local, initialisé depuis la config globale (localStorage).
+  const [config, setConfig] = useState<LspConfig>(() => loadGlobalLspConfig());
+  const [saved, setSaved] = useState(false);
+
+  const knownIds = useMemo(() => new Set(KNOWN_SERVERS.map(s => s.id)), []);
+
+  function persist(next: LspConfig) {
+    setConfig(next);
+    saveGlobalLspConfig(next);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  }
+
+  function updateServer(idx: number, patch: Partial<LspServerConfig>) {
+    const servers = config.servers.map((s, i) => (i === idx ? { ...s, ...patch } : s));
+    persist({ ...config, servers });
+  }
+
+  function toggleEnabled(idx: number) {
+    const s = config.servers[idx];
+    updateServer(idx, { enabled: s.enabled === false ? undefined : false });
+  }
+
+  function removeServer(idx: number) {
+    const s = config.servers[idx];
+    if (!window.confirm(`Remove the "${s.serverId}" server from the global config?`)) return;
+    persist({ ...config, servers: config.servers.filter((_, i) => i !== idx) });
+  }
+
+  function addServer() {
+    const available = KNOWN_SERVERS.filter(s => !config.servers.some(c => c.serverId === s.id));
+    if (available.length === 0) return;
+    const choice = window.prompt(
+      `Add a language server (serverId):\n${available.map(s => `- ${s.id}`).join("\n")}`,
+      available[0].id
+    );
+    if (!choice) return;
+    const id = choice.trim();
+    if (!isKnownServerId(id)) {
+      window.alert(`Unknown server id "${id}". It must exist in the built-in catalog.`);
+      return;
+    }
+    if (config.servers.some(c => c.serverId === id)) {
+      window.alert(`"${id}" is already configured.`);
+      return;
+    }
+    persist({
+      ...config,
+      servers: [...config.servers, { serverId: id, extensions: [], languageId: id }],
+    });
+  }
+
+  function commitExtensions(idx: number, raw: string) {
+    const exts = raw
+      .split(/[,\s]+/)
+      .map(e => e.trim().replace(/^\./, "").toLowerCase())
+      .filter(e => /^[a-z0-9]+$/.test(e));
+    updateServer(idx, { extensions: exts });
+  }
+
+  function commitArgs(idx: number, raw: string) {
+    const args = raw.split(/\s+/).map(a => a.trim()).filter(Boolean);
+    updateServer(idx, { args: args.length ? args : undefined });
+  }
+
+  return (
+    <div style={{ padding: "2px 0 24px" }}>
+      <SectionHeading>Language Servers</SectionHeading>
+      <p style={{ fontSize: 12, color: "var(--origin-fg-muted)", margin: "6px 0 16px", lineHeight: 1.6 }}>
+        Language servers provide diagnostics, completion, hover and go-to-definition. A server can only
+        run if it is part of the built-in allow-list — this panel only binds known servers to file
+        extensions and controls how they are launched.
+      </p>
+
+      {saved && (
+        <div style={{
+          fontSize: 12, color: "var(--origin-semantic-success, #2ea043)",
+          display: "flex", alignItems: "center", gap: 6, marginBottom: 12,
+        }}>
+          <Check size={12} /> Saved
+        </div>
+      )}
+
+      {/* Workspace override hint */}
+      <div style={{
+        padding: "10px 12px", marginBottom: 18,
+        borderRadius: 8, border: "1px solid var(--origin-border-default)",
+        backgroundColor: "var(--origin-bg-base)", fontSize: 12,
+        color: "var(--origin-fg-muted)", lineHeight: 1.5,
+      }}>
+        These settings apply <span style={{ color: "var(--origin-fg-default)" }}>globally</span>. A project can
+        override them with an{" "}
+        <span style={{ fontFamily: "var(--font-mono)", color: "var(--origin-fg-default)" }}>{WORKSPACE_LSP_PATH}</span>{" "}
+        file at its root (workspace settings take precedence per server).
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {config.servers.map((server, idx) => {
+          const known = knownIds.has(server.serverId);
+          const disabled = server.enabled === false;
+          return (
+            <div
+              key={server.serverId}
+              style={{
+                border: "1px solid var(--origin-border-default)",
+                borderRadius: 8,
+                backgroundColor: "var(--origin-bg-base)",
+                padding: "12px 14px",
+                opacity: disabled ? 0.55 : 1,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--origin-fg-default)", fontFamily: "var(--font-mono)" }}>
+                  {server.serverId}
+                </span>
+                {!known && (
+                  <span style={{ fontSize: 10, color: "var(--origin-semantic-error, #f85149)", border: "1px solid currentColor", borderRadius: 4, padding: "0 4px" }}>
+                    unknown
+                  </span>
+                )}
+                <div style={{ flex: 1 }} />
+                <Toggle on={!disabled} onToggle={() => toggleEnabled(idx)} />
+                <TinyButton onClick={() => removeServer(idx)} title="Remove server" danger>
+                  <X size={13} />
+                </TinyButton>
+              </div>
+
+              {(() => {
+                const info = KNOWN_SERVERS.find(s => s.id === server.serverId);
+                if (!info) return null;
+                return (
+                  <div style={{ fontSize: 11.5, color: "var(--origin-fg-subtle)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
+                    {info.installCommand}
+                  </div>
+                );
+              })()}
+
+              <div style={{ display: "flex", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
+                <label style={{ flex: "2 1 260px", minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "var(--origin-fg-subtle)", marginBottom: 4 }}>Extensions</div>
+                  <input
+                    defaultValue={server.extensions.join(", ")}
+                    placeholder="ts, tsx, js"
+                    onBlur={e => commitExtensions(idx, e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                    style={monoInputStyle}
+                  />
+                </label>
+                <label style={{ flex: "1 1 160px", minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "var(--origin-fg-subtle)", marginBottom: 4 }}>languageId</div>
+                  <input
+                    defaultValue={server.languageId}
+                    onBlur={e => updateServer(idx, { languageId: e.target.value.trim() || server.languageId })}
+                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                    style={monoInputStyle}
+                  />
+                </label>
+                <label style={{ flex: "2 1 200px", minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "var(--origin-fg-subtle)", marginBottom: 4 }}>Arguments</div>
+                  <input
+                    defaultValue={(server.args ?? []).join(" ")}
+                    placeholder="--stdio"
+                    onBlur={e => commitArgs(idx, e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                    style={monoInputStyle}
+                  />
+                </label>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <button
+          onClick={addServer}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 12px", borderRadius: 6, fontSize: 12,
+            border: "1px solid var(--origin-border-default)",
+            backgroundColor: "transparent", color: "var(--origin-fg-default)",
+            cursor: "pointer",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+        >
+          Add language server
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Terminal Section ─────────────────────────────────────────────────────────
 
 const SHELL_CONFIGS: Record<string, { label: string; filename: string; code: string }> = {
@@ -1131,7 +1374,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             {section === "appearance"  && <AppearanceSection />}
             {section === "general"     && <GeneralSection />}
             {section === "skills"      && <KeybindingsSection />}
-            {!["dev-env", "models", "appearance", "general", "skills"].includes(section) && (
+            {section === "languages"   && <LspSection />}
+            {!["dev-env", "models", "appearance", "general", "skills", "languages"].includes(section) && (
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>

@@ -17,6 +17,7 @@ export interface GlobalHandlers {
   zoomIn?:           () => void;
   zoomOut?:          () => void;
   zoomReset?:        () => void;
+  runFile?:          () => void;
   startDebug?:       () => void;
   stopDebug?:        () => void;
   stepOver?:         () => void;
@@ -76,6 +77,7 @@ export function useGlobalKeybindings(handlers: GlobalHandlers) {
         "origin.zoomIn":           () => h.current.zoomIn?.(),
         "origin.zoomOut":          () => h.current.zoomOut?.(),
         "origin.zoomReset":        () => h.current.zoomReset?.(),
+        "origin.runFile":          () => h.current.runFile?.(),
         "origin.startDebug":       () => h.current.startDebug?.(),
         "origin.stopDebug":        () => h.current.stopDebug?.(),
         "origin.stepOver":         () => h.current.stepOver?.(),

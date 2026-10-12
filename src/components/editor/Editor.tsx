@@ -18,7 +18,8 @@ import { createHunkControls } from '../../lib/hunkControls';
 import { getLanguageExtension, languageLabel } from './languageSupport';
 import { useExtensions } from '../../context/ExtensionsContext';
 import { createLspExtension } from '../../lib/lspCm6';
-import { getLspLanguage } from '../../lib/lsp';
+import { isLspSupported } from '../../lib/lsp';
+import { resolveLspConfig, findServerForFile } from '../../lib/lspConfigStore';
 import { useToast } from '../ui/Toast';
 import { createAiAutocompleteExtension, type AiCompletionFn } from '../../lib/aiAutocomplete';
 import {
@@ -531,22 +532,40 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpTo?.key]);
 
-  // LSP session — install extensions when a supported file is open in a workspace
+  // LSP session — install extensions when a supported file is open in a workspace.
+  // Le serveur est résolu depuis la config (workspace > global), ce qui permet
+  // d'ajouter n'importe quel serveur de l'allowlist sans toucher au code.
   useEffect(() => {
     if (!rootPath || path.startsWith('__')) return;
-    if (!getLspLanguage(path)) return;
+    if (!isLspSupported(path)) return;
 
     let cancelled = false;
-    createLspExtension({
-      filePath: path,
-      rootPath,
-      onDefinitionJump: (fp, ln, col) => onDefinitionJumpRef.current?.(fp, ln, col),
-      onMissingServer: (lang, cmd) => onMissingServerRef.current?.(lang, cmd),
-    }).then(exts => {
+    (async () => {
+      let serverId: string;
+      let args: string[] | undefined;
+      try {
+        const config = await resolveLspConfig(rootPath);
+        const resolved = findServerForFile(config, path);
+        if (!resolved) return;
+        serverId = resolved.serverId;
+        args = resolved.config.args;
+      } catch {
+        return;
+      }
+      if (cancelled) return;
+
+      const exts = await createLspExtension({
+        filePath: path,
+        rootPath,
+        serverId,
+        args,
+        onDefinitionJump: (fp, ln, col) => onDefinitionJumpRef.current?.(fp, ln, col),
+        onMissingServer: (srv, cmd) => onMissingServerRef.current?.(srv, cmd),
+      });
       if (cancelled) return;
       const v = viewRef.current;
       if (v) v.dispatch({ effects: lspCompartment.current.reconfigure(exts) });
-    });
+    })();
 
     return () => {
       cancelled = true;

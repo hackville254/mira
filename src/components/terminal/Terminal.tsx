@@ -5,6 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import {
   terminalCreate,
+  terminalCreateTask,
   terminalWrite,
   terminalResize,
   terminalClose,
@@ -18,6 +19,8 @@ interface Props {
   active: boolean;
   clearKey?: number;
   pendingInput?: string;
+  /** Lancement d'une tâche « Run » : spawn direct (argv), sans shell interactif. */
+  task?: { program: string; args: string[] } | null;
   onCwdChange?: (cwd: string) => void;
   onShellState?: (state: 'idle' | 'running', exitCode?: number) => void;
 }
@@ -52,7 +55,7 @@ function buildTheme() {
   };
 }
 
-export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdChange, onShellState }: Props) {
+export default function Terminal({ cwd, active, clearKey, pendingInput, task, onCwdChange, onShellState }: Props) {
   const { theme } = useTheme();
   const containerRef    = useRef<HTMLDivElement>(null);
   const xtermRef        = useRef<XTerm | null>(null);
@@ -165,21 +168,38 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
     let cleanupOutput: (() => void) | null = null;
     let cleanupExit: (() => void) | null = null;
 
-    terminalCreate(cwdRef.current, cols, rows)
-      .then(async (id) => {
-        termIdRef.current = id;
-        cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
-        cleanupExit = await onTerminalExit(id, () => {
-          xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+    // Mode tâche « Run » : on spawn le programme directement (argv), sans shell.
+    // On ne crée PAS de shell interactif ici.
+    if (task) {
+      xterm.write(`\x1b[90m$ ${task.program} ${task.args.join(' ')}\x1b[0m\r\n`);
+      terminalCreateTask(cwdRef.current, task.program, task.args, cols, rows)
+        .then(async (id) => {
+          termIdRef.current = id;
+          cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
+          cleanupExit = await onTerminalExit(id, () => {
+            xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+          });
+        })
+        .catch((err: unknown) => {
+          xterm.write(`\r\n\x1b[31mFailed to run task: ${String(err)}\x1b[0m\r\n`);
         });
-        // pendingInput is captured from props at mount time (effect deps are intentionally [])
-        if (pendingInput) {
-          terminalWrite(id, pendingInput + '\r').catch(() => {});
-        }
-      })
-      .catch((err: unknown) => {
-        xterm.write(`\r\n\x1b[31mFailed to start terminal: ${String(err)}\x1b[0m\r\n`);
-      });
+    } else {
+      terminalCreate(cwdRef.current, cols, rows)
+        .then(async (id) => {
+          termIdRef.current = id;
+          cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
+          cleanupExit = await onTerminalExit(id, () => {
+            xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+          });
+          // pendingInput is captured from props at mount time (effect deps are intentionally [])
+          if (pendingInput) {
+            terminalWrite(id, pendingInput + '\r').catch(() => {});
+          }
+        })
+        .catch((err: unknown) => {
+          xterm.write(`\r\n\x1b[31mFailed to start terminal: ${String(err)}\x1b[0m\r\n`);
+        });
+    }
 
     const dataDisposable = xterm.onData((data: string) => {
       if (termIdRef.current !== null) {

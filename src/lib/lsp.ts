@@ -7,15 +7,22 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 // La détection est déléguée au registre unique `lib/languages.ts` afin d'éviter
 // toute divergence entre coloration, label et identité LSP.
 import {
-  getLspLanguage as resolveLspLanguage,
+  getLspServerId as resolveLspServerId,
   getLspLanguageId as resolveLspLanguageId,
-  type LspLanguage,
+  isLspSupported as isLspSupportedByRegistry,
+  type LspServerId,
 } from './languages';
 
-export type { LspLanguage };
+export type { LspServerId };
 
-export function getLspLanguage(filePath: string): LspLanguage | null {
-  return resolveLspLanguage(filePath);
+/** Serveur LSP interne associé à un fichier, ou `null`. */
+export function getLspServerId(filePath: string): LspServerId | null {
+  return resolveLspServerId(filePath);
+}
+
+/** Indique si un fichier est pris en charge par un serveur LSP interne. */
+export function isLspSupported(filePath: string): boolean {
+  return isLspSupportedByRegistry(filePath);
 }
 
 export function getLspLanguageId(filePath: string): string {
@@ -45,32 +52,37 @@ const initInProgress = new Map<string, Promise<void>>();
 // Tracks open doc URIs and their version numbers
 const openDocuments = new Map<string, number>();
 
-function initKey(language: LspLanguage, rootPath: string) {
-  return `${language}::${rootPath}`;
+function initKey(serverId: LspServerId, rootPath: string) {
+  return `${serverId}::${rootPath}`;
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
+/**
+ * Démarre (idempotent) le serveur LSP identifié par `serverId`.
+ * `args` remplace les arguments par défaut du serveur (validés côté Rust).
+ */
 export async function ensureLspServer(
-  language: LspLanguage,
+  serverId: LspServerId,
   rootPath: string,
+  args?: string[],
 ): Promise<void> {
-  const key = initKey(language, rootPath);
+  const key = initKey(serverId, rootPath);
   if (initializedKeys.has(key)) return;
-  if (initInProgress.has(language)) return initInProgress.get(language)!;
+  if (initInProgress.has(serverId)) return initInProgress.get(serverId)!;
 
   const promise = (async () => {
-    await invoke('lsp_start', { language, rootPath });
+    await invoke('lsp_start', { language: serverId, rootPath, args });
     await invoke('lsp_request', {
-      language,
+      language: serverId,
       method: 'initialize',
       params: buildInitializeParams(rootPath),
     });
-    await invoke('lsp_notify', { language, method: 'initialized', params: {} });
+    await invoke('lsp_notify', { language: serverId, method: 'initialized', params: {} });
     initializedKeys.add(key);
-  })().finally(() => initInProgress.delete(language));
+  })().finally(() => initInProgress.delete(serverId));
 
-  initInProgress.set(language, promise);
+  initInProgress.set(serverId, promise);
   return promise;
 }
 
@@ -107,7 +119,7 @@ function buildInitializeParams(rootPath: string) {
 // ── Document synchronization ──────────────────────────────────────────────────
 
 export async function lspDidOpen(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
   text: string,
 ): Promise<void> {
@@ -124,7 +136,7 @@ export async function lspDidOpen(
 }
 
 export async function lspDidChange(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
   text: string,
 ): Promise<void> {
@@ -142,7 +154,7 @@ export async function lspDidChange(
 }
 
 export async function lspDidClose(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
 ): Promise<void> {
   const uri = pathToUri(filePath);
@@ -157,7 +169,7 @@ export async function lspDidClose(
 // ── Request helpers ───────────────────────────────────────────────────────────
 
 export async function lspCompletion(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
   line: number,
   character: number,
@@ -174,7 +186,7 @@ export async function lspCompletion(
 }
 
 export async function lspHoverRequest(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
   line: number,
   character: number,
@@ -190,7 +202,7 @@ export async function lspHoverRequest(
 }
 
 export async function lspDefinition(
-  language: LspLanguage,
+  language: LspServerId,
   filePath: string,
   line: number,
   character: number,
@@ -208,7 +220,7 @@ export async function lspDefinition(
 // ── Notification listener ─────────────────────────────────────────────────────
 
 export function onLspNotification(
-  language: LspLanguage,
+  language: LspServerId,
   handler: (msg: any) => void,
 ): Promise<UnlistenFn> {
   return listen(`lsp-notification-${language}`, (event) => handler(event.payload));

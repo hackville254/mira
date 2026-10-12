@@ -1,35 +1,42 @@
-import { File, Folder, FolderOpen } from "lucide-react";
 import { useTheme } from "../themes/ThemeContext";
-import { fileColor } from "../lib/fileColors";
+import { resolveMaterialIcon } from "../themes/materialIcons";
+import { getLanguageIcon } from "../lib/languages";
 
 interface FileIconProps {
   name: string;
   isDir?: boolean;
   expanded?: boolean;
   size?: number;
-  /** CSS color used for the generic fallback glyph. Defaults to extension color. */
-  color?: string;
 }
 
 /**
- * Renders a file/folder icon honouring the active VS Code file-icon theme.
+ * Rendu d'une icône de fichier/dossier dans l'explorateur.
  *
- * When an icon theme provides a match, its SVG is rendered through an `<img>`
- * data-URI (untrusted SVG must never be inlined as live markup). Otherwise we
- * fall back to the generic lucide glyph, keeping the per-extension tint.
+ * Ordre de résolution :
+ *  1. **Thème d'icônes d'extension** (VS Code `contributes.iconThemes`) s'il est
+ *     sélectionné dans l'apparence — il gagne, comme dans VS Code.
+ *  2. **Bundle Material natif** (`themes/materialIcons.ts`), résolu à partir du
+ *     **registre de langages** (`lib/languages.ts`) puis du nom/extension. C'est
+ *     le comportement par défaut, disponible sans aucune extension installée.
+ *
+ * Sécurité : dans les deux cas l'icône est une data-URI SVG rendue via `<img>`
+ * (média passif, jamais de markup vivant injecté dans le DOM).
  */
-export default function FileIcon({ name, isDir = false, expanded = false, size = 14, color }: FileIconProps) {
+export default function FileIcon({ name, isDir = false, expanded = false, size = 14 }: FileIconProps) {
   const { iconResolver } = useTheme();
-  const uri = iconResolver?.resolve(name, isDir, expanded) ?? null;
 
-  if (uri) {
-    return <img src={uri} alt="" width={size} height={size} style={{ flexShrink: 0, display: "block" }} draggable={false} />;
-  }
+  // 1. Thème d'icônes d'extension (prioritaire).
+  const themeUri = iconResolver?.resolve(name, isDir, expanded) ?? null;
+  const uri = themeUri ?? resolveMaterialIcon(name, isDir, expanded, isDir ? null : getLanguageIcon(name));
 
-  if (isDir) {
-    return expanded
-      ? <FolderOpen size={size} style={{ flexShrink: 0, color: color ?? "#eab308" }} />
-      : <Folder size={size} style={{ flexShrink: 0, color: color ?? "#eab308" }} />;
-  }
-  return <File size={size} style={{ flexShrink: 0, color: color ?? fileColor(name) }} />;
+  return (
+    <img
+      src={uri}
+      alt=""
+      width={size}
+      height={size}
+      style={{ flexShrink: 0, display: "block" }}
+      draggable={false}
+    />
+  );
 }

@@ -7,7 +7,8 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { LanguageServerClient, languageServerWithTransport } from 'codemirror-languageserver';
 import type { Transport } from 'codemirror-languageserver';
-import { getLspLanguage, getLspLanguageId, pathToUri, type LspLanguage } from './lsp';
+import { getLspLanguageId, pathToUri, type LspServerId } from './lsp';
+import { KNOWN_SERVERS } from './lspConfig';
 
 // ── Tauri IPC Transport ───────────────────────────────────────────────────────
 // Routes codemirror-languageserver JSON-RPC messages through the existing
@@ -19,8 +20,8 @@ class TauriLspTransport implements Transport {
   private errorCallbacks: ((err: Error) => void)[] = [];
   private unlisten: UnlistenFn | null = null;
 
-  constructor(private language: LspLanguage) {
-    listen(`lsp-notification-${language}`, (event) => {
+  constructor(private serverId: LspServerId) {
+    listen(`lsp-notification-${serverId}`, (event) => {
       const payload = event.payload as any;
       const msg = JSON.stringify(payload);
       this.messageCallbacks.forEach(cb => cb(msg));
@@ -52,7 +53,7 @@ class TauriLspTransport implements Transport {
       // Rust returns the full server response object; spread it and restore our original
       // id so the package can match it — avoids double-wrapping the result field.
       invoke('lsp_request', {
-        language: this.language,
+        language: this.serverId,
         method: parsed.method,
         params: parsed.params ?? {},
       }).then((rawMsg: any) => {
@@ -69,7 +70,7 @@ class TauriLspTransport implements Transport {
     } else if (parsed.method) {
       // JSON-RPC notification: fire and forget
       invoke('lsp_notify', {
-        language: this.language,
+        language: this.serverId,
         method: parsed.method,
         params: parsed.params ?? {},
       }).catch(() => {});
@@ -88,11 +89,9 @@ class TauriLspTransport implements Transport {
 
 // ── Install commands ──────────────────────────────────────────────────────────
 
-const INSTALL_COMMANDS: Record<LspLanguage, string> = {
-  typescript: 'npm install -g typescript-language-server typescript',
-  rust: 'rustup component add rust-analyzer',
-  python: 'pip install python-lsp-server',
-};
+const INSTALL_COMMANDS: Record<string, string> = Object.fromEntries(
+  KNOWN_SERVERS.map(s => [s.id, s.installCommand]),
+);
 
 function isMissingBinaryError(err: unknown): boolean {
   const msg = String(err).toLowerCase();
@@ -107,8 +106,8 @@ function isMissingBinaryError(err: unknown): boolean {
   );
 }
 
-// Tracks which languages have already shown the install notification this session
-const _missingNotified = new Set<LspLanguage>();
+// Tracks which servers have already shown the install notification this session
+const _missingNotified = new Set<LspServerId>();
 
 // ── Shared client registry ────────────────────────────────────────────────────
 // One LanguageServerClient per language+workspace; shared across all open files.
@@ -121,8 +120,12 @@ interface ClientEntry {
 const _clientMap      = new Map<string, ClientEntry>();
 const _clientPromises = new Map<string, Promise<ClientEntry>>();
 
-async function getOrCreateClient(language: LspLanguage, rootPath: string): Promise<ClientEntry> {
-  const key = `${language}::${rootPath}`;
+async function getOrCreateClient(
+  serverId: LspServerId,
+  rootPath: string,
+  args?: string[],
+): Promise<ClientEntry> {
+  const key = `${serverId}::${rootPath}`;
 
   const existing = _clientMap.get(key);
   if (existing) return existing;
@@ -134,14 +137,14 @@ async function getOrCreateClient(language: LspLanguage, rootPath: string): Promi
   const workspaceName = rootPath.split(/[/\\]/).pop() ?? 'workspace';
 
   const promise = (async () => {
-    await invoke('lsp_start', { language, rootPath });
-    const transport = new TauriLspTransport(language);
+    await invoke('lsp_start', { language: serverId, rootPath, args });
+    const transport = new TauriLspTransport(serverId);
     const client    = new LanguageServerClient({
       transport,
       rootUri,
       workspaceFolders: [{ uri: rootUri, name: workspaceName }],
       documentUri: rootUri,   // placeholder — per-file URI is supplied by the plugin
-      languageId: language,
+      languageId: serverId,
     });
     const entry: ClientEntry = { client, transport };
     _clientMap.set(key, entry);
@@ -174,22 +177,24 @@ function uriToPath(uri: string): string {
 export interface LspExtensionOptions {
   filePath: string;
   rootPath: string;
+  /** Id du serveur LSP résolu depuis la config (allowlist Rust). */
+  serverId: LspServerId;
+  /** Argument additionnels (remplacent les défauts du serveur si fournis). */
+  args?: string[];
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
-  onMissingServer?: (language: LspLanguage, installCmd: string) => void;
+  onMissingServer?: (serverId: LspServerId, installCmd: string) => void;
 }
 
 export async function createLspExtension(opts: LspExtensionOptions): Promise<Extension> {
-  const { filePath, rootPath, onDefinitionJump } = opts;
-  const language = getLspLanguage(filePath);
-  if (!language) return [];
+  const { filePath, rootPath, serverId, args, onDefinitionJump } = opts;
 
   let entry: ClientEntry;
   try {
-    entry = await getOrCreateClient(language, rootPath);
+    entry = await getOrCreateClient(serverId, rootPath, args);
   } catch (err) {
-    if (isMissingBinaryError(err) && !_missingNotified.has(language)) {
-      _missingNotified.add(language);
-      opts.onMissingServer?.(language, INSTALL_COMMANDS[language]);
+    if (isMissingBinaryError(err) && !_missingNotified.has(serverId)) {
+      _missingNotified.add(serverId);
+      opts.onMissingServer?.(serverId, INSTALL_COMMANDS[serverId] ?? '');
     }
     return [];
   }

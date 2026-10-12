@@ -26,6 +26,8 @@ export interface TerminalPanelHandle {
   clearActive: () => void;
   killActive: () => void;
   runInNewTab: (command: string) => void;
+  /** Lance une tâche « Run » dans un nouvel onglet (spawn argv, sans shell). */
+  runTaskInNewTab: (name: string, program: string, args: string[]) => void;
   /** Ouvre l'onglet Problems dans le panneau bas. */
   showProblems: () => void;
 }
@@ -178,6 +180,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const prevCwdRef = useRef(cwd);
   const [clearKeys, setClearKeys] = useState<Record<number, number>>({});
   const [pendingInputs, setPendingInputs] = useState<Record<number, string>>({});
+  const [taskSpawns, setTaskSpawns] = useState<Record<number, { program: string; args: string[] }>>({});
   const [shellInfos, setShellInfos] = useState<Record<number, TabShellInfo>>({});
   const [hoveredTab, setHoveredTab] = useState<number | null>(null);
   const exitClearTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -198,6 +201,13 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       setTabs((prev) => [...prev, { id, name, cwd }]);
       setActiveId(id);
       setPendingInputs(prev => ({ ...prev, [id]: command }));
+      setView('terminal');
+    },
+    runTaskInNewTab(name: string, program: string, args: string[]) {
+      const id = nextId.current++;
+      setTabs((prev) => [...prev, { id, name, cwd }]);
+      setActiveId(id);
+      setTaskSpawns(prev => ({ ...prev, [id]: { program, args } }));
       setView('terminal');
     },
     showProblems() { setView('problems'); },
@@ -432,6 +442,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
                 active={tab.id === activeId}
                 clearKey={clearKeys[tab.id] ?? 0}
                 pendingInput={pendingInputs[tab.id]}
+                task={taskSpawns[tab.id]}
                 onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
                 onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}
               />

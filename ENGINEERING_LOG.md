@@ -5,6 +5,131 @@
 
 ---
 
+### [2026-10-12T18:15] | Icônes Material natives par défaut + détection de langage dans l'explorateur
+
+- **Contexte :**
+  L'explorateur n'avait **aucune icône par défaut** (aucun thème d'icônes installé) : il retombait sur un glyphe lucide générique teinté par extension via `fileColors.ts`, une table **parallèle** au registre de langages. Objectif : se sentir comme VS Code — **Material Icon Theme préinstallé d'origine**, icônes reconnaissables, disponibles **hors-ligne et sans extension**, et résolues depuis le **registre de langages unique** (`lib/languages.ts`) pour éviter toute divergence coloration / icône / LSP.
+
+- **Modifications effectuées :**
+  - `src/lib/languages.ts` : nouveau champ `icon` sur `LanguageDef` (clé Material par langage, ex. `typescript`, `react_ts`, `rust`…), renseigné pour **tous** les langages du registre ; nouveaux helpers `getLanguageIcon(path)` et `getLanguageLabel(path)`.
+  - `src/themes/materialIcons.ts` (**nouveau**) : bundle natif — catalogue de **glyphes SVG 16×16** (monochromes, définis une fois), **palette de couleurs** Material (par clé), mapping **nom de fichier exact** → clé, **extension** → clé, **dossier** (replis), et `resolveMaterialIcon(name, isDir, expanded, languageIcon)` qui renvoie une **data-URI `image/svg+xml`** mémoïsée.
+  - `src/components/FileIcon.tsx` : ordre de résolution — (1) thème d'icônes d'extension s'il est sélectionné (comportement VS Code), (2) **bundle Material natif** résolu via `getLanguageIcon` puis nom/extension. Suppression de la prop `color` (inutilisée) ; rendu toujours via `<img>` (média passif).
+  - `src/themes/iconTheme.ts` : libellé du thème intégré `"Default (no icon theme)"` → `"Material Icons (built-in)"` (l'aperçu Settings reflète désormais le rendu réel).
+
+- **Décisions Techniques :**
+  - **Bundle natif** plutôt qu'une extension à installer : icônes disponibles *out-of-the-box*, hors-ligne, zéro dépendance, coût bundle ≈ **+5,5 kB** (glyphes partagés et data-URI mémoïsées).
+  - **Résolution via le registre de langages** (et non une table d'icônes parallèle) : un seul point de vérité — ajouter un langage suffit à lui donner une icône cohérente avec sa coloration et son LSP.
+  - **Priorité au thème d'extension** : si l'utilisateur installe/sélectionne un thème d'icônes (ex. material-icon-theme réel), il gagne — parité stricte avec VS Code.
+  - **Sécurité inchangée** : les SVG Material sont **générés par le module** (jamais lus sur disque) et rendus en `<img>` data-URI → aucune exécution de script possible ; le chemin non fiable (extensions) reste confiné par `readExtensionAsset`.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `languages.ts`, `materialIcons.ts` (nouveau), `FileIcon.tsx`, `iconTheme.ts`.
+  - Aucune modification backend. `fileColors.ts` conservé (encore utilisé par `CommandPalette`).
+  - Validation : `eslint` **0 erreur**, `tsc --noEmit` **0 erreur**, `build:frontend` **OK**.
+
+- **Prochaines étapes :**
+  - Étendre le catalogue Material (fichiers de conf spécialisés : `.pyi`, lockfiles, frameworks) si besoin.
+  - Éventuel : colorer aussi les onglets / la palette via le même resolver.
+
+---
+
+### [2026-10-12T17:30] | DAP extensible + Explorateur façon VS Code
+
+- **Contexte :**
+  Deux chantiers menés ensemble vers la parité VS Code. (1) **DAP** : le débogueur ne connaissait que 2 adapters codés en dur (`codelldb`, `debugpy`) ; impossible d'en ajouter ni de surcharger par projet. Objectif : rendre les adapters **déclaratifs et extensibles** (workspace `.origin/debug.json` + global), sur le même modèle que LSP/Run, sans jamais exposer un binaire arbitraire depuis le frontend. (2) **Exploreur** : l'arbre de fichiers était minimal (clic = ouvrir) — il manquait les comportements quotidiens de VS Code (multi-sélection, drag & drop, navigation clavier, persistance de l'expansion, décoration SCM).
+
+- **Modifications effectuées :**
+  - `src/lib/dapConfig.ts` (**nouveau**) : schéma **Zod strict** (`DapAdapterConfigSchema { adapterId, extensions[], label, adapterPath?, enabled? }`, `DapConfigSchema` v1, bornes : 64 adapters). `ADAPTER_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/`. Catalogue `KNOWN_ADAPTERS` (**7** : codelldb, debugpy, delve, netcoredbg, js-debug, php-debug, kotlin-debug-adapter) + `DEFAULT_DAP_CONFIG` (codelldb, debugpy, delve). `findAdapterForFile` (1ʳᵉ extension correspondante).
+  - `src/lib/dapConfigStore.ts` (**nouveau**) : résolution **workspace > global > défaut**. Persistance globale (localStorage `origin-dap-config`), lecture `.origin/debug.json`, `mergeDapConfigs` (fusion par `adapterId`), `resolveDapConfig`.
+  - `src-tauri/src/dap.rs` : allowlist `dap_exe_and_args` (**7** adapters → exe + args par défaut) ; `validate_dap_arg` / `validate_adapter_path` (refus vide / >4096 / NUL / `\n` / `\r`) ; `make_dap_process` (**argv direct, jamais de shell** ; `cmd /C` réservé aux shims npm `.cmd`/`.bat` sous Windows) ; `dap_start` ne fait **jamais** confiance aux args du frontend (seuls les args par défaut de l'allowlist sont utilisés ; `adapterPath` sert uniquement à localiser le binaire).
+  - `src/lib/dap.ts` : `DapAdapterType = string` (au lieu de l'union figée).
+  - `src/components/DebugLaunchForm.tsx` : liste d'adapters **dynamique** (résolue via `resolveDapConfig`), auto-détection par extension, `<select>` alimenté par les adapters activés.
+  - `src/lib/explorerState.ts` (**nouveau**) : persistance de l'expansion **par workspace** (localStorage `origin-explorer-expanded:<root>`, plafond 2000 entrées, validation robuste à la lecture).
+  - `src/components/FileTree.tsx` (**réécrit**) : **multi-sélection** (Cmd/Ctrl+clic) ; **drag & drop** multi-sources (déplacement via `renamePath`, garde-fous : pas dans soi-même/descendant, pas vers le parent courant) ; **Collapse All** + **navigation clavier** (↑/↓ focus, → ouvre sinon descend au 1ᵉʳ enfant, ← ferme sinon remonte au parent, Entrée ouvre) ; **persistance de l'expansion** ; **décoration SCM** (`buildGitDecoration` propage le « pire » statut git aux dossiers parents, refresh 5 s, couleur du nom + badge `M/A/D/R/U`) ; en-tête racine + compteur de sélection + boutons New File / New Folder / Collapse All.
+  - Attributs `data-path` / `data-dir` / `data-open` exposés sur chaque ligne (`role="treeitem"`) — indispensables à la navigation clavier.
+
+- **Décisions Techniques :**
+  - **Le frontend ne référence jamais un binaire** : la config DAP ne contient qu'un `adapterId` qui **doit** appartenir à l'allowlist compilée Rust. Double validation (Zod frontend + Rust) — un `.origin/debug.json` malveillant ne peut ni exécuter de code ni injecter hors schéma.
+  - **argv, jamais shell** (sauf shims npm sous Windows, strictement encadrés) : cohérent avec la brique Run ; les métacaractères restent littéraux.
+  - Fusion par `adapterId` (pas remplacement) : cohérent avec LSP/Run.
+  - Explorer : le reset d'état au changement de workspace se fait **hors effet** (comparaison de clé en rendu + `useEffect` pour la persistance), afin d'éviter les `setState` synchrones dans un effet (règle `react-hooks/set-state-in-effect`) et les renders en cascade.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `dapConfig.ts`, `dapConfigStore.ts`, `dap.rs`, `dap.ts`, `DebugLaunchForm.tsx`, `explorerState.ts`, `FileTree.tsx`.
+  - Validation : `eslint` (fichiers DAP + Explorer) **0 erreur 0 warning**, `tsc --noEmit` **0 erreur**, `build:frontend` **OK**, `cargo check` **OK**.
+
+- **Prochaines étapes :**
+  - UI Settings pour éditer les adapters DAP (parité avec la section LSP) — non encore livrée.
+  - CF `pathFormat` et events DAP étendus (évaluation de watch/expand) si besoin de parité de débogage avancée.
+
+---
+
+### [2026-10-12T16:40] | Bouton Run — tâches déclaratives + allowlist argv + Workspace Trust
+
+- **Contexte :**
+  L'ancien « Run » écrivait une **chaîne de commande dans le shell** (`runInNewTab(command: string)`) : vecteur d'injection/RCE dès qu'un fichier `.origin/run.json` ou une substitution de placeholder provient d'un dépôt tiers. Objectif : parité fonctionnelle avec VS Code (`tasks.json`) **sans** exposer la surface d'exécution — commande passée en **argv**, allowlist d'interpréteurs côté Rust, et confirmation explicite à la première exécution d'un workspace non fiable.
+
+- **Modifications effectuées :**
+  - `src/lib/runTasks.ts` (**nouveau**) : schéma **Zod strict** (`RunTaskSchema { id, label, program, args[], cwd?, extension? }`, `RunConfigSchema` v1, bornes : 64 tâches, 64 args, 1024 car.). `DEFAULT_RUN_CONFIG` (python/node/tsx/cargo/go). `substituteArgs` (`$file`, `${dir}`, `${workspaceFolder}`, `${fileBasenameNoExtension}`) — substitution **littérale**, jamais réinterprétée par un shell. `pickTaskForFile` (extension exacte sinon 1ʳᵉ tâche sans extension).
+  - `src/lib/runConfigStore.ts` (**nouveau**) : résolution **workspace > global** par fusion d'`id`. Persistance globale (localStorage `origin-run-config`), lecture `.origin/run.json`. **Workspace Trust** : hash de contenu (djb2) + `isWorkspaceTrusted`/`trustWorkspace` (clé `origin-run-trust:<root>`) — modifier le fichier **invalide** la confiance. `resolveRunConfig` renvoie `{ config, needsTrust, workspaceRaw }`.
+  - `src-tauri/src/terminal.rs` : allowlist `TASK_PROGRAM_ALLOWLIST` (~40 interpréteurs/compilateurs) ; `validate_argv_component` (refus vide / >4096 / NUL / `\n` / `\r`) ; `program_in_path` (résolution PATH + PATHEXT Windows) ; `enforce_program` (chemin absolu obligatoire si `/`, sinon nom nu ∈ allowlist + présent dans PATH) ; `terminal_create_task` → `CommandBuilder::new(program).arg(...)` (**aucun shell**), spawn PTY, events `terminal-output-{id}` / `terminal-exit-{id}`.
+  - `src-tauri/src/lib.rs` : `terminal::terminal_create_task` enregistré dans `generate_handler!`.
+  - `src/lib/terminal.ts` : `terminalCreateTask(cwd, program, args, cols, rows)`.
+  - `src/components/terminal/Terminal.tsx` : prop `task?` — si présente, spawn argv direct (bannière `$ program args`) **sans** shell interactif ; sinon shell habituel. Correction : suppression d'un bloc `terminalCreate` **dupliqué** qui aurait créé deux PTY par onglet.
+  - `src/components/terminal/TerminalPanel.tsx` : `runTaskInNewTab(name, program, args)` + state `taskSpawns` (map id d'onglet → tâche).
+  - `src/App.tsx` : `handleRunActiveFile` (résolution config → `pickTaskForFile` → `substituteArgs` → si `needsTrust`, ouvre le dialogue) ; `startTask` (ouvre le panneau terminal puis lance) ; **dialogue de confiance** (Run once / Always trust this workspace / Cancel).
+  - `CommandContext.tsx` / `useGlobalKeybindings.ts` / `keybindings.ts` : commande `origin.runFile` (défaut `Ctrl+F5`).
+
+- **Décisions Techniques :**
+  - **argv, jamais shell** : `CommandBuilder::new(program).arg(a)` construit un `argv` — `;`, `&&`, `$(...)`, backticks restent **littéraux**. Le shell n'est jamais invoqué pour une tâche.
+  - **Double validation** (Zod frontend + allowlist Rust) : un `.origin/run.json` malveillant ne peut ni exécuter un binaire hors allowlist ni injecter hors schéma.
+  - **Workspace Trust** (modèle VS Code) : la confiance porte sur le **contenu** ; toute modification l'invalide. Les tâches **globales** sont de confiance par construction.
+  - Fusion par `id` (pas remplacement) : cohérent avec la brique LSP.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `runTasks.ts`, `runConfigStore.ts`, `terminal.rs`, `lib.rs`, `terminal.ts`, `Terminal.tsx`, `TerminalPanel.tsx`, `App.tsx`, `CommandContext.tsx`, `useGlobalKeybindings.ts`, `keybindings.ts`.
+  - Validation : `tsc --noEmit` **0 erreur**, `eslint` (fichiers Run) **0 erreur**, `build:frontend` **OK**, `cargo check` **OK** (warning préexistant `dap.rs:75` uniquement).
+
+- **Prochaines étapes :**
+  - UI Settings pour éditer les tâches (analogue à la section « Languages & LSP ») — non encore livrée.
+  - Étape suivante du plan de parité : **DAP extensible** (debug adapters).
+
+---
+
+### [2026-10-12T15:10] | LSP extensible par configuration (workspace + global) + UI Settings
+
+- **Contexte :**
+  Le registre de langages reconnaissait 11 identités LSP, mais le backend Rust restait figé sur une allowlist de 3 serveurs et il n'existait **aucun moyen** pour l'utilisateur de lier un serveur à des extensions, ni de surcharger par projet. L'objectif : rendre l'identité LSP **déclarative et extensible par configuration**, à deux niveaux (global utilisateur + workspace versionnable), sans jamais permettre l'exécution d'un binaire arbitraire depuis le frontend.
+
+- **Modifications effectuées :**
+  - `src/lib/lspConfig.ts` (**nouveau**) : schéma **Zod strict** (`LspServerConfigSchema`, `LspConfigSchema` version 1) + catalogue `KNOWN_SERVERS` (11 serveurs, miroir de l'allowlist Rust, avec `installCommand`) + `DEFAULT_LSP_CONFIG` (3 serveurs historiques). Garde-fou `isKnownServerId`.
+  - `src/lib/lspConfigStore.ts` (**nouveau**) : résolution **workspace > global > défaut**. `loadGlobalLspConfig`/`saveGlobalLspConfig` (localStorage `origin-lsp-config`), `loadWorkspaceLspConfig` (lit `.origin/lsp.json` via `readFile`, `null` si absent/invalide), `mergeLspConfigs` (fusion par `serverId`, workspace gagne), `resolveLspConfig`, `findServerForFile`.
+  - `src-tauri/src/lsp.rs` : allowlist `lsp_exe_and_args` étendue de 3 → **11 serveurs** ; nouveau `validate_lsp_arg` (refus vide / >512 / NUL / newline / CR) ; `lsp_start` accepte `args: Option<Vec<String>>` (validés, sinon args par défaut). Sesssion et suffixe d'événement keyés par **serverId**.
+  - `src/lib/lsp.ts`, `src/lib/lspCm6.ts` : client/transport keyés par `serverId` (plus par union figée) ; `INSTALL_COMMANDS` dérivé de `KNOWN_SERVERS`.
+  - `src/components/editor/Editor.tsx` : résolution **async** de la config (`resolveLspConfig` → `findServerForFile`) avant `createLspExtension`.
+  - `src/context/DiagnosticsContext.tsx` : écoute les notifications pour tous les `getSupportedLspServerIds()`.
+  - `src/App.tsx` : `handleMissingServer` résout le libellé via `KNOWN_SERVERS`.
+  - `src/components/settings/SettingsPanel.tsx` : **nouvelle section « Languages & LSP »** (nav `languages`) — liste des serveurs, toggle activer/désactiver, édition extensions / languageId / arguments, ajout (id contraint au catalogue), suppression avec confirmation, persistance globale ; encart rappelant la surcharge workspace.
+
+- **Décisions Techniques :**
+  - **Le frontend ne référence jamais un binaire** : la config ne contient qu'un `serverId` qui **doit** appartenir à l'allowlist compilée Rust. Double validation (Zod frontend + Rust). Un `.origin/lsp.json` malveillant ne peut donc ni exécuter de code ni injecter de données hors schéma.
+  - **Précédence workspace > global** plutôt qu'un remplacement complet : fusion par `serverId` — un projet peut surcharger un serveur sans perdre les autres préférences globales.
+  - Serveurs inconnus tolérés à l'affichage (badge « unknown ») mais **rejetés** à l'ajout : cohérence stricte avec le catalogue.
+  - Édition par `defaultValue` + commit `onBlur` (pas de state par champ) : évite les re-renders et les désynchros de curseur.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `lspConfig.ts`, `lspConfigStore.ts`, `lsp.rs`, `lsp.ts`, `lspCm6.ts`, `Editor.tsx`, `DiagnosticsContext.tsx`, `App.tsx`, `SettingsPanel.tsx`.
+  - Ajouter un serveur = (1) entrée dans `lsp_exe_and_args` (Rust) + (2) entrée dans `KNOWN_SERVERS` (TS). Aucun autre code à toucher.
+  - Le lint a révélé une affectation morte dans `Editor.tsx` (`serverId` initialisé à `null` puis écrasé) — corrigée (`let serverId: string;` + garde `cancelled`).
+  - Validé : `tsc --noEmit` OK, `eslint` OK (0 erreur), `build:frontend` OK, `cargo check` OK (seul warning préexistant `dap.rs:75`).
+
+- **Prochaines étapes :**
+  - Bouton **Run** par langage (config workspace) — brique suivante actée.
+  - Vue « langage détecté » (registre) dans Settings pour transparence.
+  - Support des serveurs **complétés par extension** (au-delà du catalogue compilé).
+
+---
+
 ### [2026-10-12T14:30] | Registre unique de langages (registre + alignement coloration/label/LSP)
 
 - **Contexte :**

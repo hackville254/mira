@@ -51,6 +51,8 @@ export interface AppCommands {
   onNewTerminalTab: () => void;
   onClearTerminal: () => void;
   onKillTerminal: () => void;
+  // Run
+  onRunFile: () => void;
   // Debug
   onStartDebugging: () => void;
   onStopDebugging: () => void;
@@ -71,6 +73,7 @@ const defaults: AppCommands = {
   onEditorPaste: noop, onEditorSelectAll: noop, onEditorFind: noop,
   onZoomIn: noop, onZoomOut: noop, onZoomReset: noop,
   onNewTerminalTab: noop, onClearTerminal: noop, onKillTerminal: noop,
+  onRunFile: noop,
   onStartDebugging: noop, onStopDebugging: noop, isDebugActive: false,
 };
 

@@ -43,6 +43,8 @@ export const COMMANDS: CommandDef[] = [
   { id: "origin.zoomIn",         label: "Zoom In",              category: "View",    defaultKey: "ctrl+=" },
   { id: "origin.zoomOut",        label: "Zoom Out",             category: "View",    defaultKey: "ctrl+-" },
   { id: "origin.zoomReset",      label: "Reset Zoom",           category: "View",    defaultKey: "ctrl+0" },
+  // Run
+  { id: "origin.runFile",        label: "Run Active File",      category: "Run",     defaultKey: "ctrl+f5" },
   // Debug
   { id: "origin.startDebug",     label: "Start Debugging",      category: "Debug",   defaultKey: "f5" },
   { id: "origin.stopDebug",      label: "Stop Debugging",       category: "Debug",   defaultKey: "shift+f5" },
