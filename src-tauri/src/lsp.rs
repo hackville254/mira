@@ -939,13 +939,24 @@ async fn install_via_npm(node: &Path, server_id: &str, dest: &Path) -> Result<Pa
         .ok_or_else(|| format!(r#"{{"code":"{}","message":"npm: id inconnu"}}"#, ERR_UNKNOWN_SERVER))?;
 
     // npm doit être invoqué via le node détecté. On ne passe PAS par un shell :
-    // on localise `npm-cli.js` à côté de node, ou on retombe sur `npm` du PATH.
-    let npm_cli = node
-        .parent()
-        .map(|d| d.join("node_modules").join("npm").join("bin").join("npm-cli.js"));
+    // on localise `npm-cli.js` relativement au binaire node. Les dispositions
+    // diffèrent selon le gestionnaire :
+    //   * nvm / `n` / Homebrew : `<node_bin>/../lib/node_modules/npm/bin/npm-cli.js`
+    //     (npm est dans le `lib/` du préfixe, pas à côté du binaire) ;
+    //   * distributions Windows / npm embarqué : `<node_bin>/node_modules/npm/bin/npm-cli.js`.
+    // On ne retombe PAS sur `npm` du PATH : sous nvm/`n` c'est un script shell
+    // (shim), qu'on ne peut pas passer comme script à `node`.
+    let npm_cli = node.parent().and_then(|bin| {
+        [
+            bin.join("..").join("lib").join("node_modules").join("npm").join("bin").join("npm-cli.js"),
+            bin.join("node_modules").join("npm").join("bin").join("npm-cli.js"),
+        ]
+        .into_iter()
+        .find(|p| p.is_file())
+    });
 
     let mut cmd = tokio::process::Command::new(node);
-    match npm_cli.filter(|p| p.is_file()) {
+    match npm_cli {
         Some(cli) => {
             cmd.arg(cli);
         }

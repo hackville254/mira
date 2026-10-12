@@ -88,15 +88,64 @@ fn node_manager_dirs(home: &std::path::Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Lit `~/.nvm/alias/default` (ex. `v24.21.0` ou `24.21.0`) et retourne le nom
-/// de dossier canonique `vX.Y.Z`, ou `None` si le fichier est absent/vide.
-fn nvm_active_version(alias_file: &std::path::Path) -> Option<String> {
+/// Lit `~/.nvm/alias/default` et retourne l'alias brut (ex. `24`, `v24.21.0`,
+/// `lts/*`), ou `None` si absent/vide.
+fn nvm_alias(alias_file: &std::path::Path) -> Option<String> {
     let raw = std::fs::read_to_string(alias_file).ok()?;
     let v = raw.trim();
     if v.is_empty() {
         return None;
     }
-    Some(if v.starts_with('v') { v.to_string() } else { format!("v{v}") })
+    Some(v.to_string())
+}
+
+/// Résout un alias nvm contre les versions installées dans `nvm_root`.
+///
+/// Un alias peut être :
+///   * exact (`v24.21.0` ou `24.21.0`) → dossier correspondant ;
+///   * partiel (`24` ou `v24`)          → **plus récente** version `v24.x.y` ;
+///   * symbolique (`node`, `lts/*`, `default`) → plus récente version installée.
+///
+/// Retourne le `<version>/bin` correspondant, ou `None` si rien ne matche (le
+/// repli « plus récente » global est appliqué par l'appelant).
+fn resolve_nvm_alias(nvm_root: &std::path::Path, alias: &str) -> Option<PathBuf> {
+    let a = alias.trim();
+    // Aliases symboliques : pas de composante numérique exploitable.
+    if matches!(a, "node" | "default" | "lts/*" | "iojs") || a.starts_with("lts/") {
+        return latest_version_bin(nvm_root).into_iter().next();
+    }
+    let a = a.strip_prefix('v').unwrap_or(a);
+
+    // Correspondance par préfixe numérique : `24` matche `v24.x.y`,
+    // `24.21` matche `v24.21.y`, `24.21.0` matche l'exact.
+    let want: Vec<u64> = a.split('.').filter_map(|s| s.parse().ok()).collect();
+    if want.is_empty() {
+        return None;
+    }
+    let Ok(read) = std::fs::read_dir(nvm_root) else {
+        return None;
+    };
+    let mut best: Option<(u64, u64, u64, PathBuf)> = None;
+    for entry in read.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some((maj, min, pat)) = parse_semver(&name) else { continue };
+        let got = [maj, min, pat];
+        if got[..want.len()] == want[..] {
+            let candidate = (maj, min, pat, entry.path().join("bin"));
+            let better = match &best {
+                Some(b) => (maj, min, pat) > (b.0, b.1, b.2),
+                None => true,
+            };
+            if better {
+                best = Some(candidate);
+            }
+        }
+    }
+    best.map(|(_, _, _, p)| p)
 }
 
 /// Liste les sous-dossiers de versions `vX.Y.Z` d'un root Node et retourne les
@@ -287,23 +336,52 @@ mod tests {
     }
 
     #[test]
-    fn nvm_active_version_reads_and_normalizes() {
-        let tmp = std::env::temp_dir().join(format!("origin_nvm_{}", std::process::id()));
+    fn nvm_alias_reads_and_trims() {
+        let tmp = std::env::temp_dir().join(format!("origin_nvm_alias_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let alias = tmp.join("default");
 
-        std::fs::write(&alias, "24.21.0\n").unwrap();
-        assert_eq!(nvm_active_version(&alias), Some("v24.21.0".to_string()));
+        std::fs::write(&alias, "24\n").unwrap();
+        assert_eq!(nvm_alias(&alias), Some("24".to_string()));
 
         std::fs::write(&alias, "v20.10.0").unwrap();
-        assert_eq!(nvm_active_version(&alias), Some("v20.10.0".to_string()));
+        assert_eq!(nvm_alias(&alias), Some("v20.10.0".to_string()));
 
         std::fs::write(&alias, "  \n").unwrap();
-        assert_eq!(nvm_active_version(&alias), None);
+        assert_eq!(nvm_alias(&alias), None);
 
         let _ = std::fs::remove_file(&alias);
-        assert_eq!(nvm_active_version(&alias), None);
+        assert_eq!(nvm_alias(&alias), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_nvm_alias_handles_partial_and_exact() {
+        let tmp = std::env::temp_dir().join(format!("origin_nvm_res_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for v in ["v18.2.0", "v24.15.0", "v24.21.0", "v26.1.0"] {
+            std::fs::create_dir_all(tmp.join(v).join("bin")).unwrap();
+        }
+
+        // Alias majeur partiel `24` → plus récente v24.x.y.
+        assert_eq!(
+            resolve_nvm_alias(&tmp, "24"),
+            Some(tmp.join("v24.21.0").join("bin"))
+        );
+        // Alias exact.
+        assert_eq!(
+            resolve_nvm_alias(&tmp, "v24.15.0"),
+            Some(tmp.join("v24.15.0").join("bin"))
+        );
+        // Alias symbolique → plus récente globale.
+        assert_eq!(
+            resolve_nvm_alias(&tmp, "lts/*"),
+            Some(tmp.join("v26.1.0").join("bin"))
+        );
+        // Aucune correspondance → None.
+        assert_eq!(resolve_nvm_alias(&tmp, "99"), None);
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -315,5 +393,27 @@ mod tests {
         assert!(dirs.contains(&home.join(".volta/bin")));
         assert!(dirs.contains(&home.join(".asdf/shims")));
         assert!(dirs.contains(&home.join(".fnm/aliases/default/bin")));
+    }
+
+    /// Test « machine réelle » : si un Node est installé via nvm/`n`, le PATH
+    /// enrichi doit exposer son `bin` — c'est le cœur du correctif
+    /// « Node.js introuvable ». Ignoré silencieusement si aucun Node n'est géré
+    /// par ces outils (environnement CI sans nvm, autres gestionnaires).
+    #[test]
+    fn enriched_dirs_expose_managed_node_when_present() {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let nvm_root = home.join(".nvm/versions/node");
+        let n_root = home.join("n/versions/node");
+        if !nvm_root.is_dir() && !n_root.is_dir() {
+            return; // Pas de gestionnaire nvm/`n` : rien à vérifier ici.
+        }
+        let dirs = enriched_dirs();
+        let has_node = dirs.iter().any(|d| d.join("node").is_file());
+        assert!(
+            has_node,
+            "le PATH enrichi doit exposer un binaire `node` (nvm/`n` détecté)"
+        );
     }
 }

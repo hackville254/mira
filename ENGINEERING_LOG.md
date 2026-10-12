@@ -5,6 +5,37 @@
 
 ---
 
+### [2026-10-12T23:20] | Correctif « Node.js introuvable » (nvm/`n`, npm-cli.js) — débloque les serveurs LSP npm
+
+- **Contexte :**
+  Après le câblage des serveurs npm (JSON/CSS/HTML/YAML/Shell/Dockerfile), l'utilisateur obtenait « HTML (vscode-html-language-server) — Node.js introuvable » malgré un Node v24 installé. **Deux causes distinctes**, toutes deux dans la résolution d'environnement :
+  1. **PATH enrichi (`env_path.rs`) ignorait les gestionnaires de version Node.** Le PATH couvrait Cargo/Homebrew/pipx mais **ni nvm** (`~/.nvm/versions/node/<v>/bin`), ni `n` (`~/n/bin`), ni fnm/volta/asdf. Ces outils patchent le PATH depuis les rc du shell ; un shell de login lancé avec `-c` peut ne pas les charger (early-return non-interactif). `find_node()` (via `find_in_path`) échouait donc → `NEEDS_NODE`.
+  2. **`install_via_npm` cherchait `npm-cli.js` au mauvais endroit.** Le code visait `<node_bin>/node_modules/npm/bin/npm-cli.js`, alors que nvm/`n`/Homebrew placent npm dans le **`lib/` du préfixe** : `<node_bin>/../lib/node_modules/npm/bin/npm-cli.js`. Même avec Node trouvé, npm n'aurait pas été localisé → `NEEDS_NODE`.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/env_path.rs`** :
+    - `well_known_dirs` étendu via `node_manager_dirs(home)` : `~/n/bin`, versions `n`/nvm (`<v>/bin`), `~/.fnm/aliases/default/bin`, `~/.volta/bin`, `~/.asdf/shims`.
+    - `nvm_alias` lit `~/.nvm/alias/default` (alias souvent **partiel**, ex. `24`) ; `resolve_nvm_alias` le résout contre les versions installées (exact / préfixe `24` / symbolique `lts/*`, `node`) et retombe sur la plus récente.
+    - `latest_version_bin` : tri **sémantique décroissant** des `vX.Y.Z` (indépendant de l'ordre du FS), `parse_semver` robuste.
+    - 6 tests ajoutés (semver, tri, résolution d'alias, présence nvm/`n`, dont un test « machine réelle » conditionnel qui vérifie que le PATH enrichi expose bien `node`).
+  - **`src-tauri/src/lsp.rs`** : `install_via_npm` teste désormais **deux** dispositions de `npm-cli.js` (`../lib/node_modules/npm/bin/…` puis `node_modules/npm/bin/…`). Fallback `npm` du PATH **volontairement exclu** : sous nvm/`n` c'est un script shell (shim) non passable comme script à `node`.
+
+- **Décisions Techniques :**
+  - **Détection explicite plutôt que pari sur le shell** : résoudre nvm/`n` directement est **déterministe** et couvre les configs où `zsh -lc` ne charge pas nvm. Le shell de login reste un canal *supplémentaire*, pas l'unique.
+  - **Alias nvm partiel** : `~/.nvm/alias/default` contenant `24` (et non `v24.21.0`) est un cas réel constaté — la résolution par préfixe évite de viser un dossier inexistant.
+  - **Pas de fallback npm shim** : passer le shim shell à `node` aurait produit un échec obscur ; mieux vaut échouer explicitement (`NEEDS_NODE`) que mal exécuter.
+
+- **Impacts & Dépendances :**
+  - Rust : `env_path.rs`, `lsp.rs`. Aucun changement front/API.
+  - Effet de bord **bénéfique** : tout binaire Node/npm (et futurs serveurs npm) devient résolvable sans configuration utilisateur, quel que soit le gestionnaire de version.
+  - Vérifié end-to-end : `node <npm-cli.js> install --prefix <dir>` a réellement installé `bash-language-server` et `vscode-langservers-extracted` (→ `.bin/vscode-css|html|json-language-server`).
+
+- **Prochaines étapes :**
+  - Confirmer dans l'app l'installation en un clic d'un serveur npm partagé (HTML/CSS) et son démarrage (stdio).
+  - (Futur, non câblé v1) Node portable embarqué pour supprimer toute dépendance à un Node système.
+
+---
+
 ### [2026-10-12T22:40] | LSP : câblage des serveurs « à moitié finis » + langages légers (JSON/CSS/HTML/YAML/Shell/Dockerfile)
 
 - **Contexte :**
