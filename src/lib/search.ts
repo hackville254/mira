@@ -37,12 +37,14 @@ export async function searchInFiles(
   query: string,
   options: SearchOptions = DEFAULT_SEARCH_OPTIONS,
   excludes = '',
+  includes = '',
 ): Promise<SearchMatch[]> {
   return invoke<SearchMatch[]>('search_in_files', {
     folder,
     query,
     options: toWireOptions(options),
     excludes,
+    includes,
   });
 }
 
@@ -61,6 +63,8 @@ export async function replaceInFiles(
   options: SearchOptions = DEFAULT_SEARCH_OPTIONS,
   excludes = '',
   files?: string[],
+  preserveCase = false,
+  includes = '',
 ): Promise<ReplaceResult> {
   const raw = await invoke<{ files_changed: number; replacements: number; files: string[] }>('replace_in_files', {
     req: {
@@ -69,8 +73,36 @@ export async function replaceInFiles(
       replacement,
       options: toWireOptions(options),
       excludes,
+      includes,
+      preserve_case: preserveCase,
       files: files ?? null,
     },
   });
   return { filesChanged: raw.files_changed, replacements: raw.replacements, files: raw.files ?? [] };
+}
+
+/**
+ * Remplace UNE occurrence précise (ligne + col) — bouton « Replace » au survol
+ * d'un résultat. Retourne `true` si une correspondance a été trouvée/remplacée.
+ */
+export async function replaceOne(
+  path: string,
+  query: string,
+  replacement: string,
+  line: number,
+  col: number,
+  options: SearchOptions = DEFAULT_SEARCH_OPTIONS,
+  preserveCase = false,
+): Promise<boolean> {
+  return invoke<boolean>('replace_one', {
+    req: {
+      path,
+      query,
+      replacement,
+      options: toWireOptions(options),
+      line,
+      col,
+      preserve_case: preserveCase,
+    },
+  });
 }

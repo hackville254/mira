@@ -5,6 +5,7 @@ import { Tooltip } from "./ui/Tooltip";
 import DropdownMenu, { type MenuEntry } from "./ui/DropdownMenu";
 import { useCommands } from "../context/CommandContext";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { formatShortcut } from "../lib/platform";
 import logoSrc from "../assets/logo-code.svg";
 
 const win = getCurrentWindow();
@@ -151,56 +152,58 @@ export default function TitleBar() {
     setMenuOpen(open => !open);
     setMenuAnchor(menuBtnRef.current);
   };
+  // Affiche un raccourci au format natif de l'OS (⌘ sur macOS, Ctrl ailleurs).
+  const sc = formatShortcut;
   const fileEntries: MenuEntry[] = [
-    { type: 'item', label: 'New File',      shortcut: 'Ctrl+N',        onClick: onNewFile },
-    { type: 'item', label: 'New Window',    shortcut: 'Ctrl+Shift+N',  onClick: onNewWindow },
+    { type: 'item', label: 'New File',      shortcut: sc('ctrl+n'),        onClick: onNewFile },
+    { type: 'item', label: 'New Window',    shortcut: sc('ctrl+shift+n'),  onClick: onNewWindow },
     { type: 'separator' },
-    { type: 'item', label: 'Open Folder…', shortcut: 'Ctrl+K Ctrl+O', onClick: onOpenFolder },
-    { type: 'item', label: 'Open File…',   shortcut: 'Ctrl+O',        onClick: onOpenFile },
+    { type: 'item', label: 'Open Folder…', shortcut: sc('ctrl+k o'), onClick: onOpenFolder },
+    { type: 'item', label: 'Open File…',   shortcut: sc('ctrl+o'),        onClick: onOpenFile },
     { type: 'separator' },
-    { type: 'item', label: 'Save',         shortcut: 'Ctrl+S',        disabled: !hasActiveTab, onClick: () => { close(); onSave?.(); } },
-    { type: 'item', label: 'Save As…',     shortcut: 'Ctrl+Shift+S',  disabled: !hasActiveTab, onClick: () => { close(); onSaveAs?.(); } },
-    { type: 'item', label: 'Save All',     shortcut: 'Ctrl+K S',      disabled: dirtyCount === 0, onClick: () => { close(); onSaveAll?.(); } },
+    { type: 'item', label: 'Save',         shortcut: sc('ctrl+s'),        disabled: !hasActiveTab, onClick: () => { close(); onSave?.(); } },
+    { type: 'item', label: 'Save As…',     shortcut: sc('ctrl+shift+s'),  disabled: !hasActiveTab, onClick: () => { close(); onSaveAs?.(); } },
+    { type: 'item', label: 'Save All',     shortcut: sc('ctrl+k s'),      disabled: dirtyCount === 0, onClick: () => { close(); onSaveAll?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Close Editor', shortcut: 'Ctrl+W',        disabled: !hasActiveTab, onClick: () => { close(); onCloseEditor?.(); } },
+    { type: 'item', label: 'Close Editor', shortcut: sc('ctrl+w'),        disabled: !hasActiveTab, onClick: () => { close(); onCloseEditor?.(); } },
     { type: 'item', label: 'Close Folder',                             disabled: !hasFolderOpen, onClick: () => { close(); onCloseFolder?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Exit',         shortcut: 'Alt+F4',        onClick: () => win.close() },
+    { type: 'item', label: 'Exit',         shortcut: sc('alt+f4'),        onClick: () => win.close() },
   ];
 
   const editEntries: MenuEntry[] = [
-    { type: 'item', label: 'Undo',       shortcut: 'Ctrl+Z',  disabled: !hasActiveTab, onClick: () => { close(); onEditorUndo?.(); } },
-    { type: 'item', label: 'Redo',       shortcut: 'Ctrl+Y',  disabled: !hasActiveTab, onClick: () => { close(); onEditorRedo?.(); } },
+    { type: 'item', label: 'Undo',       shortcut: sc('ctrl+z'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorUndo?.(); } },
+    { type: 'item', label: 'Redo',       shortcut: sc('ctrl+y'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorRedo?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Cut',        shortcut: 'Ctrl+X',  disabled: !hasActiveTab, onClick: () => { close(); onEditorCut?.(); } },
-    { type: 'item', label: 'Copy',       shortcut: 'Ctrl+C',  disabled: !hasActiveTab, onClick: () => { close(); onEditorCopy?.(); } },
-    { type: 'item', label: 'Paste',      shortcut: 'Ctrl+V',  disabled: !hasActiveTab, onClick: () => { close(); onEditorPaste?.(); } },
+    { type: 'item', label: 'Cut',        shortcut: sc('ctrl+x'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorCut?.(); } },
+    { type: 'item', label: 'Copy',       shortcut: sc('ctrl+c'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorCopy?.(); } },
+    { type: 'item', label: 'Paste',      shortcut: sc('ctrl+v'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorPaste?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Select All', shortcut: 'Ctrl+A',  disabled: !hasActiveTab, onClick: () => { close(); onEditorSelectAll?.(); } },
+    { type: 'item', label: 'Select All', shortcut: sc('ctrl+a'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorSelectAll?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Find',       shortcut: 'Ctrl+F',  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
-    { type: 'item', label: 'Replace',    shortcut: 'Ctrl+H',  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
+    { type: 'item', label: 'Find',       shortcut: sc('ctrl+f'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
+    { type: 'item', label: 'Replace',    shortcut: sc('ctrl+h'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
   ];
 
   const viewEntries: MenuEntry[] = [
-    { type: 'item', label: 'Command Palette', shortcut: 'Ctrl+P', onClick: () => { close(); onOpenPalette(); } },
+    { type: 'item', label: 'Command Palette', shortcut: sc('ctrl+shift+p'), onClick: () => { close(); onOpenPalette(); } },
     { type: 'separator' },
     { type: 'item', label: sidebarOpen ? 'Hide Sidebar' : 'Show Sidebar', onClick: () => { close(); onToggleSidebar(); } },
-    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: 'Ctrl+`', onClick: () => { close(); onToggleTerminal(); } },
+    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: sc('ctrl+`'), onClick: () => { close(); onToggleTerminal(); } },
     { type: 'item', label: aiPanelOpen ? 'Hide AI Panel' : 'Show AI Panel', onClick: () => { close(); onToggleAiPanel(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Zoom In',    shortcut: 'Ctrl+=', onClick: () => { close(); onZoomIn?.(); } },
-    { type: 'item', label: 'Zoom Out',   shortcut: 'Ctrl+-', onClick: () => { close(); onZoomOut?.(); } },
-    { type: 'item', label: 'Reset Zoom', shortcut: 'Ctrl+0', onClick: () => { close(); onZoomReset?.(); } },
+    { type: 'item', label: 'Zoom In',    shortcut: sc('ctrl+='), onClick: () => { close(); onZoomIn?.(); } },
+    { type: 'item', label: 'Zoom Out',   shortcut: sc('ctrl+-'), onClick: () => { close(); onZoomOut?.(); } },
+    { type: 'item', label: 'Reset Zoom', shortcut: sc('ctrl+0'), onClick: () => { close(); onZoomReset?.(); } },
   ];
 
   const runEntries: MenuEntry[] = [
-    { type: 'item', label: 'Start Debugging', shortcut: 'F5', disabled: isDebugActive, onClick: () => { close(); onStartDebugging(); } },
-    { type: 'item', label: 'Stop Debugging',  shortcut: 'Shift+F5', disabled: !isDebugActive, onClick: () => { close(); onStopDebugging(); } },
+    { type: 'item', label: 'Start Debugging', shortcut: sc('f5'), disabled: isDebugActive, onClick: () => { close(); onStartDebugging(); } },
+    { type: 'item', label: 'Stop Debugging',  shortcut: sc('shift+f5'), disabled: !isDebugActive, onClick: () => { close(); onStopDebugging(); } },
   ];
 
   const terminalEntries: MenuEntry[] = [
-    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: 'Ctrl+`', onClick: () => { close(); onToggleTerminal(); } },
+    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: sc('ctrl+`'), onClick: () => { close(); onToggleTerminal(); } },
     { type: 'separator' },
     { type: 'item', label: 'New Terminal Tab', onClick: () => { close(); onNewTerminalTab?.(); } },
     { type: 'item', label: 'Clear Terminal',   disabled: !terminalOpen, onClick: () => { close(); onClearTerminal?.(); } },
@@ -208,7 +211,7 @@ export default function TitleBar() {
   ];
 
   const helpEntries: MenuEntry[] = [
-    { type: 'item', label: 'Keyboard Shortcuts', shortcut: 'Ctrl+P', onClick: () => { close(); onOpenPalette(); } },
+    { type: 'item', label: 'Keyboard Shortcuts', shortcut: sc('ctrl+shift+p'), onClick: () => { close(); onOpenPalette(); } },
   ];
 
   const projectName = folderPath
@@ -266,7 +269,7 @@ export default function TitleBar() {
           style={{ color: "var(--origin-fg-muted)", backgroundColor: "var(--origin-bg-hover)" }}
           onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; }}
           onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
-          title="Search (Ctrl+P)"
+          title={`Search (${sc('ctrl+p')})`}
         >
           <Icon icon="lucide:search" width={13} />
           <span>Search</span>
@@ -305,7 +308,7 @@ export default function TitleBar() {
 
         {/* Settings */}
         <div data-no-drag>
-          <IconBtn label="Settings" tooltip="Settings (Ctrl+,)" onClick={onOpenSettings}>
+          <IconBtn label="Settings" tooltip={`Settings (${sc('ctrl+,')})`} onClick={onOpenSettings}>
             <Icon icon="lucide:settings" width={15} />
           </IconBtn>
         </div>

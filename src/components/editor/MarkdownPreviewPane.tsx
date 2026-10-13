@@ -8,6 +8,14 @@ interface Props {
   content: string;
   /** Nom affiché (barre d'outils). */
   fileName: string;
+  /**
+   * Ligne du haut visible dans l'éditeur source, quand celui-ci défile.
+   * Sert à rapprocher proportionnellement le scroll de l'aperçu (scroll sync,
+   * comme VS Code). `null`/`undefined` désactive la synchronisation.
+   */
+  syncLine?: number | null;
+  /** Nombre total de lignes du fichier source (pour le ratio de synchronisation). */
+  syncTotalLines?: number;
 }
 
 type ViewMode = 'preview' | 'source';
@@ -20,11 +28,13 @@ type ViewMode = 'preview' | 'source';
  * sans HTML brut exécutable (react-markdown v10 échappe le HTML par défaut, donc
  * aucun vecteur XSS). Deux modes : rendu (« Preview ») et source (« Source »).
  */
-export default function MarkdownPreviewPane({ content, fileName }: Props) {
+export default function MarkdownPreviewPane({ content, fileName, syncLine, syncTotalLines }: Props) {
   const [mode, setMode] = useState<ViewMode>('preview');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Conserve la position de scroll lors du passage rendu ↔ source.
   const scrollPos = useRef(0);
+  // Ignore les événements de scroll programmatiques (sinon boucle de rétroaction).
+  const programmaticScroll = useRef(false);
 
   // Statistiques simples affichées en barre d'état (mots / caractères).
   const stats = useMemo(() => {
@@ -42,6 +52,20 @@ export default function MarkdownPreviewPane({ content, fileName }: Props) {
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollPos.current;
   }, [mode]);
+
+  // Synchronisation du scroll depuis l'éditeur source : on mappe le ratio de
+  // ligne (ligne visible / total) sur la hauteur défilable de l'aperçu.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || syncLine == null || !syncTotalLines || syncTotalLines <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (syncLine - 1) / Math.max(1, syncTotalLines - 1)));
+    const max = el.scrollHeight - el.clientHeight;
+    if (max <= 0) return;
+    programmaticScroll.current = true;
+    el.scrollTop = ratio * max;
+    // Libère le verrou après le tick de scroll déclenché par l'affectation.
+    requestAnimationFrame(() => { programmaticScroll.current = false; });
+  }, [syncLine, syncTotalLines, mode]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden',

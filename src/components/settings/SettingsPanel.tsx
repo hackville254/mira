@@ -9,6 +9,7 @@ import { useTheme, builtinThemes } from "../../themes/ThemeContext";
 import type { OriginTheme } from "../../themes/types";
 import { detectDevEnvironment, type ToolInfo } from "../../lib/env";
 import { loadDevEnvPrefs, saveDevEnvPrefs, type DevEnvPrefs } from "../../lib/devEnv";
+import { notifyAutoSaveChanged, type AutoSaveMode } from "../../lib/autoSavePrefs";
 import { KNOWN_SERVERS, isKnownServerId } from "../../lib/lspConfig";
 import {
   loadGlobalLspConfig,
@@ -17,6 +18,7 @@ import {
 } from "../../lib/lspConfigStore";
 import type { LspConfig, LspServerConfig } from "../../lib/lspConfig";
 import { probeLspServer, type LspProbeResult } from "../../lib/lspProbe";
+import { formatShortcut } from "../../lib/platform";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -768,6 +770,9 @@ const AUTOCOMPLETE_DELAY_KEY = 'origin-editor-autocomplete-delay';
 const AUTOCOMPLETE_DELAY_UNIT_KEY = 'origin-editor-autocomplete-delay-unit';
 const AUTOCOMPLETE_DELAY_DEFAULT_MS = 350;
 const FORMAT_ON_SAVE_KEY = 'origin-editor-format-on-save';
+const AUTOSAVE_MODE_KEY = 'origin-editor-autosave';
+const AUTOSAVE_DELAY_KEY = 'origin-editor-autosave-delay';
+const AUTOSAVE_DELAY_DEFAULT_MS = 1000;
 
 type DelayUnit = 'ms' | 's';
 
@@ -797,6 +802,15 @@ function GeneralSection() {
   const [formatOnSave, setFormatOnSave] = useState(
     () => localStorage.getItem(FORMAT_ON_SAVE_KEY) !== 'false'
   );
+  const [autoSaveMode, setAutoSaveMode] = useState<AutoSaveMode>(
+    () => (localStorage.getItem(AUTOSAVE_MODE_KEY) as AutoSaveMode | null) ?? 'off'
+  );
+  const [autoSaveDelay, setAutoSaveDelay] = useState(
+    () => parseInt(localStorage.getItem(AUTOSAVE_DELAY_KEY) ?? String(AUTOSAVE_DELAY_DEFAULT_MS), 10)
+  );
+  const [autoSaveDelayInput, setAutoSaveDelayInput] = useState(
+    () => String(parseInt(localStorage.getItem(AUTOSAVE_DELAY_KEY) ?? String(AUTOSAVE_DELAY_DEFAULT_MS), 10))
+  );
 
   function commitInput(raw: string) {
     const ms = displayToMs(raw, unit);
@@ -825,6 +839,24 @@ function GeneralSection() {
     const next = !formatOnSave;
     localStorage.setItem(FORMAT_ON_SAVE_KEY, next ? 'true' : 'false');
     setFormatOnSave(next);
+  }
+
+  function changeAutoSaveMode(next: AutoSaveMode) {
+    setAutoSaveMode(next);
+    localStorage.setItem(AUTOSAVE_MODE_KEY, next);
+    notifyAutoSaveChanged();
+  }
+
+  function commitAutoSaveDelay(raw: string) {
+    const ms = parseInt(raw, 10);
+    if (Number.isFinite(ms) && ms > 0) {
+      setAutoSaveDelay(ms);
+      setAutoSaveDelayInput(String(ms));
+      localStorage.setItem(AUTOSAVE_DELAY_KEY, String(ms));
+      notifyAutoSaveChanged();
+    } else {
+      setAutoSaveDelayInput(String(autoSaveDelay));
+    }
   }
 
   const inputStyle: React.CSSProperties = {
@@ -882,6 +914,42 @@ function GeneralSection() {
       >
         <Toggle on={formatOnSave} onToggle={toggleFormatOnSave} />
       </SettingRow>
+
+      <SettingRow
+        title="Auto Save"
+        description="Automatically save modified files. 'On Focus Change' saves when the editor loses focus; 'On Window Change' when the window does."
+      >
+        <select
+          value={autoSaveMode}
+          onChange={e => changeAutoSaveMode(e.target.value as AutoSaveMode)}
+          style={selectStyle}
+        >
+          <option value="off">Off</option>
+          <option value="afterDelay">After Delay</option>
+          <option value="onFocusChange">On Focus Change</option>
+          <option value="onWindowChange">On Window Change</option>
+        </select>
+      </SettingRow>
+
+      {autoSaveMode === 'afterDelay' && (
+        <SettingRow
+          title="Auto Save Delay"
+          description="Wait time after typing stops before saving the file."
+        >
+          <input
+            type="number"
+            min={100}
+            step={50}
+            value={autoSaveDelayInput}
+            onChange={e => setAutoSaveDelayInput(e.target.value)}
+            onBlur={e => { e.currentTarget.style.borderColor = "var(--origin-border-default)"; commitAutoSaveDelay(e.target.value); }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+            style={inputStyle}
+            onFocus={e => { e.currentTarget.style.borderColor = "var(--origin-fg-muted)"; }}
+          />
+          <span style={{ fontSize: "12px", color: "var(--origin-fg-muted)" }}>ms</span>
+        </SettingRow>
+      )}
     </div>
   );
 }
@@ -1442,7 +1510,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                   if (first) setSection(first.id);
                 }
               }}
-              placeholder="⌘F to search"
+              placeholder={`${formatShortcut("ctrl+f")} to search`}
               style={{
                 width: "100%",
                 padding: "5px 9px 5px 28px",

@@ -6,14 +6,20 @@ import {
   EditorView, keymap, lineNumbers,
   highlightActiveLineGutter, highlightActiveLine, drawSelection,
 } from '@codemirror/view';
-import { EditorState, Compartment, type Extension } from '@codemirror/state';
-import { undo as cmUndo, redo as cmRedo, selectAll as cmSelectAll, defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { EditorState, EditorSelection, Compartment, type Extension, type SelectionRange as EditorSelectionRange } from '@codemirror/state';
+import { undo as cmUndo, redo as cmRedo, selectAll as cmSelectAll, defaultKeymap, history, historyKeymap, indentWithTab,
+  moveLineUp as cmMoveLineUp, moveLineDown as cmMoveLineDown, copyLineUp as cmCopyLineUp, copyLineDown as cmCopyLineDown,
+  deleteLine as cmDeleteLine, toggleComment as cmToggleComment, indentMore as cmIndentMore, indentLess as cmIndentLess,
+  selectLine as cmSelectLine } from '@codemirror/commands';
 import {
   syntaxHighlighting, HighlightStyle,
   bracketMatching, indentOnInput,
   codeFolding, foldGutter, foldKeymap,
 } from '@codemirror/language';
-import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
+import { search, highlightSelectionMatches } from '@codemirror/search';
+import FindWidget from './FindWidget';
+import { FindController, DEFAULT_SEARCH_OPTIONS, type SearchOptions, type SearchStatus } from './findController';
+import { loadFindPrefs, saveFindPrefs } from '../../lib/findPrefs';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { stickyScroll } from '../../lib/stickyScroll';
 import { createBracketColorizationExtension } from '../../lib/bracketColorCm6';
@@ -21,8 +27,10 @@ import { tags as t } from '@lezer/highlight';
 import { unifiedMergeView } from '@codemirror/merge';
 import { createHunkControls } from '../../lib/hunkControls';
 import { createGitGutter, setGitBaselineEffect, relativeToRoot } from '../../lib/gitGutter';
+import { createBlameExtension, setBlameEffect } from '../../lib/gitBlameCm6';
 import { createConflictResolver } from '../../lib/gitConflict';
-import { gitFileHead, onGitChanged } from '../../lib/git';
+import { setActiveEditorView, getActiveEditorView } from '../../lib/commands/editorBridge';
+import { gitFileHead, gitBlame, onGitChanged } from '../../lib/git';
 import { getLanguageExtension, languageLabel } from './languageSupport';
 import { useExtensions } from '../../context/ExtensionsContext';
 import { createLspExtension, lspFormatDocument, lspPrepareRename, lspRename, lspCodeActions, lspExecuteCommand, uriToPath, type RawCodeAction } from '../../lib/lspCm6';
@@ -263,6 +271,158 @@ function minimapExtension(enabled: boolean): Extension {
   }));
 }
 
+// ── Helpers d'édition multi-curseurs / casse / tri ─────────────────────────────
+
+/** Mot (identifiant) sous le curseur — sélectionne ses bornes si non sélectionné. */
+function selectWordUnderCursor(view: EditorView): boolean {
+  const { state } = view;
+  const pos = state.selection.main.head;
+  const line = state.doc.lineAt(pos);
+  const text = line.text;
+  const rel = pos - line.from;
+  const isWord = (c: string) => /[A-Za-z0-9_]/.test(c);
+  let start = rel;
+  let end = rel;
+  while (start > 0 && isWord(text[start - 1])) start--;
+  while (end < text.length && isWord(text[end])) end++;
+  if (start === end) return false;
+  view.dispatch({ selection: { anchor: line.from + start, head: line.from + end } });
+  return true;
+}
+
+/** Occurrences d'un même texte dans le document (bornes absolues). */
+function findOccurrences(view: EditorView, needle: string): { from: number; to: number }[] {
+  const { doc } = view.state;
+  const out: { from: number; to: number }[] = [];
+  if (!needle) return out;
+  let idx = 0;
+  const full = doc.toString();
+  while (idx <= full.length - needle.length) {
+    const i = full.indexOf(needle, idx);
+    if (i === -1) break;
+    out.push({ from: i, to: i + needle.length });
+    idx = i + needle.length;
+    if (out.length > 5000) break; // borne défensive (évite un gel sur fichiers énormes)
+  }
+  return out;
+}
+
+/**
+ * Ajoute la sélection suivante du même texte. `multi=true` → conserve les
+ * sélections multiples (Alt+clic style) ; `multi=false` → simple remplacement.
+ */
+function addNextOccurrence(view: EditorView, multi: boolean): void {
+  const { state } = view;
+  const sel = state.selection.main;
+  if (sel.from === sel.to) return;
+  const needle = state.sliceDoc(sel.from, sel.to);
+  if (!needle || needle.includes('\n')) return;
+  const occ = findOccurrences(view, needle);
+  const selStrings = state.selection.ranges.map(r => `${r.from}:${r.to}`);
+  const next = occ.find(o => !selStrings.includes(`${o.from}:${o.to}`));
+  if (!next) return;
+  if (multi) {
+    view.dispatch({ selection: EditorSelection.create([...state.selection.ranges, EditorSelection.range(next.from, next.to)]) });
+  } else {
+    view.dispatch({ selection: { anchor: next.from, head: next.to }, effects: EditorView.scrollIntoView(next.from, { y: 'center' }) });
+  }
+  view.focus();
+}
+
+/** Sélectionne toutes les occurrences du texte sélectionné (Cmd+Shift+L). */
+function addAllOccurrences(view: EditorView): void {
+  const { state } = view;
+  // On part de la sélection primaire (ou de toutes les sélections actuelles).
+  const seeds = state.selection.ranges.filter(r => r.from !== r.to);
+  if (!seeds.length) return;
+  const needles = new Set(seeds.map(r => state.sliceDoc(r.from, r.to)));
+  const ranges = seeds.map(r => EditorSelection.range(r.from, r.to));
+  for (const needle of needles) {
+    if (!needle || needle.includes('\n')) continue;
+    for (const o of findOccurrences(view, needle)) {
+      if (ranges.some(r => r.from === o.from && r.to === o.to)) continue;
+      ranges.push(EditorSelection.range(o.from, o.to));
+    }
+  }
+  if (ranges.length > 1) {
+    view.dispatch({ selection: EditorSelection.create(ranges, 0) });
+    view.focus();
+  }
+}
+
+/** Ajoute un curseur sur la ligne ±`dir` (1 vers le bas, -1 vers le haut). */
+function addCursorLine(view: EditorView, dir: 1 | -1): void {
+  const { state } = view;
+  const ranges = state.selection.ranges.slice();
+  const last = dir === 1 ? ranges[ranges.length - 1] : ranges[0];
+  const lineNo = state.doc.lineAt(last.head).number + dir;
+  if (lineNo < 1 || lineNo > state.doc.lines) return;
+  const line = state.doc.line(lineNo);
+  const col = Math.min(last.head - state.doc.lineAt(last.head).from, line.length);
+  const anchor = line.from + col;
+  const added = EditorSelection.cursor(anchor);
+  const next = dir === 1 ? [...ranges, added] : [added, ...ranges];
+  view.dispatch({ selection: EditorSelection.create(next, dir === 1 ? next.length - 1 : 0), scrollIntoView: true });
+  view.focus();
+}
+
+/** Place un curseur en fin de chaque ligne sélectionnée (Cmd+Shift+L court). */
+function addCursorToLineEnds(view: EditorView): void {
+  const { state } = view;
+  const ranges: EditorSelectionRange[] = [];
+  const seen = new Set<number>();
+  for (const r of state.selection.ranges) {
+    const fromLine = state.doc.lineAt(r.from).number;
+    const toLine = state.doc.lineAt(r.to).number;
+    for (let n = fromLine; n <= toLine; n++) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      const line = state.doc.line(n);
+      ranges.push(EditorSelection.cursor(line.to));
+    }
+  }
+  if (ranges.length > 0) {
+    view.dispatch({ selection: EditorSelection.create(ranges, 0) });
+    view.focus();
+  }
+}
+
+/** Applique une transformation de texte à chaque sélection non vide. */
+function transformSelection(view: EditorView | null, fn: (s: string) => string): void {
+  if (!view) return;
+  const { state } = view;
+  const ranges = state.selection.ranges.filter(r => r.from !== r.to);
+  if (!ranges.length) return;
+  const changes = ranges.map(r => ({ from: r.from, to: r.to, insert: fn(state.sliceDoc(r.from, r.to)) }));
+  // Les changements doivent être triés par position croissante.
+  changes.sort((a, b) => a.from - b.from);
+  view.dispatch({ changes });
+  view.focus();
+}
+
+/** Inverse la casse caractère par caractère. */
+function toggleCase(s: string): string {
+  return Array.from(s).map(c => {
+    const up = c.toUpperCase();
+    const lo = c.toLowerCase();
+    if (c === up && c !== lo) return lo;
+    return up;
+  }).join('');
+}
+
+/** Trie les lignes couvertes par la sélection (ou la ligne du curseur). */
+function sortSelectedLines(view: EditorView, asc: boolean): void {
+  const { state } = view;
+  const sel = state.selection.main;
+  const fromLine = state.doc.lineAt(sel.from);
+  const toLine = state.doc.lineAt(sel.to);
+  const text = state.sliceDoc(fromLine.from, toLine.to);
+  const lines = text.split('\n');
+  lines.sort((a, b) => asc ? a.localeCompare(b) : b.localeCompare(a));
+  view.dispatch({ changes: { from: fromLine.from, to: toLine.to, insert: lines.join('\n') } });
+  view.focus();
+}
+
 // ── Public types ───────────────────────────────────────────────────────────────
 
 export interface EditorContext {
@@ -303,6 +463,59 @@ export interface EditorHandle {
    * transaction. Called by App.tsx whenever DebugContext session changes.
    */
   syncBreakpoints: (lines: number[], pausedLine: number | null) => void;
+  // ── Commandes d'édition « VS Code » ──────────────────────────────────────
+  /** Va à une ligne (1-based) et centre la vue, sans re-taper le curseur ailleurs. */
+  goToLine: (line: number, col?: number) => void;
+  /** Sélectionne la ligne entière à la position du curseur. */
+  selectLine: () => void;
+  /** Sélectionne la prochaine occurrence du mot/texte sélectionné (Cmd+D). */
+  selectNextOccurrence: () => void;
+  /** Sélectionne toutes les occurrences du mot sélectionné (Cmd+Shift+L). */
+  selectAllOccurrences: () => void;
+  /** Ajoute un curseur à la ligne suivante (Cmd/Ctrl+Alt+Down). */
+  addCursorBelow: () => void;
+  /** Ajoute un curseur à la ligne précédente (Cmd/Ctrl+Alt+Up). */
+  addCursorAbove: () => void;
+  /** Ajoute un curseur à la fin de la ligne, au-dessus de toutes les lignes sélectionnées. */
+  addCursorToLineEnd: () => void;
+  /** Duplique la ou les lignes sélectionnées vers le haut (Shift+Alt+Up). */
+  duplicateLineUp: () => void;
+  /** Duplique la ou les lignes sélectionnées vers le bas (Shift+Alt+Down). */
+  duplicateLineDown: () => void;
+  /** Monte la ou les lignes sélectionnées (Alt+Up). */
+  moveLineUp: () => void;
+  /** Descend la ou les lignes sélectionnées (Alt+Down). */
+  moveLineDown: () => void;
+  /** Supprime la ou les lignes sélectionnées (Cmd/Ctrl+Shift+K). */
+  deleteLines: () => void;
+  /** Insère une ligne vide sous le curseur (Cmd+Enter). */
+  insertLineBelow: () => void;
+  /** Insère une ligne vide au-dessus du curseur (Cmd+Shift+Enter). */
+  insertLineAbove: () => void;
+  /** Force la casse majuscule sur la sélection. */
+  transformToUpper: () => void;
+  /** Force la casse minuscule sur la sélection. */
+  transformToLower: () => void;
+  /** Transforme la sélection en Title Case. */
+  transformToTitle: () => void;
+  /** Inverse la casse de la sélection. */
+  transformToToggleCase: () => void;
+  /** Commente / décommente les lignes sélectionnées (Cmd+/). */
+  toggleComment: () => void;
+  /** Indente les lignes sélectionnées (Tab). */
+  indentMore: () => void;
+  /** Désindente les lignes sélectionnées (Shift+Tab). */
+  indentLess: () => void;
+  /** Trie les lignes sélectionnées par ordre croissant. */
+  sortLinesAsc: () => void;
+  /** Trie les lignes sélectionnées par ordre décroissant. */
+  sortLinesDesc: () => void;
+  /** Ouvre le panneau de recherche en mode remplacer. */
+  openReplace: () => void;
+  /** Sélectionne la prochaine occurrence en **ajoutant** un curseur (Cmd+/Ctrl+D). */
+  selectNextOccurrenceMulti: () => void;
+  /** Éclate chaque ligne sélectionnée en son propre curseur (Cmd+Shift+L). */
+  addCursorsToLineEnds: () => void;
 }
 
 interface Props {
@@ -310,6 +523,11 @@ interface Props {
   content: string;
   onChange?: (value: string) => void;
   onCursorChange?: (line: number, col: number) => void;
+  /**
+   * Notifie la ligne du haut de la zone visible à chaque défilement (et à
+   * chaque édition). Sert à synchroniser le scroll de la preview Markdown.
+   */
+  onScrollLine?: (topLine: number) => void;
   initialCursor?: { line: number; col: number };
   jumpTo?: { line: number; col: number; key: number };
   onAddToAiContext?: (ctx: EditorContext) => void;
@@ -344,7 +562,7 @@ interface Props {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const Editor = forwardRef<EditorHandle, Props>(function Editor(
-  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, onApplyWorkspaceEdits, lspGeneration, getAiCompletion, onToggleBreakpoint, minimap = true, stickyScroll: stickyScrollEnabled = true, bracketColorization = true }, ref
+  { path, content, onChange, onCursorChange, onScrollLine, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, onApplyWorkspaceEdits, lspGeneration, getAiCompletion, onToggleBreakpoint, minimap = true, stickyScroll: stickyScrollEnabled = true, bracketColorization = true }, ref
 ) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const viewRef        = useRef<EditorView | null>(null);
@@ -352,6 +570,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   onChangeRef.current  = onChange;
   const onCursorRef    = useRef(onCursorChange);
   onCursorRef.current  = onCursorChange;
+  const onScrollLineRef = useRef(onScrollLine);
+  onScrollLineRef.current = onScrollLine;
 
   // One Compartment per editor instance — lets us swap in/out the merge extension.
   const mergeCompartment = useRef(new Compartment());
@@ -369,6 +589,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   const stickyCompartment = useRef(new Compartment());
   // Colorisation des paires de parenthèses (rainbow brackets)
   const bracketColorCompartment = useRef(new Compartment());
+  // Annotation « blame » inline (auteur + date) sur la ligne du curseur
+  const blameCompartment = useRef(new Compartment());
   // Stable ref — trigger plugin reads .current so it always calls the latest function
   const getAiCompletionRef = useRef(getAiCompletion);
   getAiCompletionRef.current = getAiCompletion;
@@ -401,6 +623,37 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   // Ampoule (lightbulb) : visible quand la ligne du curseur porte un diagnostic,
   // signal qu'un quick fix LSP peut être disponible. Cliquer ouvre les code actions.
   const [showLightbulb, setShowLightbulb] = useState(false);
+
+  // ── Barre de recherche « Find » (façon VS Code) ──────────────────────────
+  // Le contrôleur porte la logique @codemirror/search ; l'état React ne sert
+  // qu'à l'affichage (ouverture, options, compteur).
+  const findControllerRef = useRef<FindController | null>(null);
+  if (!findControllerRef.current) findControllerRef.current = new FindController(() => viewRef.current);
+  const [findOpen, setFindOpen] = useState(false);
+  const findOpenRef = useRef(false);
+  findOpenRef.current = findOpen;
+  const [findReplaceOpen, setFindReplaceOpen] = useState(() => loadFindPrefs().replaceOpen);
+  const [findOptions, setFindOptions] = useState<SearchOptions>({ ...DEFAULT_SEARCH_OPTIONS });
+  const [findStatus, setFindStatus] = useState<SearchStatus>({ query: '', replace: '', label: '' });
+
+  /** Rafraîchit le compteur affiché depuis l'état courant de la vue. */
+  const refreshFindStatus = () => {
+    const ctrl = findControllerRef.current;
+    if (ctrl) setFindStatus(ctrl.getStatus());
+  };
+
+  /** Ouvre la barre « Find » (Ctrl+F) ou « Replace » (Ctrl+H). */
+  const openFindWidget = (withReplace: boolean) => {
+    const ctrl = findControllerRef.current;
+    if (!ctrl) return;
+    setFindOpen(true);
+    setFindReplaceOpen(withReplace);
+    // Préremplit avec la sélection (comportement VS Code : sélection → find).
+    ctrl.syncFromView();
+    ctrl.seedFromSelection();
+    setFindOptions(ctrl.getOptions());
+    setFindStatus(ctrl.getStatus());
+  };
 
   // Focus + sélection du texte dès l'ouverture de l'invite de renommage.
   useEffect(() => {
@@ -518,7 +771,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     undo() { if (viewRef.current) cmUndo(viewRef.current); },
     redo() { if (viewRef.current) cmRedo(viewRef.current); },
     selectAll() { if (viewRef.current) cmSelectAll(viewRef.current); },
-    openFind() { if (viewRef.current) openSearchPanel(viewRef.current); },
+    openFind() { openFindWidget(false); },
 
     formatDocument() { return runFormatDocument(); },
     getContent() { return viewRef.current?.state.doc.toString() ?? ''; },
@@ -565,6 +818,106 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       effects.push(setPausedLineEffect.of(pausedLine));
       view.dispatch({ effects });
     },
+
+    // ── Commandes d'édition « VS Code » ──────────────────────────────────────
+    goToLine(line, col) {
+      const view = viewRef.current;
+      if (!view) return;
+      const clamped = Math.min(Math.max(1, line), view.state.doc.lines);
+      const info = view.state.doc.line(clamped);
+      const pos = Math.min(info.from + (col ?? 0), info.to);
+      view.dispatch({
+        selection: { anchor: pos },
+        effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+      });
+      view.focus();
+    },
+
+    selectLine() { const view = viewRef.current; if (view) cmSelectLine(view); },
+
+    selectNextOccurrence() {
+      const view = viewRef.current;
+      if (!view) return;
+      // Sans sélection : sélectionne d'abord le mot sous le curseur.
+      if (view.state.selection.main.empty) {
+        selectWordUnderCursor(view);
+        return;
+      }
+      // Avec sélection : ajoute la prochaine occurrence comme curseur secondaire.
+      addNextOccurrence(view, false);
+    },
+
+    selectAllOccurrences() {
+      const view = viewRef.current;
+      if (!view) return;
+      if (view.state.selection.main.empty) selectWordUnderCursor(view);
+      addAllOccurrences(view);
+    },
+
+    addCursorBelow() { const view = viewRef.current; if (view) addCursorLine(view, 1); },
+    addCursorAbove() { const view = viewRef.current; if (view) addCursorLine(view, -1); },
+
+    addCursorToLineEnd() { const view = viewRef.current; if (view) addCursorToLineEnds(view); },
+
+    duplicateLineUp()   { const view = viewRef.current; if (view) cmCopyLineUp(view); },
+    duplicateLineDown() { const view = viewRef.current; if (view) cmCopyLineDown(view); },
+
+    moveLineUp()   { const view = viewRef.current; if (view) cmMoveLineUp(view); },
+    moveLineDown() { const view = viewRef.current; if (view) cmMoveLineDown(view); },
+
+    deleteLines() { const view = viewRef.current; if (view) cmDeleteLine(view); },
+
+    insertLineBelow() {
+      const view = viewRef.current;
+      if (!view) return;
+      const sel = view.state.selection.main;
+      const line = view.state.doc.lineAt(sel.to);
+      view.dispatch({
+        changes: { from: line.to, insert: '\n' },
+        selection: { anchor: line.to + 1 },
+        scrollIntoView: true,
+      });
+      view.focus();
+    },
+
+    insertLineAbove() {
+      const view = viewRef.current;
+      if (!view) return;
+      const sel = view.state.selection.main;
+      const line = view.state.doc.lineAt(sel.from);
+      view.dispatch({
+        changes: { from: line.from, insert: '\n' },
+        selection: { anchor: line.from },
+        scrollIntoView: true,
+      });
+      view.focus();
+    },
+
+    transformToUpper()      { transformSelection(viewRef.current, s => s.toUpperCase()); },
+    transformToLower()      { transformSelection(viewRef.current, s => s.toLowerCase()); },
+    transformToTitle()      { transformSelection(viewRef.current, s => s.replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase())); },
+    transformToToggleCase() { transformSelection(viewRef.current, s => toggleCase(s)); },
+
+    toggleComment() { const view = viewRef.current; if (view) cmToggleComment(view); },
+    indentMore()    { const view = viewRef.current; if (view) cmIndentMore(view); },
+    indentLess()    { const view = viewRef.current; if (view) cmIndentLess(view); },
+
+    sortLinesAsc()  { const view = viewRef.current; if (view) sortSelectedLines(view, true); },
+    sortLinesDesc() { const view = viewRef.current; if (view) sortSelectedLines(view, false); },
+
+    openReplace() {
+      // Barre custom avec la ligne de remplacement dépliée (Ctrl+H VS Code).
+      openFindWidget(true);
+    },
+
+    selectNextOccurrenceMulti() {
+      const view = viewRef.current;
+      if (!view) return;
+      if (view.state.selection.main.empty) selectWordUnderCursor(view);
+      else addNextOccurrence(view, true);
+    },
+
+    addCursorsToLineEnds() { const view = viewRef.current; if (view) addCursorToLineEnds(view); },
   }));
 
   function handleAcceptDiff() {
@@ -765,8 +1118,16 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         history(),
         syntaxHighlighting(originHighlight),
         search({ top: false }),
+        // Surbrillance des occurrences de la sélection + du mot sous le curseur
+        // (parité VS Code : `editor.occurrencesHighlight`). Seuil à 3 caractères
+        // comme VS Code pour éviter de surligner à chaque lettre tapée.
+        highlightSelectionMatches({ highlightWordAroundCursor: true, minSelectionLength: 3, wholeWords: true }),
         keymap.of([
-          ...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab, ...searchKeymap,
+          ...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab,
+          // Recherche/remplacement : barre custom façon VS Code (widget interne)
+          // au lieu du panneau natif de CodeMirror → on n'inclut pas searchKeymap.
+          { key: 'Mod-f', run: () => { openFindWidget(false); return true; } },
+          { key: 'Mod-h', run: () => { openFindWidget(true);  return true; } },
           // Raccourcis LSP — priorité au-dessus des défauts ci-dessus. Les commandes
           // passent par lspCommandsRef pour rester à jour sans recréer la vue.
           { key: 'F2',          run: () => { lspCommandsRef.current.rename();      return true; } },
@@ -789,6 +1150,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
             onChangeRef.current?.(update.state.doc.toString());
+            // Signale une édition pour le debounce de la sauvegarde automatique.
+            window.dispatchEvent(new Event('origin:autosave-change'));
           }
           if (update.docChanged || update.selectionSet) {
             const pos  = update.state.selection.main.head;
@@ -802,12 +1165,35 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
             if (update.state.doc.lineAt(from).number === curLine) onDiagLine = true;
           });
           setShowLightbulb(onDiagLine);
+          // Compteur « N of M » de la find widget : recalculé quand la barre est
+          // ouverte, à chaque changement de doc/sélection (matches/déplacement).
+          if (findOpenRef.current && (update.docChanged || update.selectionSet)) {
+            const ctrl = findControllerRef.current;
+            if (ctrl) setFindStatus(ctrl.getStatus());
+          }
         }),
       ],
     });
 
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
+    // Publie la vue CodeMirror courante pour les commandes hors éditeur
+    // (palette / raccourcis globaux) qui s'exécutent sans le focus.
+    setActiveEditorView(view);
+    // Le focus rend à nouveau cette vue « active » pour les commandes.
+    const onFocus = () => setActiveEditorView(view);
+    view.dom.addEventListener('focusin', onFocus);
+    // Perte de focus de l'éditeur : déclencheur du mode autosave 'onFocusChange'.
+    const onBlur = () => window.dispatchEvent(new Event('origin:editor-blur'));
+    view.dom.addEventListener('focusout', onBlur);
+    // Ligne du haut visible, publiée au défilement (synchronisation preview MD).
+    const emitScrollLine = () => {
+      const cb = onScrollLineRef.current;
+      if (!cb) return;
+      const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+      cb(view.state.doc.lineAt(block.from).number);
+    };
+    view.scrollDOM.addEventListener('scroll', emitScrollLine, { passive: true });
     // Signal the parent that the imperative handle is now usable.
     // useImperativeHandle runs before useEffect, so editorRef.current is already set.
     onReady?.();
@@ -824,6 +1210,10 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     view.focus();
 
     return () => {
+      view.dom.removeEventListener('focusin', onFocus);
+      view.dom.removeEventListener('focusout', onBlur);
+      view.scrollDOM.removeEventListener('scroll', emitScrollLine);
+      if (getActiveEditorView() === view) setActiveEditorView(null);
       view.destroy();
       viewRef.current = null;
       setDiffPending(false);
@@ -961,6 +1351,40 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       off();
       viewRef.current?.dispatch({ effects: gitComp.reconfigure([]) });
       viewRef.current?.dispatch({ effects: conflictComp.reconfigure([]) });
+    };
+  }, [path, rootPath]);
+
+  // Annotation « blame » inline — auteur + date affichés sur la ligne du curseur.
+  // Comme VS Code : une seule annotation visible à la fois, recalculée au
+  // déplacement du curseur. Rechargée au changement de fichier et à chaque
+  // opération git signalée par `onGitChanged`.
+  useEffect(() => {
+    if (!rootPath || path.startsWith('__')) return;
+    const view = viewRef.current;
+    if (!view) return;
+    const root = rootPath;
+    const rel = relativeToRoot(root, path);
+    if (rel === null) return;
+    const relPath: string = rel;
+
+    const comp = blameCompartment.current;
+    view.dispatch({ effects: comp.reconfigure(createBlameExtension()) });
+
+    let cancelled = false;
+    async function loadBlame() {
+      const entries = await gitBlame(root, relPath);
+      if (cancelled) return;
+      const v = viewRef.current;
+      if (!v) return;
+      v.dispatch({ effects: setBlameEffect.of(entries) });
+    }
+    void loadBlame();
+    const off = onGitChanged(() => { void loadBlame(); });
+
+    return () => {
+      cancelled = true;
+      off();
+      viewRef.current?.dispatch({ effects: comp.reconfigure([]) });
     };
   }, [path, rootPath]);
 
@@ -1151,6 +1575,24 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
               }}
             />
           </div>
+        )}
+
+        {/* Barre de recherche/remplacement façon VS Code (Ctrl+F / Ctrl+H) */}
+        {findOpen && findControllerRef.current && (
+          <FindWidget
+            options={findOptions}
+            replaceOpen={findReplaceOpen}
+            status={findStatus}
+            onChangeOptions={(patch) => { findControllerRef.current!.setOptions(patch); setFindOptions(findControllerRef.current!.getOptions()); refreshFindStatus(); }}
+            onChangeQuery={(value) => { findControllerRef.current!.setQuery(value); refreshFindStatus(); }}
+            onChangeReplace={(value) => { findControllerRef.current!.setReplace(value); refreshFindStatus(); }}
+            onFindNext={() => { findControllerRef.current!.next(); viewRef.current?.focus(); }}
+            onFindPrevious={() => { findControllerRef.current!.previous(); viewRef.current?.focus(); }}
+            onReplaceNext={() => { findControllerRef.current!.replaceNext(); refreshFindStatus(); viewRef.current?.focus(); }}
+            onReplaceAll={() => { findControllerRef.current!.replaceAll(); refreshFindStatus(); viewRef.current?.focus(); }}
+            onToggleReplace={() => setFindReplaceOpen(v => { saveFindPrefs({ replaceOpen: !v }); return !v; })}
+            onClose={() => { setFindOpen(false); viewRef.current?.focus(); }}
+          />
         )}
       </div>
 

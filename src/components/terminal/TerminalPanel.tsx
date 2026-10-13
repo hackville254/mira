@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
 import { terminalShellName } from "../../lib/terminal";
+import { formatShortcut } from "../../lib/platform";
 import TerminalInstance from "./Terminal";
 import ProblemsPanel from "../problems/ProblemsPanel";
 import OutputPanel from "../output/OutputPanel";
@@ -414,7 +415,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         )}
 
         {/* Close panel */}
-        <PanelBtn onClick={onClose} title="Close Panel (Ctrl+`)">
+        <PanelBtn onClick={onClose} title={`Close Panel (${formatShortcut('ctrl+`')})`}>
           <X size={12} />
         </PanelBtn>
       </div>

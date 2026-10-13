@@ -254,6 +254,7 @@ export function useTabs() {
     fileTreeVersion,
     activeTabRef,
     fileContentsRef,
+    tabsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,

@@ -676,3 +676,101 @@ pub fn git_stash_drop(path: String, index: usize) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
+
+// ── Blame ─────────────────────────────────────────────────────────────────────
+
+/// Annotation d'une ligne : commit, auteur, date (epoch) et résumé.
+#[derive(serde::Serialize)]
+pub struct BlameLine {
+    line:    u32,
+    hash:    String,
+    author:  String,
+    /// Timestamp Unix (secondes) du commit, 0 si inconnu.
+    time:    i64,
+    summary: String,
+}
+
+/// Retourne l'annotation blame pour un fichier (une entrée par ligne).
+/// `Ok(vec![])` si le fichier n'est pas suivi ou si le dépôt n'a pas de commits.
+/// `Err` uniquement si `path` n'est pas un dépôt git valide.
+#[tauri::command]
+pub fn git_blame(path: String, file: String) -> Result<Vec<BlameLine>, String> {
+    validate_rel_path(&file)?;
+
+    let inside = git_cmd()
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !inside.status.success()
+        || String::from_utf8_lossy(&inside.stdout).trim() != "true"
+    {
+        return Err("not a git repository".to_string());
+    }
+
+    // `--line-porcelain` répète les métadonnées pour chaque ligne, ce qui
+    // simplifie le parsing au prix d'une sortie plus verbeuse (~acceptable pour
+    // un fichier source). On n'anote jamais plus de 20k lignes (gros fichiers).
+    let out = git_cmd()
+        .args(["blame", "--line-porcelain", "--", &file.replace('\\', "/")])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // Fichier non suivi, ou pas encore commité : pas d'annotation.
+        return Ok(vec![]);
+    }
+
+    Ok(parse_blame(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parse la sortie de `git blame --line-porcelain`. Chaque groupe commence par
+/// une ligne d'en-tête `<hash> <orig-line> <final-line> <count>` suivie de
+/// métadonnées `key value`, jusqu'à la ligne de contenu préfixée par `\t`.
+fn parse_blame(text: &str) -> Vec<BlameLine> {
+    const MAX_BLAME_LINES: usize = 20_000;
+    let mut out: Vec<BlameLine> = Vec::new();
+    let mut hash   = String::new();
+    let mut final_line: u32 = 0;
+    let mut author = String::new();
+    let mut time: i64 = 0;
+    let mut summary = String::new();
+
+    for raw in text.lines() {
+        if out.len() >= MAX_BLAME_LINES { break; }
+        if let Some(content) = raw.strip_prefix('\t') {
+            // Ligne de contenu : clôt le groupe courant.
+            let _ = content;
+            out.push(BlameLine {
+                line: final_line,
+                hash: hash.clone(),
+                author: author.clone(),
+                time,
+                summary: summary.clone(),
+            });
+            continue;
+        }
+        // En-tête de groupe : commence par 40 hexadécimaux. Les autres lignes
+        // sont des métadonnées `key value`.
+        let is_header = raw.len() >= 40
+            && raw.as_bytes()[40] == b' '
+            && raw[..40].bytes().all(|b| b.is_ascii_hexdigit());
+        if is_header {
+            let mut parts = raw.split(' ');
+            hash = parts.next().unwrap_or("").to_string();
+            let _orig = parts.next();
+            final_line = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            // Réinitialise les champs du nouveau groupe.
+            author.clear();
+            time = 0;
+            summary.clear();
+        } else if let Some(v) = raw.strip_prefix("author ") {
+            author = v.to_string();
+        } else if let Some(v) = raw.strip_prefix("author-time ") {
+            time = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = raw.strip_prefix("summary ") {
+            summary = v.to_string();
+        }
+    }
+    out
+}

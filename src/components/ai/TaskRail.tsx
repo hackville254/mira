@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@iconify/react";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { lsForPath } from "../../lib/sessionStore";
+import { formatShortcut } from "../../lib/platform";
 import type { DbSession } from "../../lib/db";
 
 const MIN_WIDTH = 180;
@@ -132,7 +133,7 @@ export default function TaskRail({
           >
             <Icon icon="lucide:plus" width={14} />
             <span style={{ flex: 1, textAlign: "left" }}>New Task</span>
-            <span style={{ fontSize: "10px", color: "var(--origin-fg-subtle)" }}>⌘⇧N</span>
+            <span style={{ fontSize: "10px", color: "var(--origin-fg-subtle)" }}>{formatShortcut("ctrl+shift+n")}</span>
           </button>
         </div>
       </div>

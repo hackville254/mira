@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Sparkles, GitBranch, Check, RefreshCw, MoreHorizontal, ChevronDown, ChevronRight, Plus, Minus, Undo2, CloudDownload } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from './ui/Toast';
+import { formatShortcut } from '../lib/platform';
 import {
   getStatusFiles, getGitLogFull, gitCommit, gitCommitPush,
   gitStage, gitStageAll, gitUnstage, gitDiscard,
@@ -419,7 +420,7 @@ export default function SourceTreePanel() {
                   value={title}
                   onChange={e => setTitle(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && canCommit && commit('commit')}
-                  placeholder="(⌘↵ to comm...)"
+                  placeholder={`(${formatShortcut('ctrl+enter')} to comm...)`}
                   style={{
                     width: '100%', boxSizing: 'border-box',
                     background: 'var(--origin-bg-base)',
@@ -627,6 +628,67 @@ export default function SourceTreePanel() {
             <p style={{ margin: 0, fontSize: 12, color: 'var(--origin-fg-subtle)' }}>
               No review in progress.
             </p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Stashes section ────────────────────────────────────────────── */}
+      <div style={{ borderBottom: '1px solid var(--origin-border-default)' }}>
+        <div
+          onClick={() => setStashesOpen(o => !o)}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px 4px', cursor: 'pointer' }}
+        >
+          <span style={{ display: 'flex', color: 'var(--origin-fg-muted)' }}>
+            {stashesOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--origin-fg-default)' }}>Stashes</span>
+          {stashes.length > 0 && (
+            <span style={{ fontSize: 10, color: 'var(--origin-fg-subtle)' }}>{stashes.length}</span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            title="Stash changes"
+            style={iconBtn}
+            onClick={e => { e.stopPropagation(); stashChanges(); }}
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        {stashesOpen && (
+          <div style={{ paddingBottom: 4 }}>
+            {stashes.length === 0 ? (
+              <p style={{ margin: 0, padding: '4px 12px 8px', fontSize: 12, color: 'var(--origin-fg-subtle)' }}>
+                No stashes
+              </p>
+            ) : stashes.map(s => (
+              <div
+                key={s.index}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 20px' }}
+                onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--origin-bg-hover)'; }}
+                onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 12, color: 'var(--origin-fg-default)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {s.message || `stash@{${s.index}}`}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--origin-fg-subtle)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {`stash@{${s.index}} · ${s.branch}`}
+                  </div>
+                </div>
+                <button title="Apply stash (keep in list)" style={rowBtn} onClick={() => applyStash(s.index)}>
+                  <CloudDownload size={13} />
+                </button>
+                <button title="Pop stash (apply + remove)" style={rowBtn} onClick={() => popStash(s.index)}>
+                  <Undo2 size={13} />
+                </button>
+                <button title="Drop stash" style={rowBtn} onClick={() => dropStash(s.index)}>
+                  <Minus size={13} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </div>

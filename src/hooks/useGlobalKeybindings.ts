@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCommandKeyMap, matchesEvent } from "../lib/keybindings";
 import { getCommand as getRegisteredCommand, executeCommand as runRegisteredCommand } from "../lib/extensions/registry";
+import { getCommand as getRuntimeCommand, runCommand as runRuntimeCommand } from "../lib/commands/registry";
 
 export interface GlobalHandlers {
   // Always provided
@@ -60,47 +61,49 @@ export function useGlobalKeybindings(handlers: GlobalHandlers) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // Respecte les raccourcis déjà consommés en amont (ex. keymap CodeMirror) :
+      // évite d'exécuter deux fois la même action (moveLineUp, etc.).
+      if (e.defaultPrevented) return;
+
       // Read the live keymap on every event so custom bindings apply immediately
       // without a page reload (localStorage is synchronous).
       const km = getCommandKeyMap();
 
-      // Build the handler dispatch table — maps command ID → action fn
-      const dispatch: Record<string, (() => void) | undefined> = {
-        "origin.save":             () => h.current.saveActive(),
-        "origin.toggleTerminal":   () => h.current.toggleTerminal(),
-        "origin.togglePalette":    () => h.current.togglePalette(),
-        "origin.toggleSettings":   () => h.current.toggleSettings(),
+      // Handlers historiques (rétro-compat) pour les commandes sans entrée dans
+      // la registry runtime. La registry runtime a priorité : elle couvre un
+      // sur-ensemble des commandes (édition avancée, multi-curseurs, lignes…).
+      const legacyDispatch: Record<string, (() => void) | undefined> = {
         "origin.toggleFullscreen": () => toggleFullscreen(),
-        "origin.newFile":          () => h.current.newFile?.(),
-        "origin.openFile":         () => h.current.openFile?.(),
-        "origin.closeTab":         () => h.current.closeTab?.(),
-        "origin.toggleSidebar":    () => h.current.toggleSidebar?.(),
-        "origin.toggleSplit":      () => h.current.toggleSplit?.(),
-        "origin.zoomIn":           () => h.current.zoomIn?.(),
-        "origin.zoomOut":          () => h.current.zoomOut?.(),
-        "origin.zoomReset":        () => h.current.zoomReset?.(),
-        "origin.runFile":          () => h.current.runFile?.(),
-        "origin.startDebug":       () => h.current.startDebug?.(),
-        "origin.stopDebug":        () => h.current.stopDebug?.(),
-        "origin.stepOver":         () => h.current.stepOver?.(),
-        "origin.stepInto":         () => h.current.stepInto?.(),
-        "origin.stepOut":          () => h.current.stepOut?.(),
         "origin.toggleBreakpoint": () => h.current.toggleBreakpoint?.(),
       };
 
       for (const [cmdId, keyStr] of Object.entries(km)) {
         if (!keyStr) continue;
-        // Built-in handlers first; otherwise fall back to an extension command
-        // of the same id (Level 2 commands can be bound exactly like core ones).
-        const handler = dispatch[cmdId];
-        const isExtension = !handler && getRegisteredCommand(cmdId) !== undefined;
-        if (!handler && !isExtension) continue;
-        if (matchesEvent(e, keyStr)) {
+        if (!matchesEvent(e, keyStr)) continue;
+
+        // 1) Registry runtime (cœur IDE) — source de vérité principale.
+        const runtime = getRuntimeCommand(cmdId);
+        if (runtime) {
           e.preventDefault();
-          if (handler) handler();
-          else void runRegisteredCommand(cmdId).catch((err: unknown) => {
+          void runRuntimeCommand(cmdId);
+          return;
+        }
+
+        // 2) Commandes d'extension (Level 2).
+        const isExtension = getRegisteredCommand(cmdId) !== undefined;
+        if (isExtension) {
+          e.preventDefault();
+          void runRegisteredCommand(cmdId).catch((err: unknown) => {
             console.error(`[extension] command "${cmdId}" failed:`, err);
           });
+          return;
+        }
+
+        // 3) Handlers historiques restants.
+        const handler = legacyDispatch[cmdId];
+        if (handler) {
+          e.preventDefault();
+          handler();
           return;
         }
       }

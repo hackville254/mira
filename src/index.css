@@ -132,3 +132,17 @@ html[data-density="compact"] [data-origin-tree-row] {
 .cm-editor.cm-focused .cm-selectionBackground {
   background-color: var(--origin-bg-selection-focused) !important;
 }
+
+/* Occurrences de la sélection / du mot sous le curseur (highlightSelectionMatches).
+   VS Code utilise un encadré discret (editor.selectionHighlightBorder) : on
+   réplique avec une teinte d'accent + une fine bordure bleue. */
+.cm-selectionMatch {
+  background-color: color-mix(in srgb, var(--origin-accent-blue) 18%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 55%, transparent);
+  border-radius: 1px;
+}
+.cm-selectionMatch-main {
+  background-color: color-mix(in srgb, var(--origin-accent-blue) 30%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 70%, transparent);
+  border-radius: 1px;
+}

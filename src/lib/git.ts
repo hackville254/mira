@@ -153,6 +153,22 @@ export async function gitStashDrop(path: string, index: number): Promise<void> {
   await invoke('git_stash_drop', { path, index });
 }
 
+// ── Blame ─────────────────────────────────────────────────────────────────────
+
+export interface BlameLine {
+  line: number;
+  hash: string;
+  author: string;
+  /** Timestamp Unix (secondes). */
+  time: number;
+  summary: string;
+}
+
+/** Récupère l'annotation blame d'un fichier (relatif à la racine du dépôt). */
+export async function gitBlame(root: string, relPath: string): Promise<BlameLine[]> {
+  return invoke<BlameLine[]>('git_blame', { path: root, file: relPath }).catch(() => []);
+}
+
 // ── Bus d'événements git (rafraîchissement du gutter) ─────────────────────────
 
 const GIT_CHANGED_EVENT = 'origin:git-changed';

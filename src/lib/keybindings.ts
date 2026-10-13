@@ -34,8 +34,29 @@ export const COMMANDS: CommandDef[] = [
   { id: "origin.editorCopy",     label: "Copy",                 category: "Edit",    defaultKey: "ctrl+c" },
   { id: "origin.editorPaste",    label: "Paste",                category: "Edit",    defaultKey: "ctrl+v" },
   { id: "origin.editorSelectAll",label: "Select All",           category: "Edit",    defaultKey: "ctrl+a" },
+  // Go
+  { id: "origin.goToLine",       label: "Go to Line/Column",    category: "Go",      defaultKey: "ctrl+g" },
+  { id: "origin.gotoSymbol",     label: "Go to Symbol in File", category: "Go",      defaultKey: "ctrl+shift+o" },
+  // Selection (multi-curseurs)
+  { id: "editor.selectNextOccurrence",  label: "Select Next Occurrence",  category: "Selection", defaultKey: "ctrl+d" },
+  { id: "editor.selectAllOccurrences",  label: "Select All Occurrences",  category: "Selection", defaultKey: "ctrl+shift+l" },
+  { id: "editor.addCursorBelow",        label: "Add Cursor Below",        category: "Selection", defaultKey: "ctrl+alt+down" },
+  { id: "editor.addCursorAbove",        label: "Add Cursor Above",        category: "Selection", defaultKey: "ctrl+alt+up" },
+  { id: "editor.addCursorToLineEnd",    label: "Add Cursors to Line Ends",category: "Selection", defaultKey: "ctrl+shift+alt+down" },
+  // Lines
+  { id: "editor.duplicateLineUp",   label: "Duplicate Line Up",   category: "Lines", defaultKey: "shift+alt+up" },
+  { id: "editor.duplicateLineDown", label: "Duplicate Line Down", category: "Lines", defaultKey: "shift+alt+down" },
+  { id: "editor.moveLineUp",        label: "Move Line Up",        category: "Lines", defaultKey: "alt+up" },
+  { id: "editor.moveLineDown",      label: "Move Line Down",      category: "Lines", defaultKey: "alt+down" },
+  { id: "editor.deleteLines",       label: "Delete Line",         category: "Lines", defaultKey: "ctrl+shift+k" },
+  { id: "editor.insertLineBelow",   label: "Insert Line Below",   category: "Lines", defaultKey: "ctrl+enter" },
+  { id: "editor.insertLineAbove",   label: "Insert Line Above",   category: "Lines", defaultKey: "ctrl+shift+enter" },
+  { id: "editor.toggleComment",     label: "Toggle Line Comment", category: "Lines", defaultKey: "ctrl+/" },
+  { id: "editor.indentMore",        label: "Indent Lines",        category: "Lines", defaultKey: "ctrl+]" },
+  { id: "editor.indentLess",        label: "Outdent Lines",       category: "Lines", defaultKey: "ctrl+[" },
   // View
-  { id: "origin.togglePalette",  label: "Command Palette",      category: "View",    defaultKey: "ctrl+p" },
+  { id: "origin.quickOpen",      label: "Go to File…",         category: "Go",      defaultKey: "ctrl+p" },
+  { id: "origin.showCommands",   label: "Show All Commands",   category: "View",    defaultKey: "ctrl+shift+p" },
   { id: "origin.toggleSidebar",  label: "Toggle Sidebar",       category: "View",    defaultKey: "ctrl+b" },
   { id: "origin.toggleSplit",    label: "Split Editor",         category: "View",    defaultKey: "ctrl+\\" },
   { id: "origin.toggleTerminal", label: "Toggle Terminal",      category: "View",    defaultKey: "ctrl+`" },
@@ -44,8 +65,15 @@ export const COMMANDS: CommandDef[] = [
   { id: "origin.zoomIn",         label: "Zoom In",              category: "View",    defaultKey: "ctrl+=" },
   { id: "origin.zoomOut",        label: "Zoom Out",             category: "View",    defaultKey: "ctrl+-" },
   { id: "origin.zoomReset",      label: "Reset Zoom",           category: "View",    defaultKey: "ctrl+0" },
+  { id: "origin.openMarkdownPreview", label: "Open Markdown Preview", category: "View", defaultKey: "ctrl+shift+v" },
   // Run
   { id: "origin.runFile",        label: "Run Active File",      category: "Run",     defaultKey: "ctrl+f5" },
+  // Terminal
+  { id: "origin.newTerminal",    label: "Create New Terminal",  category: "Terminal", defaultKey: "ctrl+shift+`" },
+  // Developer
+  { id: "origin.reloadWindow",   label: "Reload Window",        category: "Developer", defaultKey: "ctrl+r" },
+  // Window
+  { id: "origin.closeWindow",    label: "Close Window",         category: "Window",  defaultKey: "ctrl+shift+w" },
   // Debug
   { id: "origin.startDebug",     label: "Start Debugging",      category: "Debug",   defaultKey: "f5" },
   { id: "origin.stopDebug",      label: "Stop Debugging",       category: "Debug",   defaultKey: "shift+f5" },
@@ -176,6 +204,9 @@ const VSCODE_CMD_MAP: Record<string, string> = {
   "workbench.action.debug.stepInto":           "origin.stepInto",
   "workbench.action.debug.stepOut":            "origin.stepOut",
   "editor.debug.action.toggleBreakpoint":      "origin.toggleBreakpoint",
+  "workbench.action.reloadWindow":             "origin.reloadWindow",
+  "workbench.action.terminal.new":             "origin.newTerminal",
+  "workbench.action.closeWindow":              "origin.closeWindow",
 };
 
 interface ImportResult {

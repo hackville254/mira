@@ -5,6 +5,270 @@
 
 ---
 
+### [2026-10-13T18:55] | Search : aperçu du remplacement (occurrence barrée + remplacement) façon VS Code
+
+- **Contexte :**
+  Signalement utilisateur : « le remplace ne fait pas comme sur vscode en barrant le ou les termes à remplacer ». En effet, le panneau n'affichait que l'occurrence trouvée surlignée en bleu, sans montrer le résultat du remplacement. VS Code, dès que la ligne Replace est dépliée et non vide, **barre l'occurrence d'origine** et affiche le **texte de remplacement** à sa suite, dans chaque ligne de résultat.
+
+- **Modifications effectuées :**
+  - **`src/components/SearchPanel.tsx`** : `MatchLine` reçoit trois props (`replacement`, `replaceOpen`, `preserveCase`) ; l'aperçu `showDiff` s'active dès que la ligne Replace est ouverte et le remplacement non vide : l'occurrence originale passe en **rouge barré** (`textDecoration: 'line-through'`) et le remplacement s'affiche en **vert** juste après. Nouveau helper front `applyPreserveCase` (miroir de la version Rust) pour que l'aperçu respecte la casse si le toggle *AB* est actif. Aucun changement si Replace est replié ou vide (comportement bleu inchangé).
+
+- **Décisions Techniques :**
+  - **Aperçu purement front** : pas d'aller-retour backend pour afficher ce que donnerait le remplacement — le calcul local (slice + `applyPreserveCase`) est trivial et instantané, cohérent avec le backend sans le solliciter.
+  - **Couleurs du thème** : rouge `--origin-accent-red` / vert `--origin-accent-green` (avec fallback), pour rester aligné sur la palette git.added/rewritten déjà utilisée ailleurs.
+
+- **Impacts & Dépendances :**
+  - `MatchLine` a trois props obligatoires supplémentaires : tout nouvel appelant doit les fournir.
+  - Aucun impact backend ni sur les tests (rendu d'affichage uniquement).
+
+- **Prochaines étapes :**
+  - Envisager l'aperçu du remplacement dans l'onglet éditeur lui-même (overlay CM6) — non demandé pour l'instant.
+
+---
+
+### [2026-10-13T18:35] | Search : parité VS Code complète (replace par occurrence, Preserve Case, include/exclude) + sélection éditeur bleue VS Code
+
+- **Contexte :**
+  Deux manques de parité VS Code signalés par l'utilisateur. (1) Le panneau **Search** n'avait qu'un remplacement global : le champ Replace était mal placé (pas sous le champ Search, chevron absent), il manquait le bouton *Replace All*, le remplacement d'**une seule occurrence**, les boutons *Replace*/*Dismiss* au survol d'un résultat, le toggle *Preserve Case* et le champ *files to include*. (2) Dans l'éditeur, la **sélection de texte** était un gris translucide (blanc en sombre, noir en clair) au lieu du bleu VS Code, et les occurrences du mot sélectionné n'avaient ni bordure ni seuil de surlignage.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/search.rs`** : `ReplaceRequest` étendu (`includes: Option<String>`, `preserve_case: bool`, tous deux `#[serde(default)]`) ; nouvelle requête `ReplaceOneRequest { path, query, replacement, options, line, col, preserve_case }` + commande **`replace_one`** (remplace une occurrence ciblée par ligne/col sans reparser tout le fichier) ; fonction `apply_preserve_case` (minuscule→minuscule, majuscule→majuscule, casse mixte→1ʳᵉ lettre majuscule) ; `expand_replacement` prend un 4ᵉ param `preserve_case` ; `walk_search` filtre désormais aussi par `includes` via le nouveau helper `is_included` ; la commande `search_in_files` accepte `includes`. Tests ajoutés (`preserve_case_all_lower/_all_upper/_title/_no_alpha_is_verbatim`).
+  - **`src-tauri/src/lib.rs`** : enregistrement de la commande `search::replace_one`.
+  - **`src/lib/search.ts`** : `searchInFiles` accepte `includes` (5ᵉ arg) ; `replaceInFiles` accepte `preserveCase` + `includes` ; nouvelle `replaceOne(path, query, replacement, line, col, options, preserveCase)`.
+  - **`src/components/SearchPanel.tsx`** (réécrit) : chevron *Replace* à gauche du champ Search ; ligne Replace alignée sous le champ (espace de 20 px à gauche) avec toggle **AB** (*Preserve Case*) + bouton *Replace All* ; lignes *files to include* / *files to exclude* ; boutons **Replace** + **Dismiss (X)** au survol de chaque résultat ; bouton *Replace All* par fichier dans l'en-tête de groupe ; navigation clavier (`Ctrl+Alt+Enter` = Replace All, `Enter` = ouvrir le 1ᵉʳ résultat) ; filtre local `dismissed`.
+  - **`src/components/editor/Editor.tsx`** : `highlightSelectionMatches({ highlightWordAroundCursor: true, minSelectionLength: 3, wholeWords: true })` — seuil à **3 caractères** comme VS Code.
+  - **`src/index.css`** : `.cm-selectionBackground` / `.cm-editor.cm-focused .cm-selectionBackground` câblés sur `--origin-bg-selection` / `--origin-bg-selection-focused` (avec `!important`) ; `.cm-selectionMatch` / `.cm-selectionMatch-main` reçoivent un fond + une **bordure** bleue (`color-mix` sur `accent-blue`).
+  - **`src/themes/origin-dark/theme.json`** : `bg.selection = #1d3e5e`, `bg.selection-focused = #264f78` (bleu VS Code) ; **`origin-light/theme.json`** : `#add6ff80` / `#add6ff`.
+
+- **Décisions Techniques :**
+  - **Remplacement d'une occurrence ciblé par (ligne, col)** plutôt qu'une ré-écriture complète : `replace_one` ne touche que la ligne visée (`split_inclusive('\n')` + `find_iter`), ce qui évite un reparse coûteux et réduit la fenêtre de corruption en cas de fichier modifié entre-temps ; un match introuvable renvoie `false` (le front affiche « Match no longer exists »).
+  - **Preserve Case appliqué au littéral uniquement** : un remplacement regex porte déjà son intention (groupes/`$1`) ; y superposer un calque de casse serait ambigu. Le comportement littéral reprend celui de VS Code.
+  - **`includes` réutilise `compile_excludes`** : la grammaire glob est identique ; `is_included` retourne `true` sur liste vide (pas de filtre), d'où l'absence de régression pour les appels existants (palette de commandes, etc.).
+  - **Sélection bleue via variables de thème** (et non valeurs codées en dur) : la couleur suit le système de thème `--origin-*` et reste cohérente entre dark/light.
+
+- **Impacts & Dépendances :**
+  - `searchInFiles` a un 5ᵉ argument **optionnel** (`includes = ''`) : les appels existants ne changent pas.
+  - Nouvelle commande backend `replace_one` : tout nouvel appelant front doit passer par `replaceOne()` de `src/lib/search.ts`.
+  - Les clés de thème `bg.selection` / `bg.selection-focused` sont désormais réellement bleues — sans effet ailleurs (uniquement éditeur).
+
+- **Prochaines étapes :**
+  - Surveiller la sync éventuelle entre `dismissed` local et un rechargement de fichiers (le set est réinitialisé à chaque nouvelle recherche, comportement voulu).
+  - Navigation F3 / Shift+F3 entre résultats (optionnel, non confirmé comme nécessaire).
+
+---
+
+### [2026-10-13T17:48] | Auto Save (façon VS Code) + prévisualisation Markdown enrichie (raccourci + sync scroll)
+
+- **Contexte :**
+  Deux manques de parité VS Code. (1) **Aucune sauvegarde automatique** n'existait : chaque édition restait « dirty » jusqu'à un Ctrl+S manuel. (2) La **prévisualisation Markdown** existait déjà à ~90 % (composant `MarkdownPreviewPane`, ouverture d'onglet `openMarkdownPreviewTab`, routage `EditorArea`, entrée menu contextuel explorateur + palette) mais il manquait le **raccourci clavier**, une **commande palette globale** (indépendante de l'onglet actif) et la **synchronisation du scroll** éditeur ↔ aperçu.
+
+- **Modifications effectuées :**
+  - **`src/lib/autoSavePrefs.ts` (nouveau)** : store localStorage des préférences — clés `origin-editor-autosave` (mode) et `origin-editor-autosave-delay` (ms). `AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange'` (les trois modes de VS Code), défaut `{ mode: 'off', delayMs: 1000 }`, plus `AUTO_SAVE_CHANGED_EVENT` + `notifyAutoSaveChanged()` pour propager un changement de préférence sans rechargement.
+  - **`src/hooks/useAutoSave.ts` (nouveau)** : moteur de la sauvegarde automatique. Lit les refs `tabsRef`/`fileContentsRef`/`activeTabRef` de `useTabs` et appelle `handleSave`. Filtre les onglets `isDirty && !isUntitled && !path.startsWith('__')` (exclut les onglets virtuels md-preview/diff). `afterDelay` = debounce sur l'événement `origin:autosave-change` ; `onFocusChange` = sauvegarde sur `origin:editor-blur` ; `onWindowChange` = sauvegarde sur `window blur`.
+  - **`src/components/editor/Editor.tsx`** : émet `origin:autosave-change` à chaque `docChanged` ; ajoute la prop `onScrollLine` + listener `scroll` sur `view.scrollDOM` (`view.lineBlockAtHeight(scrollTop)` → numéro de 1ʳᵉ ligne visible) ; émet `origin:editor-blur` sur `focusout`.
+  - **`src/components/editor/MarkdownPreviewPane.tsx`** : props `syncLine`/`syncTotalLines` + `useEffect` de mapping **par ratio** `(syncLine-1)/(total-1)` → `scrollTop`, avec verrou `programmaticScroll` relâché via `requestAnimationFrame` (anti-boucle).
+  - **`src/components/editor/EditorArea.tsx`** : props `topLines`/`onScrollLine`, passe `syncLine`/`syncTotalLines` au bloc `__mdpreview__` et relaie `onScrollLine` depuis `<Editor>`.
+  - **`src/App.tsx`** : état `topLines` câblé sur les **deux** `EditorArea` (principal + split) ; appel `useAutoSave(...)` ; commande runtime `origin.openMarkdownPreview` (View, `enabled` seulement si l'onglet actif est `.md`/`.mdx`).
+  - **`src/lib/keybindings.ts`** : entrée registry `origin.openMarkdownPreview` → `ctrl+shift+v` (⌘⇧V sur mac).
+  - **`src/components/settings/SettingsPanel.tsx`** : section Editor → « Auto Save » (sélecteur Off / After Delay / On Focus Change / On Window Change) + « Auto Save Delay » (ms, affiché uniquement en mode After Delay).
+
+- **Décisions Techniques :**
+  - **Préférences en localStorage** (et non dans le store Tauri) : cohérent avec `format-on-save` déjà en place et lecture synchrone au démarrage.
+  - **Déclencheurs émis par `Editor` via `window` events** (`origin:autosave-change`, `origin:editor-blur`) : découple le hook des callbacks React proprement sans faire remonter la logique de sauvegarde dans l'éditeur.
+  - **Exclusion des onglets virtuels** (`isUntitled`, préfixe `__`) : un onglet untitled déclencherait une boîte de dialogue `save()` native (bloquant + surprenant lors d'une sauvegarde automatique en arrière-plan).
+  - **Sync scroll par ratio** plutôt que mapping d'ancres : simple, robuste aux différences de rendu markdown, sans dépendance à un parseur d'AST. Le verrou `requestAnimationFrame` évite la boucle de rétroaction scroll → re-scroll.
+  - **Raccourci `ctrl+shift+v`** : identique à VS Code « Open Preview », choisi libre côté keymap CodeMirror (aucun conflit). La commande runtime complète la commande palette existante qui, elle, n'apparaissait que si l'onglet actif était un `.md`.
+
+- **Impacts & Dépendances :**
+  - Nouvelles clés localStorage `origin-editor-autosave` / `origin-editor-autosave-delay` (isolées).
+  - `useTabs` expose désormais `tabsRef` (en plus de `fileContentsRef`/`activeTabRef`) dans son objet retour.
+  - `EditorArea` a deux props obligatoires supplémentaires (`topLines`, `onScrollLine`) : tout nouvel appelant doit les fournir.
+  - `handleSave` écrit via la commande backend `write_file` — **point de vigilance sécurité** : la sauvegarde automatique multiplie les écritures disque, mais reste bornée aux chemins déjà ouverts dans des onglets (pas de chemin arbitraire introduit).
+
+- **Prochaines étapes :**
+  - Envisager la **sync inverse** (aperçu → éditeur) si le besoin se confirme.
+  - Envisager une entrée palette dédiée pour la sauvegarde automatique (basculer le mode sans passer par Settings).
+
+---
+
+### [2026-10-13T17:35] | Find : persistance « Replace déplié » + surbrillance des occurrences
+
+- **Contexte :**
+  Suite de la barre Find/Replace custom : deux finitions de parité VS Code. (1) La ligne « Replace » repartait toujours repliée à chaque ouverture — VS Code mémorise cet état. (2) Les occurrences du mot sous le curseur / de la sélection n'étaient pas surlignées (`editor.occurrencesHighlight` dans VS Code).
+
+- **Modifications effectuées :**
+  - **`src/lib/findPrefs.ts` (nouveau)** : petit store localStorage (`origin-find-prefs`) pour la préférence `replaceOpen`. Lecture défensive (parse + repli sur défaut) et écriture silencieuse si le stockage est indisponible — même style que `devEnv.ts`.
+  - **`src/components/editor/Editor.tsx`** :
+    - `findReplaceOpen` initialisé depuis `loadFindPrefs().replaceOpen` ;
+    - `onToggleReplace` persiste la nouvelle valeur via `saveFindPrefs` ;
+    - ajout de l'extension `highlightSelectionMatches({ highlightWordAroundCursor: true, minSelectionLength: 1, wholeWords: true })` à côté de `search({ top: false })`.
+  - **`src/index.css`** : règles `.cm-selectionMatch` (occurrences) et `.cm-selectionMatch-main` (mot sous le curseur) — teinte `color-mix` sur `--origin-accent-blue`, en cohérence avec l'override global de sélection déjà présent.
+
+- **Décisions Techniques :**
+  - **Ne persister QUE l'état déplié** (pas la requête de recherche) : VS Code re-préremplit le champ depuis la sélection à chaque Ctrl+F, donc mémoriser le texte serait un écart de comportement.
+  - **`highlightSelectionMatches` plutôt qu'une extension maison** : c'est l'API officielle `@codemirror/search`, déjà cohérente avec `search()` en place. `wholeWords: true` évite de surligner des sous-chaînes (parité VS Code).
+  - **Styles en CSS global** (`.cm-selectionMatch`) plutôt qu'un `EditorView.theme` : les classes sont fournies par l'extension ; une règle globale les couvre sans remonter l'extension dans la config thématique.
+
+- **Impacts & Dépendances :**
+  - Nouvelle clé localStorage `origin-find-prefs` (isolée, pas de migration nécessaire).
+  - `index.css` référence `--origin-accent-blue` (déjà injectée par `applyTheme`) : pas de nouvelle variable requise.
+
+- **Prochaines étapes :**
+  - Option : nettoyer les styles `.cm-search*` morts dans `Editor.tsx` (devenus inutiles depuis la barre custom).
+
+---
+
+### [2026-10-13T17:30] | Find/Replace éditeur : barre custom façon VS Code (Ctrl+F / Ctrl+H)
+
+- **Contexte :**
+  Demande : « la commande Ctrl+F dans un fichier, fais ça comme sur VS Code ». Auparavant `Ctrl+F` ouvrait le panneau natif de `@codemirror/search` : rendu pleine largeur, libellés anglais « Find/Replace/next/previous », sans les toggles ni le compteur VS Code.
+
+- **Modifications effectuées :**
+  - **`src/components/editor/findController.ts` (nouveau)** : façade impérative isolant `@codemirror/search`. Construit une `SearchQuery` (search/replace/caseSensitive/regexp/wholeWord), applique via `setSearchQuery`, expose `next/previous/replaceNext/replaceAll`, et calcule le compteur « N of M » en parcourant `query.getCursor(state)` (best-effort : regex invalide → pas de compteur).
+  - **`src/components/editor/FindWidget.tsx` (nouveau)** : overlay flottant ancré **en haut à droite** de la zone d'édition. Contient : champ Find, compteur, flèches ↑/↓, toggles `Aa` (casse) / `.*` (regex) / `ab` (mot entier), bouton ✕, et ligne Replace dépliable (chevron) avec « Replace » / « Replace All ». Entrée = suivant, Maj+Entrée = précédent, Échap = fermer.
+  - **`src/components/editor/Editor.tsx`** :
+    - import de `FindWidget` + `FindController` ; ajout des états `findOpen`/`findReplaceOpen`/`findOptions`/`findStatus` et du `findControllerRef` ;
+    - `openFind`/`openReplace` (handle) rebranchés sur la barre custom ; `openReplace` n'utilise plus le clic DOM sur le bouton natif ;
+    - keymap : `Mod-f`/`Mod-h` ouvrent la widget ; **retrait de `searchKeymap`** (plus de panneau natif). L'extension `search({top:false})` est conservée (elle fournit le `searchState` requis par `setSearchQuery`/`getSearchQuery`) ;
+    - le compteur est recalculé dans le `EditorView.updateListener` quand la barre est ouverte (via `findOpenRef`).
+
+- **Décisions Techniques :**
+  - **Barre custom plutôt que restyle du DOM CodeMirror** : le rendu VS Code exige les toggles + le format « N of M » absents du panneau natif ; piloter l'API `@codemirror/search` directement est plus robuste qu'agir sur un DOM interne non contractuel.
+  - **Logique CodeMirror hors du composant React** (`findController.ts`) : sépare l'impératif CM du présentationnel, testable et réutilisable.
+  - **`seedFromSelection`** : la sélection courante préremplit le champ (comportement VS Code).
+  - **`search({top:false})` conservé** : nécessaire pour le champ `searchState` ; seul `searchKeymap` (raccourcis + panneau natifs) est retiré.
+
+- **Impacts & Dépendances :**
+  - `EditorHandle.openFind`/`openReplace` : même signature, comportement différent (widget interne) — aucun changement d'appelant.
+  - Le CSS `.cm-search*` devenu inutile peut être retiré plus tard (inoffensif).
+  - Nouvelle dépendance d'affichage : `lucide-react` (déjà utilisé ailleurs).
+
+- **Prochaines étapes :**
+  - Option : mémoriser « Replace » déplié entre sessions ; `highlightSelectionMatches` (surbrillance des occurrences).
+  - Nettoyer les styles `.cm-search` morts dans `Editor.tsx`.
+
+---
+
+### [2026-10-13T17:10] | Parité commandes VS Code : Reload Window, Developer, Window, Terminal, Help + toggles d'apparence
+
+- **Contexte :**
+  Retour utilisateur : « je ne vois pas de Reload Window et plein d'autres commandes VS Code ». La palette ne contenait que les commandes déjà câblées (File/Edit/View/Go/Run/Debug) ; les catégories standard VS Code (Developer, Window, Help, Terminal) et les bascules d'apparence manquaient.
+
+- **Modifications effectuées :**
+  - **`src/App.tsx`** — ajout des commandes runtime (toutes réellement câblées, aucune factice) :
+    - *Developer* : `Reload Window` (`window.location.reload()`), `Restart Application` (`relaunch()` natif), `Reload Extensions` (`reload()` du contexte extensions).
+    - *Window* : `Close Window`, `Minimize Window`, `Toggle Maximize Window` (API `getCurrentWindow()`).
+    - *Terminal* : `Create New Terminal`, `Clear Terminal`, `Kill Terminal` (via `terminalRef`).
+    - *Help* : `Welcome`, `Keyboard Shortcuts`, `Check for Updates…`.
+    - *Appearance (View)* : `Toggle Minimap`, `Toggle Sticky Scroll`, `Toggle Bracket Pair Colorization`.
+  - **Nouveaux états d'apparence** (`minimap`, `stickyScroll`, `bracketColorization`) dans `App.tsx`, propagés via `EditorArea` → `Editor` (les props existaient déjà côté `Editor`, elles étaient figées aux valeurs par défaut).
+  - **`src/components/editor/EditorArea.tsx`** : 3 props optionnelles `minimap`/`stickyScroll`/`bracketColorization` transmises à `Editor`.
+  - **`src/lib/keybindings.ts`** : raccourcis VS Code ajoutés — `Reload Window` = `ctrl+r`, `Create New Terminal` = `ctrl+shift+``, `Close Window` = `ctrl+shift+w` ; branchement dans le `VSCODE_CMD_MAP` pour l'import de keybindings (`workbench.action.reloadWindow`, `.terminal.new`, `.closeWindow`).
+
+- **Décisions Techniques :**
+  - **Uniquement des commandes fonctionnelles** : pas de commande « décorative » non câblée (ex. pas de « Toggle Word Wrap » tant que l'option n'existe pas dans l'éditeur) — cohérence entre ce que la palette affiche et ce qui s'exécute réellement.
+  - **`Reload Window` = rechargement du webview** (`location.reload()`) et **`Restart Application` = `relaunch()` natif** : deux niveaux distincts, comme la distinction VS Code entre reload de fenêtre et redémarrage.
+  - **États d'apparence dans App** (source de vérité unique) plutôt que locaux à l'éditeur : la palette peut basculer un toggle commandé ailleurs.
+  - **Position de la palette** confirmée `top: 0` (collée en haut, parité VS Code) — déjà en place, aucune régression.
+
+- **Impacts & Dépendances :**
+  - `EditorArea` : nouvelle surface de props (optionnelles) — rétro-compatible.
+  - `useEffect` des commandes runtime : dépendances élargies (`minimap`, `stickyScroll`, `bracketColorization`) pour des closures à jour.
+  - `reloadExtensions` extrait de `useExtensions()`.
+
+- **Prochaines étapes :**
+  - Envisager `Toggle Word Wrap` et d'autres bascules une fois l'option câblée côté `Editor`.
+  - Étendre `VSCODE_CMD_MAP` au fur et à mesure des commandes ajoutées.
+
+---
+
+
+- **Contexte :**
+  Retour utilisateur : « l'UI n'est pas encore bon, les textes ne sont pas visibles ». La capture montre deux défauts : (1) les libellés sont sombres/peu contrastés ; (2) les commandes d'extension affichent le placeholder brut `%command.activateIcons%` au lieu du texte réel.
+
+- **Modifications effectuées :**
+  - **Cause racine du texte invisible :** la palette est montée via `createPortal` sur `document.body`, qui n'a **aucune couleur de texte** (défaut navigateur = noir). Les libellés héritaient donc du noir sur fond sombre. Correctif : `color: 'var(--origin-fg-default)'` explicite sur le panneau + sur le `<span>` du label.
+  - **Ligne active adaptative :** sur fond accentué bleu, texte forcé `#ffffff`, sous-textes en `rgba(255,255,255,0.75)` ; le surlignage de recherche passe en gras sans couleur (invisible sinon).
+  - **Nouveau `src/lib/extensions/i18n.ts` :** résolution des chaînes localisées `%key%` d'une extension via `package.nls.json` / `package.nls.en.json` ; store module-level + `subscribe`/`getRevision` pour `useSyncExternalStore`. Une clé inconnue est rendue **sans les `%`** (jamais de placeholder brut).
+  - **`CommandPalette.tsx` :** `ensureExtensionI18n()` appelé pour chaque extension contributrice ; index `extTitles` (id → titre résolu) recalculé sur changement de la révision NLS ; le tri fuzzy et le label utilisent ce titre.
+
+- **Décisions Techniques :**
+  - **Portail + couleur explicite** plutôt que dépendre de l'héritage : un portail sort de l'arbre React et n'hérite d'aucune couleur d'app → toujours fixer `color` sur le conteneur racine d'un portail.
+  - **Résolution NLS côté front, best-effort :** les fichiers `package.nls*.json` sont déjà lisibles via `read_extension_asset` (confiné) ; pas de nouvelle surface backend. Le repli « retirer les `%` » garantit qu'aucun placeholder n'est jamais montré.
+  - **Révision + index dérivé** plutôt que `useMemo` dépendant d'une valeur non lue : supprime le warning `exhaustive-deps` tout en gardant le recalcul au bon moment.
+
+- **Impacts & Dépendances :**
+  - `i18n.ts` : nouvelle dépendance lecture FS extension ; idempotent, erreurs absorbées.
+  - Toute future vue portail (menus, dropdowns) doit fixer `color` explicitement.
+
+- **Prochaines étapes :**
+  - Si d'autres contributions localisées apparaissent (menus, keybindings d'extension), réutiliser `resolveNlsText`.
+  - Envisager la locale réellement active (aujourd'hui : `package.nls.json` puis `en`).
+
+---
+
+
+- **Contexte :**
+  Deux demandes : (1) « les commandes doivent avoir la même interface que VS Code, par exemple Ctrl+Shift+P » ; (2) « toutes les commandes doivent être cross-platform mac/windows/linux proprement ». Objectif : palette collée en haut comme VS Code (plus de fenêtre flottante draggable), séparation Quick Open / Command Palette, et affichage natif des raccourcis selon l'OS.
+
+- **Modifications effectuées :**
+  - **`src/lib/platform.ts` (nouveau, module central) :** `getPlatform()` (détection via `navigator.platform`/`userAgent`), `isMac()`, `formatShortcut(key)` (gère les chords `ctrl+k ctrl+o`), `modLabel()`. Map `MAC_SYMBOLS` / `WIN_LABELS`. **Clé de voûte** : `ctrl` = modificateur principal (⌘ sur Mac, Ctrl ailleurs), car `matchesEvent` accepte `e.ctrlKey || e.metaKey` ; le vrai Control (`⌃`) est réservé à `control`.
+  - **`src/lib/__tests__/platform.test.ts` (nouveau) :** 8 tests couvrant mac/win/null/chords.
+  - **`src/components/palette/CommandPalette.tsx` (réécrit) :** panneau collé en haut (plus de drag ni de fenêtre flottante), fermeture externe via scrim transparent, liste plate, footer « X results », préfixe `>` = commandes (Command Palette), champ vide = Quick Open. Tous les raccourcis passés par `formatShortcut`.
+  - **`src/lib/keybindings.ts` :** ajout `origin.showCommands` (ctrl+shift+p) et `origin.quickOpen` (ctrl+p) ; suppression du doublon sur `origin.togglePalette`.
+  - **`src/App.tsx` :** état `paletteMode: 'quickopen' | 'command' | 'line' | 'symbol'` ; enregistrement des commandes runtime ; l'icône TitleBar ouvre toujours la Command Palette.
+  - **Uniformisation cross-platform des composants restants :** `TitleBar.tsx` (menu/tooltips), `SourceTreePanel.tsx` (placeholder commit), `SettingsPanel.tsx` (placeholder recherche), `TerminalPanel.tsx` (tooltip fermeture), `ai/TaskRail.tsx` (« New Task »), `editor/EditorWelcome.tsx` (Kbd du welcome). **Plus aucun glyphe ⌘/Ctrl en dur affiché** ; les mentions restantes sont uniquement dans des commentaires.
+
+- **Décisions Techniques :**
+  - **Un unique module `platform.ts`** plutôt que des conditionnels OS dispersés : une seule source de vérité, cohérence garantie sur tous les composants, testable isolément.
+  - **Format canonique `ctrl+...`** au lieu de stocker des variantes par OS : un seul binding en base, rendu natif à l'affichage. Survivre à un changement d'OS sans modifier les données.
+  - **Panneau collé en haut + scrim** (plutôt que drag + listener document) : parité visuelle VS Code et suppression du double-appel d'événements.
+
+- **Impacts & Dépendances :**
+  - `platform.ts` est désormais la dépendance commune pour tout affichage de raccourci ; tout nouveau composant affichant un raccourci doit passer par `formatShortcut`/`modLabel`.
+  - Aucun changement de comportement des raccourcis eux-mêmes (`Mod-` CodeMirror + `matchesEvent` déjà cross-platform) : seul **l'affichage** devient natif.
+
+- **Prochaines étapes :**
+  - Surveiller les nouveaux composants pour éviter toute réintroduction de glyphes en dur.
+  - Étendre les tests `platform.test.ts` si de nouvelles touches/séquences sont ajoutées.
+
+---
+
+
+- **Contexte :**
+  Demande : « rend possible toutes les commandes de VS Code dans l'éditeur proprement et avec la même performance » + « le remplace ne marche pas ». Périmètre validé avec l'utilisateur : **Palette de commandes + Éditeur (multi-curseurs/sélection) + Éditeur (édition avancée) + Navigation & fichiers**, architecture **registry de commandes central**. Objectif parité VS Code sans régression de perf (dispatch direct sur `EditorView`, pas de re-render React).
+
+- **Modifications effectuées :**
+  - **Lot A — Registry + palette :**
+    - `src/lib/commands/registry.ts` (source de vérité runtime) : `RuntimeCommand { id; title; category; keywords?; run; enabled? }`, `registerCommand(s)`, `getCommands`, `getCommand`, `subscribe`, `runCommand`. `enabled` est un **booléen** d'état (pas un prédicat).
+    - `src/components/palette/CommandPalette.tsx` : consommation du registry via `useSyncExternalStore` ; fusion texte/fichiers/lignes/symboles/workspace/commandes runtime dans un flux unique de scoring ; raccourci affiché via `getEffectiveKey(cmd.id)`.
+    - `src/hooks/useGlobalKeybindings.ts` : garde `if (e.defaultPrevented) return;` en tête du listener — évite la double-exécution quand CodeMirror a déjà traité un raccourci. Ordre de résolution : registry runtime → extensions → legacy.
+    - `src/lib/keybindings.ts` : ajout des commandes+raccourcis (Go, Selection, Lines) mappés sur les ids runtime.
+  - **Lot B — Navigation :** modes préfixes de palette `:` (Go to Line, regex `/^(\d+)(?::(\d+))?$/`) et `#` (Go to Symbol, aplati depuis `outlineFromLsp`/`outlineFromText`) ; commandes `origin.goToLine` (Ctrl/Cmd+G) et `origin.gotoSymbol` (Ctrl/Cmd+Shift+O) ; `goToLineInEditor` → `editorOfSplit()?.goToLine(line, col)`.
+  - **Lot C — Multi-curseurs / sélection :** `Editor.tsx` expose via `EditorHandle` : `selectNextOccurrence`, `selectAllOccurrences`, `addCursorBelow/Above`, `addCursorToLineEnd(s)`. Helpers module : `findOccurrences` (garde-fou 5000), `addNextOccurrence`, `addAllOccurrences`, `addCursorLine`. Raccourcis : Ctrl/Cmd+D, Ctrl/Cmd+Shift+L, Ctrl/Cmd+Alt+↑/↓, Ctrl/Cmd+Shift+Alt+↓.
+  - **Lot D — Édition avancée :** `duplicateLineUp/Down`, `moveLineUp/Down`, `deleteLines`, `insertLineBelow/Above`, `toggleComment`, `indentMore/Less`, transformation de casse, tri de lignes — via `@codemirror/commands`. Raccourcis : Shift+Alt+↑/↓, Alt+↑/↓, Ctrl/Cmd+Shift+K, Ctrl/Cmd+Entrée, Ctrl/Cmd+Shift+Entrée, Ctrl/Cmd+/, Ctrl/Cmd+] / Ctrl/Cmd+[.
+  - **Fix « replace » :** `Editor.openReplace()` appelle `openSearchPanel(view)` puis, dans un `requestAnimationFrame`, clique `.cm-search button[name="toggle-replace"]` si `aria-expanded !== 'true'` → panneau ouvert directement sur la ligne de remplacement (parité Ctrl/Cmd+H VS Code).
+
+- **Décisions Techniques :**
+  - **Registry central plutôt que keymap éparpillées** : une seule source pour palette/keybindings/menus ; `useSyncExternalStore` évite tout re-render inutile (abonnement minimal).
+  - **Modes préfixes dans la palette** (`:`, `#`) plutôt que des composants séparés : UX cohérente, un seul composant à maintenir.
+  - **Garde `defaultPrevented`** : CodeMirror consomme déjà certains raccourcis (`moveLineUp`…) ; sans la garde, la commande runtime rejouerait la même action = double exécution.
+  - **Replace non dépliable par API** : vérifié — `@codemirror/search` n'expose aucune API publique pour ouvrir le panneau déjà déplié (état visuel dans le DOM, pas dans l'état CM). Solution pragmatique et idempotente : clic DOM du bouton `toggle-replace` sous garde `aria-expanded`. Isolation : code confiné à `openReplace()`, remplaçable si l'API évolue.
+  - **Perf** : toutes les actions éditeur s'exécutent sur `EditorView.dispatch` sans passer par React → équivalent VS Code.
+
+- **Impacts & Dépendances :**
+  - `EditorHandle` s'étend (~30 méthodes) : tout appelant futur doit s'y référer.
+  - Nouvelle dépendance de comportement sur le markup DOM du panneau search (`button[name="toggle-replace"]`) — à surveiller lors d'une mise à jour majeure de `@codemirror/search`.
+  - `useGlobalKeybindings` : la garde `defaultPrevented` change l'ordre d'arbitrage des raccourcis (CM prioritaire).
+
+- **Prochaines étapes :**
+  - Historique de navigation (back/forward) et quick-open de symboles workspace-wide restent hors périmètre immédiat.
+  - Surveiller le markup de `toggle-replace` à chaque bump de `@codemirror/search`.
+
+- **Validation :** `npx tsc --noEmit` propre ; `npx eslint` 0 erreur (3 warnings pré-existants) ; `npx vitest run` 221/221 ; `cargo test --lib` 74/74.
+
+---
+
 ### [2026-10-13T15:20] | Recherche — replace in files + exclusions glob + regex/case/whole-word
 
 - **Contexte :**

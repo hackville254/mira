@@ -31,12 +31,16 @@ export interface EditorAreaProps {
   binaryData: Record<string, { base64: string; mime: string }>;
   fileErrors: Record<string, string>;
   cursorPositions: Record<string, { line: number; col: number }>;
+  /** Ligne du haut visible par fichier (synchronisation du scroll de la preview MD). */
+  topLines: Record<string, number>;
   jumpRequest: { path: string; line: number; col: number; key: number } | null;
   editorRef: Ref<EditorHandle>;
   lspGeneration: number;
   getAiCompletion?: AiCompletionFn;
   onEditorChange: (path: string, value: string) => void;
   onCursorChange: (path: string, line: number, col: number) => void;
+  /** Notifie la ligne du haut visible d'un fichier (défilement de l'éditeur). */
+  onScrollLine: (path: string, line: number) => void;
   onCloseTab: (path: string) => void;
   onAddToAiContext: (ctx: EditorContext) => void;
   onAcceptDiff: (path: string) => void;
@@ -47,15 +51,20 @@ export interface EditorAreaProps {
   onApplyWorkspaceEdits: (edits: FileEdits[]) => void;
   onOpenFolder: () => void;
   onOpenProject: (path: string) => void;
+  /** Apparence de l'éditeur (commandes « Toggle … » de la palette). */
+  minimap?: boolean;
+  stickyScroll?: boolean;
+  bracketColorization?: boolean;
 }
 
 export default function EditorArea(props: EditorAreaProps) {
   const {
     folderPath, tabs, activeTab, fileContents, binaryData, fileErrors,
-    cursorPositions, jumpRequest, editorRef, lspGeneration, getAiCompletion,
-    onEditorChange, onCursorChange, onCloseTab, onAddToAiContext,
+    cursorPositions, topLines, jumpRequest, editorRef, lspGeneration, getAiCompletion,
+    onEditorChange, onCursorChange, onScrollLine, onCloseTab, onAddToAiContext,
     onAcceptDiff, onDefinitionJump, onMissingServer, onToggleBreakpoint,
     onApplyWorkspaceEdits, onOpenFolder, onOpenProject,
+    minimap, stickyScroll, bracketColorization,
   } = props;
 
   const fileName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
@@ -77,7 +86,15 @@ export default function EditorArea(props: EditorAreaProps) {
   if (activeTab?.startsWith('__mdpreview__')) {
     const mdTab = tabs.find(t => t.path === activeTab);
     const fp = mdTab?.filePath ?? activeTab.slice('__mdpreview__'.length);
-    return <MarkdownPreviewPane content={fileContents[fp] ?? ''} fileName={fileName(fp)} />;
+    const src = fileContents[fp] ?? '';
+    return (
+      <MarkdownPreviewPane
+        content={src}
+        fileName={fileName(fp)}
+        syncLine={topLines[fp] ?? null}
+        syncTotalLines={src.length === 0 ? 1 : src.split('\n').length}
+      />
+    );
   }
   if (activeTab && fileKindOf(activeTab) === 'image') {
     if (binaryData[activeTab]) {
@@ -130,6 +147,7 @@ export default function EditorArea(props: EditorAreaProps) {
           content={fileContents[activeTab]}
           onChange={v => onEditorChange(activeTab, v)}
           onCursorChange={(line, col) => onCursorChange(activeTab, line, col)}
+          onScrollLine={line => onScrollLine(activeTab, line)}
           initialCursor={cursorPositions[activeTab]}
           jumpTo={jumpRequest?.path === activeTab ? jumpRequest : undefined}
           onAddToAiContext={onAddToAiContext}
@@ -141,6 +159,9 @@ export default function EditorArea(props: EditorAreaProps) {
           getAiCompletion={getAiCompletion}
           onToggleBreakpoint={onToggleBreakpoint}
           onApplyWorkspaceEdits={onApplyWorkspaceEdits}
+          minimap={minimap}
+          stickyScroll={stickyScroll}
+          bracketColorization={bracketColorization}
         />
       </div>
     );

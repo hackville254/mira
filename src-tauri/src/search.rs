@@ -119,6 +119,12 @@ fn is_excluded(rel: &str, rules: &[regex::Regex]) -> bool {
     rules.iter().any(|r| r.is_match(rel))
 }
 
+/// Vrai si le chemin relatif (séparateurs `/`) doit être inclus. Une liste vide
+/// signifie « pas de filtre » : tout est inclus (parité VS Code).
+fn is_included(rel: &str, rules: &[regex::Regex]) -> bool {
+    rules.is_empty() || rules.iter().any(|r| r.is_match(rel))
+}
+
 fn search_file(
     path: &std::path::Path,
     re: &regex::Regex,
@@ -147,6 +153,7 @@ fn walk_search(
     folder: &std::path::Path,
     re: &regex::Regex,
     excludes: &[regex::Regex],
+    includes: &[regex::Regex],
     results: &mut Vec<SearchMatch>,
 ) {
     if results.len() >= MAX_MATCHES { return }
@@ -161,10 +168,13 @@ fn walk_search(
         } else {
             let rel = path.strip_prefix(folder).unwrap_or(&path).to_string_lossy().replace('\\', "/");
             if is_excluded(&rel, excludes) { continue }
+            // Motifs d'inclusion : si fournis, seuls les fichiers correspondants
+            // sont parcourus (parité VS Code « files to include »).
+            if !is_included(&rel, includes) { continue }
             search_file(&path, re, results);
         }
     }
-    for d in subdirs { walk_search(&d, folder, re, excludes, results) }
+    for d in subdirs { walk_search(&d, folder, re, excludes, includes, results) }
 }
 
 #[tauri::command]
@@ -173,15 +183,17 @@ pub async fn search_in_files(
     query: String,
     options: Option<SearchOptions>,
     excludes: Option<String>,
+    includes: Option<String>,
 ) -> Result<Vec<SearchMatch>, String> {
     if query.is_empty() { return Ok(vec![]) }
     let opts = options.unwrap_or(SearchOptions { is_regex: false, case_sensitive: false, whole_word: false });
     let re = build_regex(&query, &opts)?;
     let excl = compile_excludes(excludes.as_deref().unwrap_or(""));
+    let incl = compile_excludes(includes.as_deref().unwrap_or(""));
     tokio::task::spawn_blocking(move || {
         let mut results = Vec::new();
         let base = std::path::Path::new(&folder);
-        walk_search(base, base, &re, &excl, &mut results);
+        walk_search(base, base, &re, &excl, &incl, &mut results);
         results
     }).await.map_err(|e| e.to_string())
 }
@@ -204,19 +216,74 @@ pub struct ReplaceRequest {
     replacement: String,
     options: Option<SearchOptions>,
     excludes: Option<String>,
+    /// Motifs d'inclusion (glob) : si non vide, seuls les fichiers correspondants
+    /// sont traités (parité VS Code « files to include »).
+    #[serde(default)]
+    includes: Option<String>,
+    /// Conserve la casse d'origine du texte remplacé (parité VS Code « Preserve Case »).
+    #[serde(default)]
+    preserve_case: bool,
     /// Chemins absolus des fichiers à traiter. Si `None`, tout le dossier est traité.
     #[serde(default)]
     files: Option<Vec<String>>,
 }
 
+/// Requête de remplacement d'UNE occurrence précise (parité VS Code : bouton
+/// « Replace » au survol d'un résultat). Le remplacement est appliqué à la
+/// première correspondance située à `line`/`col` — col étant l'offset d'octet
+/// (comme renvoyé par la recherche) — ce qui évite de reparser tout le fichier.
+#[derive(serde::Deserialize)]
+pub struct ReplaceOneRequest {
+    path: String,
+    query: String,
+    replacement: String,
+    options: Option<SearchOptions>,
+    /// Ligne 1-indexée de l'occurrence à remplacer.
+    line: u32,
+    /// Offset (octets) de l'occurrence dans la ligne.
+    col: u32,
+    #[serde(default)]
+    preserve_case: bool,
+}
+
+/// Applique « Preserve Case » à un remplacement littéral en calquant la casse
+/// du texte d'origine : tout minuscule → minuscule, tout majuscule → majuscule,
+/// première lettre majuscule → première lettre du remplacement en majuscule.
+/// Ne s'applique qu'aux remplacements littéraux (un remplacement regex porte
+/// déjà sa propre intention de casse via les groupes de capture).
+fn apply_preserve_case(matched: &str, replacement: &str) -> String {
+    if replacement.is_empty() || matched.is_empty() { return replacement.to_string() }
+    let has_alpha = matched.chars().any(|c| c.is_alphabetic());
+    if !has_alpha { return replacement.to_string() }
+    let all_upper = matched.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+    let all_lower = matched.chars().all(|c| !c.is_alphabetic() || c.is_lowercase());
+    if all_upper {
+        // Conserve aussi les chiffres/symboles non alphabétiques tels quels.
+        replacement.chars().map(|c| c.to_uppercase().next().unwrap_or(c)).collect()
+    } else if all_lower {
+        replacement.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
+    } else {
+        // Casse mixte (ex. « Foo ») : majuscule sur la première lettre alphabétique.
+        let mut done = false;
+        replacement.chars().map(|c| {
+            if !done && c.is_alphabetic() {
+                done = true;
+                c.to_uppercase().next().unwrap_or(c)
+            } else { c }
+        }).collect()
+    }
+}
+
 /// Construit la chaîne de remplacement en développant les groupes `$1`..`$9`
 /// lorsque le motif est une regex. En mode littéral, le remplacement est
 /// inséré tel quel (protégé contre l'interprétation `$` par la regex).
-fn expand_replacement(caps: &regex::Captures, replacement: &str, is_regex: bool) -> String {
+fn expand_replacement(caps: &regex::Captures, replacement: &str, is_regex: bool, preserve_case: bool) -> String {
     if is_regex {
         let mut out = String::new();
         caps.expand(replacement, &mut out);
         out
+    } else if preserve_case {
+        apply_preserve_case(caps.get(0).map(|m| m.as_str()).unwrap_or(""), replacement)
     } else {
         replacement.to_string()
     }
@@ -227,6 +294,7 @@ fn replace_in_file(
     re: &regex::Regex,
     replacement: &str,
     is_regex: bool,
+    preserve_case: bool,
 ) -> Option<u32> {
     let Ok(bytes) = std::fs::read(path) else { return None };
     if bytes.contains(&0u8) { return None }
@@ -235,7 +303,7 @@ fn replace_in_file(
     let new_text = re
         .replace_all(text, |caps: &regex::Captures| {
             count += 1;
-            expand_replacement(caps, replacement, is_regex)
+            expand_replacement(caps, replacement, is_regex, preserve_case)
         })
         .into_owned();
     if new_text != text {
@@ -250,7 +318,9 @@ pub async fn replace_in_files(req: ReplaceRequest) -> Result<ReplaceResult, Stri
     let opts = req.options.unwrap_or(SearchOptions { is_regex: false, case_sensitive: false, whole_word: false });
     let re = build_regex(&req.query, &opts)?;
     let excl = compile_excludes(req.excludes.as_deref().unwrap_or(""));
+    let incl = compile_excludes(req.includes.as_deref().unwrap_or(""));
     let is_regex = opts.is_regex;
+    let preserve_case = req.preserve_case;
     let replacement = req.replacement;
     tokio::task::spawn_blocking(move || {
         let base = std::path::Path::new(&req.folder);
@@ -268,7 +338,12 @@ pub async fn replace_in_files(req: ReplaceRequest) -> Result<ReplaceResult, Stri
         let mut total = 0u32;
         let mut changed_files: Vec<String> = Vec::new();
         for f in files.iter().take(MAX_REPLACE_FILES) {
-            if let Some(n) = replace_in_file(f, &re, &replacement, is_regex) {
+            // Filtre d'inclusion : un fichier doit correspondre à au moins un motif.
+            if !incl.is_empty() {
+                let rel = f.strip_prefix(base).unwrap_or(f).to_string_lossy().replace('\\', "/");
+                if !incl.iter().any(|r| r.is_match(&rel)) { continue }
+            }
+            if let Some(n) = replace_in_file(f, &re, &replacement, is_regex, preserve_case) {
                 if n > 0 {
                     changed += 1;
                     total += n;
@@ -278,6 +353,72 @@ pub async fn replace_in_files(req: ReplaceRequest) -> Result<ReplaceResult, Stri
         }
         ReplaceResult { files_changed: changed, replacements: total, files: changed_files }
     }).await.map_err(|e| e.to_string())
+}
+
+/// Remplace UNE occurrence précise (ligne + col) dans un fichier. Utilisé par le
+/// bouton « Replace » au survol d'un résultat. Retourne `true` si une
+/// correspondance a bien été trouvée à cet emplacement et remplacée.
+#[tauri::command]
+pub async fn replace_one(req: ReplaceOneRequest) -> Result<bool, String> {
+    if req.query.is_empty() { return Ok(false) }
+    let opts = req.options.unwrap_or(SearchOptions { is_regex: false, case_sensitive: false, whole_word: false });
+    let re = build_regex(&req.query, &opts)?;
+    let is_regex = opts.is_regex;
+    let preserve_case = req.preserve_case;
+    let path = std::path::PathBuf::from(&req.path);
+    let target_line = req.line as usize;
+    let target_col = req.col as usize;
+    let replacement = req.replacement;
+    tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        if bytes.contains(&0u8) { return Ok(false) }
+        let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+        // Édition ciblée : on ne touche qu'à la ligne visée pour préserver le
+        // reste du fichier à l'octet près (pas de perte de fins de ligne).
+        let mut out = String::with_capacity(text.len() + replacement.len());
+        let mut replaced = false;
+        for (idx, segment) in text.split_inclusive('\n').enumerate() {
+            if idx + 1 != target_line || replaced {
+                out.push_str(segment);
+                continue;
+            }
+            // `segment` peut inclure le `\n` final : on isole le corps.
+            let (body, nl) = match segment.strip_suffix('\n') {
+                Some(b) => (b, "\n"),
+                None => (segment, ""),
+            };
+            // Cherche une correspondance qui commence exactement à target_col.
+            let mut found: Option<(usize, usize, String)> = None;
+            for m in re.find_iter(body) {
+                if m.start() == target_col {
+                    let rep = if is_regex {
+                        let caps = re.captures(m.as_str()).ok_or_else(|| "regex capture failed".to_string())?;
+                        expand_replacement(&caps, &replacement, is_regex, preserve_case)
+                    } else if preserve_case {
+                        apply_preserve_case(m.as_str(), &replacement)
+                    } else {
+                        replacement.clone()
+                    };
+                    found = Some((m.start(), m.end(), rep));
+                    break;
+                }
+            }
+            match found {
+                Some((start, end, rep)) => {
+                    out.push_str(&body[..start]);
+                    out.push_str(&rep);
+                    out.push_str(&body[end..]);
+                    out.push_str(nl);
+                    replaced = true;
+                }
+                None => out.push_str(segment),
+            }
+        }
+        if replaced {
+            std::fs::write(&path, out).map_err(|e| e.to_string())?;
+        }
+        Ok(replaced)
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// Collecte tous les fichiers d'un dossier en respectant les règles d'exclusion.
@@ -571,14 +712,36 @@ mod tests {
     fn expand_replacement_literal_is_verbatim() {
         let re = build_regex("foo", &opts(false, false, false)).unwrap();
         let caps = re.captures("foo").unwrap();
-        assert_eq!(expand_replacement(&caps, "$1bar", false), "$1bar");
+        assert_eq!(expand_replacement(&caps, "$1bar", false, false), "$1bar");
     }
 
     #[test]
     fn expand_replacement_regex_expands_groups() {
         let re = build_regex(r"(\w+)@(\w+)", &opts(true, false, false)).unwrap();
         let caps = re.captures("user@host").unwrap();
-        assert_eq!(expand_replacement(&caps, "$2:$1", true), "host:user");
+        assert_eq!(expand_replacement(&caps, "$2:$1", true, false), "host:user");
+    }
+
+    // ── apply_preserve_case ─────────────────────────────────────────────────────
+
+    #[test]
+    fn preserve_case_all_lower() {
+        assert_eq!(apply_preserve_case("foo", "BAR"), "bar");
+    }
+
+    #[test]
+    fn preserve_case_all_upper() {
+        assert_eq!(apply_preserve_case("FOO", "bar"), "BAR");
+    }
+
+    #[test]
+    fn preserve_case_title() {
+        assert_eq!(apply_preserve_case("Foo", "bar baz"), "Bar baz");
+    }
+
+    #[test]
+    fn preserve_case_no_alpha_is_verbatim() {
+        assert_eq!(apply_preserve_case("123", "x"), "x");
     }
 
     // ── classify_ts ────────────────────────────────────────────────────────────

@@ -40,8 +40,12 @@ import { consentStatus, requiredCapabilities } from "./lib/extensions/permission
 import { readExtensionManifest } from "./lib/extensions";
 import { CommandContext } from "./context/CommandContext";
 import { useTabs } from "./hooks/useTabs";
+import { useAutoSave } from "./hooks/useAutoSave";
 import { useWorkspacePersistence } from "./hooks/useWorkspacePersistence";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
+import { registerCommands, type RuntimeCommand } from "./lib/commands/registry";
+import { setActiveEditor } from "./lib/commands/editorBridge";
+import { outlineFromLsp, outlineFromText, languageIdOf, hasLspForFile, type OutlineSymbol } from "./lib/outline";
 import type { FileEdits } from "./lib/lspEdits";
 
 function App() {
@@ -62,10 +66,15 @@ function App() {
     fileTreeVersion,
     activeTabRef,
     fileContentsRef,
+    tabsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
   } = useTabs();
+
+  // Sauvegarde automatique (parité VS Code `files.autoSave`) : lit les snapshots
+  // toujours à jour de useTabs et réécrit les onglets modifiés selon le mode choisi.
+  useAutoSave({ tabsRef, fileContentsRef, activeTabRef, handleSave });
 
   const {
     sidebarOpen, setSidebarOpen,
@@ -114,15 +123,24 @@ function App() {
   const [_zoom,          setZoom]          = useState(1.0);
   const [pinnedContext,  setPinnedContext]  = useState<EditorContext | null>(null);
   const [cursorPositions, setCursorPositions] = useState<Record<string, { line: number; col: number }>>({});
+  // Ligne du haut visible par fichier — alimente la synchronisation du scroll de
+  // la preview Markdown (rapport ligne visible / total).
+  const [topLines, setTopLines] = useState<Record<string, number>>({});
   const [gitBranch,      setGitBranch]     = useState<string | null>(null);
   const [paletteOpen,    setPaletteOpen]   = useState(false);
+  const [paletteMode,    setPaletteMode]   = useState<'quickopen' | 'command' | 'line' | 'symbol'>('command');
+  const [paletteSymbols, setPaletteSymbols] = useState<OutlineSymbol[]>([]);
   const [settingsOpen,   setSettingsOpen]  = useState(false);
+  // Apparence de l'éditeur — pilotée par les commandes « Toggle … » de la palette.
+  const [minimap,            setMinimap]            = useState(true);
+  const [stickyScroll,       setStickyScroll]       = useState(true);
+  const [bracketColorization, setBracketColorization] = useState(true);
 
   // ── Level-2 extension host: publish the app's services as a HostDelegate.
   // App.tsx owns the workspace/editor/toast wiring, so it builds the delegate
   // here; the ExtensionsProvider reads it lazily. File ops are still confined
   // to the workspace root by the host before they reach these functions.
-  const { extensions, activate } = useExtensions();
+  const { extensions, activate, reload: reloadExtensions } = useExtensions();
   useEffect(() => {
     setHostDelegate({
       getWorkspaceRoot: () => folderPath,
@@ -560,7 +578,7 @@ function App() {
     onOpenFile: handleOpenFile,
     onNewFile: handleNewFile,
     onNewWindow: handleNewWindow,
-    onOpenPalette: () => setPaletteOpen(true),
+    onOpenPalette: () => { setPaletteMode('command'); setPaletteOpen(true); },
     onOpenSettings: () => setSettingsOpen(true),
     gitBranch,
     dirtyCount: tabs.filter(t => t.isDirty).length,
@@ -603,6 +621,158 @@ function App() {
     onStopDebugging: () => debugCtx.stopSession(),
     isDebugActive: debugCtx.session.status !== 'idle' && debugCtx.session.status !== 'terminated',
   };
+
+  // ── Registry de commandes runtime ────────────────────────────────────────
+  // Publie le handle de l'éditeur « actif » (split prioritaire si le focus y est)
+  // pour que les commandes puissent piloter CodeMirror hors focus.
+  useEffect(() => {
+    // On expose en priorité le handle de l'éditeur splitté lorsqu'il existe,
+    // sinon l'éditeur principal. Les commandes éditeur passent par la vue
+    // CodeMirror publiée séparément par Editor (setActiveEditorView).
+    if (splitTab && splitEditorRef.current) setActiveEditor(splitEditorRef.current);
+    else setActiveEditor(editorRef.current);
+  });
+
+  const editorOfSplit = () => splitTab && splitEditorRef.current ? splitEditorRef.current : editorRef.current;
+
+  // Ouvre la palette en mode « Go to Symbol » : charge les symboles du fichier
+  // actif (LSP si dispo, sinon fallback regex sur le contenu en mémoire).
+  const openSymbolPalette = async () => {
+    const path = activeTabRef.current;
+    if (!path || path.startsWith('__')) return;
+    let symbols: OutlineSymbol[] = [];
+    if (folderPath && hasLspForFile(path)) {
+      symbols = (await outlineFromLsp(path, folderPath)) ?? [];
+    }
+    if (symbols.length === 0) {
+      symbols = outlineFromText(fileContentsRef.current[path] ?? '', languageIdOf(path));
+    }
+    setPaletteSymbols(symbols);
+    setPaletteMode('symbol');
+    setPaletteOpen(true);
+  };
+
+  // Va à une ligne/colonne dans l'éditeur actif (mode « Go to Line »).
+  const goToLineInEditor = (line: number, col: number) => {
+    editorOfSplit()?.goToLine(line, col);
+  };
+
+  // Enregistre toutes les commandes du cœur de l'IDE dans la registry runtime.
+  // La Command Palette et le listener global les lisent : une source unique pour
+  // « quelles commandes existent et comment les exécuter ».
+  useEffect(() => {
+    const cmds: RuntimeCommand[] = [
+      // ── File ──
+      { id: 'origin.newFile',       title: 'New File',        category: 'File',  keywords: 'create untitled',  run: () => handleNewFile() },
+      { id: 'origin.openFile',      title: 'Open File…',      category: 'File',  keywords: 'browse disk',      run: () => { void handleOpenFile(); } },
+      { id: 'origin.openFolder',    title: 'Open Folder…',    category: 'File',  keywords: 'workspace project', run: () => { void handleOpenFolder(); } },
+      { id: 'origin.save',          title: 'Save',            category: 'File',  keywords: 'write',            run: () => { void saveActiveFormatted(); } },
+      { id: 'origin.saveAs',        title: 'Save As…',        category: 'File',  run: () => { void handleSaveAs(); } },
+      { id: 'origin.saveAll',       title: 'Save All',        category: 'File',  run: () => { void handleSaveAll(); } },
+      { id: 'origin.closeTab',      title: 'Close Editor',    category: 'File',  keywords: 'tab',              run: () => { if (activeTabRef.current) closeTab(activeTabRef.current); } },
+      { id: 'origin.closeFolder',   title: 'Close Folder',    category: 'File',  run: () => setFolderPath(null) },
+      { id: 'origin.newWindow',     title: 'New Window',      category: 'File',  run: () => { void handleNewWindow(); } },
+
+      // ── Edit ──
+      { id: 'origin.editorUndo',    title: 'Undo',            category: 'Edit',  run: () => editorOfSplit()?.undo() },
+      { id: 'origin.editorRedo',    title: 'Redo',            category: 'Edit',  run: () => editorOfSplit()?.redo() },
+      { id: 'origin.editorCut',     title: 'Cut',             category: 'Edit',  run: () => editorOfSplit()?.cut() },
+      { id: 'origin.editorCopy',    title: 'Copy',            category: 'Edit',  run: () => editorOfSplit()?.copy() },
+      { id: 'origin.editorPaste',   title: 'Paste',           category: 'Edit',  run: () => editorOfSplit()?.paste() },
+      { id: 'origin.editorSelectAll', title: 'Select All',    category: 'Edit',  run: () => editorOfSplit()?.selectAll() },
+      { id: 'origin.editorFind',    title: 'Find',            category: 'Edit',  keywords: 'search',           run: () => editorOfSplit()?.openFind() },
+      { id: 'origin.editorReplace', title: 'Replace',         category: 'Edit',  keywords: 'search substitute', run: () => editorOfSplit()?.openReplace() },
+      { id: 'editor.formatDocument',title: 'Format Document', category: 'Edit',  keywords: 'prettier beautify', run: () => { void editorOfSplit()?.formatDocument(); } },
+      { id: 'editor.renameSymbol',  title: 'Rename Symbol',   category: 'Edit',  keywords: 'refactor f2',      run: () => editorOfSplit()?.renameSymbol() },
+      { id: 'editor.quickFix',      title: 'Quick Fix…',      category: 'Edit',  keywords: 'code action lightbulb', run: () => editorOfSplit()?.showCodeActions() },
+      { id: 'editor.transformToUpper', title: 'Transform to Uppercase', category: 'Edit', keywords: 'case upper', run: () => editorOfSplit()?.transformToUpper() },
+      { id: 'editor.transformToLower', title: 'Transform to Lowercase', category: 'Edit', keywords: 'case lower', run: () => editorOfSplit()?.transformToLower() },
+      { id: 'editor.transformToTitle', title: 'Transform to Title Case', category: 'Edit', keywords: 'case title', run: () => editorOfSplit()?.transformToTitle() },
+      { id: 'editor.transformToToggleCase', title: 'Transform to Toggle Case', category: 'Edit', keywords: 'case toggle invert', run: () => editorOfSplit()?.transformToToggleCase() },
+      { id: 'editor.sortLinesAsc',  title: 'Sort Lines Ascending',  category: 'Edit', keywords: 'sort order', run: () => editorOfSplit()?.sortLinesAsc() },
+      { id: 'editor.sortLinesDesc', title: 'Sort Lines Descending', category: 'Edit', keywords: 'sort order', run: () => editorOfSplit()?.sortLinesDesc() },
+
+      // ── Selection ──
+      { id: 'editor.selectLine',        title: 'Select Line',              category: 'Selection', keywords: 'expand',       run: () => editorOfSplit()?.selectLine() },
+      { id: 'editor.selectNextOccurrence', title: 'Select Next Occurrence', category: 'Selection', keywords: 'cmd+d word',  run: () => editorOfSplit()?.selectNextOccurrence() },
+      { id: 'editor.selectAllOccurrences', title: 'Select All Occurrences', category: 'Selection', keywords: 'cmd+shift+l word', run: () => editorOfSplit()?.selectAllOccurrences() },
+      { id: 'editor.addCursorBelow',    title: 'Add Cursor Below',         category: 'Selection', run: () => editorOfSplit()?.addCursorBelow() },
+      { id: 'editor.addCursorAbove',    title: 'Add Cursor Above',         category: 'Selection', run: () => editorOfSplit()?.addCursorAbove() },
+      { id: 'editor.addCursorToLineEnd', title: 'Add Cursors to Line Ends', category: 'Selection', run: () => editorOfSplit()?.addCursorToLineEnd() },
+
+      // ── Lines ──
+      { id: 'editor.duplicateLineUp',   title: 'Duplicate Line Up',   category: 'Lines', keywords: 'copy', run: () => editorOfSplit()?.duplicateLineUp() },
+      { id: 'editor.duplicateLineDown', title: 'Duplicate Line Down', category: 'Lines', keywords: 'copy', run: () => editorOfSplit()?.duplicateLineDown() },
+      { id: 'editor.moveLineUp',        title: 'Move Line Up',        category: 'Lines', run: () => editorOfSplit()?.moveLineUp() },
+      { id: 'editor.moveLineDown',      title: 'Move Line Down',      category: 'Lines', run: () => editorOfSplit()?.moveLineDown() },
+      { id: 'editor.deleteLines',       title: 'Delete Line',         category: 'Lines', keywords: 'cut remove', run: () => editorOfSplit()?.deleteLines() },
+      { id: 'editor.insertLineBelow',   title: 'Insert Line Below',   category: 'Lines', run: () => editorOfSplit()?.insertLineBelow() },
+      { id: 'editor.insertLineAbove',   title: 'Insert Line Above',   category: 'Lines', run: () => editorOfSplit()?.insertLineAbove() },
+      { id: 'editor.toggleComment',     title: 'Toggle Line Comment', category: 'Lines', keywords: 'comment', run: () => editorOfSplit()?.toggleComment() },
+      { id: 'editor.indentMore',        title: 'Indent Lines',        category: 'Lines', keywords: 'tab',  run: () => editorOfSplit()?.indentMore() },
+      { id: 'editor.indentLess',        title: 'Outdent Lines',       category: 'Lines', keywords: 'tab',  run: () => editorOfSplit()?.indentLess() },
+
+      // ── View ──
+      { id: 'origin.toggleSidebar',  title: 'Toggle Sidebar',     category: 'View', enabled: sidebarOpen,      run: () => setSidebarOpen(v => !v) },
+      { id: 'origin.toggleTerminal', title: 'Toggle Terminal',    category: 'View', enabled: terminalOpen,     run: () => setTerminalOpen(v => !v) },
+      { id: 'origin.toggleSplit',    title: 'Toggle Split Editor', category: 'View', run: () => setSplitTab(prev => (prev !== null ? null : (activeTabRef.current && !activeTabRef.current.startsWith('__') ? activeTabRef.current : null))) },
+      { id: 'origin.toggleAiPanel',  title: 'Toggle AI Panel',    category: 'View', run: () => setAiPanelOpen(v => !v) },
+      { id: 'origin.toggleSettings', title: 'Open Settings',      category: 'View', keywords: 'preferences config', run: () => setSettingsOpen(true) },
+      { id: 'origin.togglePalette',  title: 'Command Palette',    category: 'View', keywords: 'palette commands', run: () => { setPaletteMode('command'); setPaletteOpen(true); } },
+      { id: 'origin.showCommands',   title: 'Show All Commands',  category: 'View', keywords: 'command palette list', run: () => { setPaletteMode('command'); setPaletteOpen(true); } },
+      { id: 'origin.quickOpen',      title: 'Go to File…',        category: 'Go',   keywords: 'quick open file', run: () => { setPaletteMode('quickopen'); setPaletteOpen(true); } },
+      { id: 'origin.toggleFullscreen', title: 'Toggle Full Screen', category: 'View', run: () => toggleFullscreen() },
+      { id: 'origin.setModeIde',     title: 'Switch to IDE Mode', category: 'View', run: () => setAppMode('ide') },
+      { id: 'origin.setModeAi',      title: 'Switch to AI Mode',  category: 'View', run: () => setAppMode('ai') },
+      { id: 'origin.zoomIn',         title: 'Zoom In',            category: 'View', run: () => handleZoomIn() },
+      { id: 'origin.zoomOut',        title: 'Zoom Out',           category: 'View', run: () => handleZoomOut() },
+      { id: 'origin.zoomReset',      title: 'Reset Zoom',         category: 'View', run: () => handleZoomReset() },
+      // Appearance — on expose ce qui est réellement câblé (pas de commande factice).
+      { id: 'origin.toggleMinimap',  title: 'Toggle Minimap',      category: 'View', keywords: 'appearance editor overview', run: () => setMinimap(v => !v) },
+      { id: 'origin.toggleStickyScroll', title: 'Toggle Sticky Scroll', category: 'View', keywords: 'appearance bonds en-tête', run: () => setStickyScroll(v => !v) },
+      { id: 'origin.toggleBracketColorization', title: 'Toggle Bracket Pair Colorization', category: 'View', keywords: 'appearance rainbow brackets', run: () => setBracketColorization(v => !v) },
+      // Ouvre la prévisualisation Markdown de l'onglet actif (si c'est un fichier .md).
+      { id: 'origin.openMarkdownPreview', title: 'Open Markdown Preview', category: 'View', keywords: 'markdown preview rendu md', enabled: !!activeTabRef.current && /\.mdx?$/i.test(activeTabRef.current), run: () => { const p = activeTabRef.current; if (p && /\.mdx?$/i.test(p)) openMarkdownPreviewTab(p); } },
+
+      // ── Go ──
+      { id: 'origin.goToLine',       title: 'Go to Line/Column…', category: 'Go', keywords: 'goto line number', run: () => { setPaletteMode('line'); setPaletteOpen(true); } },
+      { id: 'origin.gotoSymbol',     title: 'Go to Symbol in File…', category: 'Go', keywords: 'symbol outline', run: () => { void openSymbolPalette(); } },
+
+      // ── Terminal ──
+      { id: 'origin.newTerminal',    title: 'Create New Terminal', category: 'Terminal', keywords: 'shell new',  run: () => handleNewTerminalTab() },
+      { id: 'origin.clearTerminal',  title: 'Clear Terminal',      category: 'Terminal', keywords: 'reset console', run: () => terminalRef.current?.clearActive() },
+      { id: 'origin.killTerminal',   title: 'Kill Terminal',       category: 'Terminal', keywords: 'stop close session', run: () => terminalRef.current?.killActive() },
+
+      // ── Run / Debug ──
+      { id: 'origin.runFile',        title: 'Run Active File',    category: 'Run',   keywords: 'execute',        run: () => { void handleRunActiveFile(); } },
+      { id: 'origin.startDebug',     title: 'Start Debugging',    category: 'Debug', keywords: 'launch f5',      run: () => setSidebarOpen(true) },
+      { id: 'origin.stopDebug',      title: 'Stop Debugging',     category: 'Debug', enabled: debugCtx.session.status !== 'idle', run: () => debugCtx.stopSession() },
+      { id: 'origin.stepOver',       title: 'Step Over',          category: 'Debug', run: () => debugCtx.stepOver?.() },
+      { id: 'origin.stepInto',       title: 'Step Into',          category: 'Debug', run: () => debugCtx.stepIn?.() },
+      { id: 'origin.stepOut',        title: 'Step Out',           category: 'Debug', run: () => debugCtx.stepOut?.() },
+      { id: 'origin.pauseDebug',     title: 'Pause',              category: 'Debug', enabled: debugCtx.session.status === 'running', run: () => debugCtx.pause?.() },
+
+      // ── Developer ──
+      // « Reload Window » recharge le webview sans redémarrer le process natif :
+      // c'est l'équivalent VS Code le plus proche et il est instantané.
+      { id: 'origin.reloadWindow',   title: 'Reload Window',      category: 'Developer', keywords: 'restart refresh webview', run: () => window.location.reload() },
+      // Redémarre l'application native entière (utile après un changement de config).
+      { id: 'origin.restartWindow',  title: 'Restart Application', category: 'Developer', keywords: 'relaunch process', run: () => { void relaunch(); } },
+      { id: 'origin.reloadExtensions', title: 'Reload Extensions', category: 'Developer', keywords: 'extensions refresh', run: () => { void reloadExtensions(); } },
+
+      // ── Window ──
+      { id: 'origin.closeWindow',    title: 'Close Window',       category: 'Window', keywords: 'quit exit',      run: () => { void getCurrentWindow().close(); } },
+      { id: 'origin.minimizeWindow', title: 'Minimize Window',    category: 'Window', run: () => { void getCurrentWindow().minimize(); } },
+      { id: 'origin.maximizeWindow', title: 'Toggle Maximize Window', category: 'Window', keywords: 'zoom full', run: () => { void getCurrentWindow().toggleMaximize(); } },
+
+      // ── Help ──
+      { id: 'origin.welcome',        title: 'Welcome',            category: 'Help', keywords: 'get started onboarding', run: () => setPaletteOpen(false) },
+      { id: 'origin.keyboardShortcuts', title: 'Keyboard Shortcuts', category: 'Help', keywords: 'keybindings reference', run: () => { setPaletteMode('command'); setPaletteOpen(true); } },
+      { id: 'origin.checkUpdates',   title: 'Check for Updates…', category: 'Help', keywords: 'upgrade version', run: () => { void checkForUpdate().then(u => { showToast(u ? `Update available — v${u.version}` : 'Origin is up to date', 'info'); }).catch(() => showToast('Update check failed', 'error')); } },
+    ];
+    return registerCommands(cmds);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- les handlers de commande lisent l'état via refs/closure à jour ; ré-enregistrer à chaque changement d'état UI pertinent
+  }, [sidebarOpen, terminalOpen, splitTab, appMode, debugCtx.session.status, minimap, stickyScroll, bracketColorization]);
 
   return (
     <CommandContext.Provider value={commands}>
@@ -689,6 +859,8 @@ function App() {
                     getAiCompletion={getAiCompletion}
                     onEditorChange={handleEditorChange}
                     onCursorChange={(path, line, col) => setCursorPositions(prev => ({ ...prev, [path]: { line, col } }))}
+                    topLines={topLines}
+                    onScrollLine={(path, line) => setTopLines(prev => prev[path] === line ? prev : ({ ...prev, [path]: line }))}
                     onCloseTab={path => { if (path === '__preview__') localStorage.removeItem('origin-preview-url'); closeTab(path); }}
                     onAddToAiContext={ctx => { setPinnedContext(ctx); setAiPanelOpen(true); }}
                     onAcceptDiff={handleSave}
@@ -698,6 +870,9 @@ function App() {
                     onApplyWorkspaceEdits={handleApplyWorkspaceEdits}
                     onOpenFolder={handleOpenFolder}
                     onOpenProject={handleOpenProject}
+                    minimap={minimap}
+                    stickyScroll={stickyScroll}
+                    bracketColorization={bracketColorization}
                   />
                   {terminalOpen && (
                     <div
@@ -749,6 +924,8 @@ function App() {
                       getAiCompletion={getAiCompletion}
                       onEditorChange={handleEditorChange}
                       onCursorChange={(path, line, col) => setCursorPositions(prev => ({ ...prev, [path]: { line, col } }))}
+                      topLines={topLines}
+                      onScrollLine={(path, line) => setTopLines(prev => prev[path] === line ? prev : ({ ...prev, [path]: line }))}
                       onCloseTab={path => { if (path === '__preview__') localStorage.removeItem('origin-preview-url'); closeTab(path); if (path === splitTab) setSplitTab(null); }}
                       onAddToAiContext={ctx => { setPinnedContext(ctx); setAiPanelOpen(true); }}
                       onAcceptDiff={handleSave}
@@ -758,6 +935,9 @@ function App() {
                       onApplyWorkspaceEdits={handleApplyWorkspaceEdits}
                       onOpenFolder={handleOpenFolder}
                       onOpenProject={handleOpenProject}
+                      minimap={minimap}
+                      stickyScroll={stickyScroll}
+                      bracketColorization={bracketColorization}
                     />
                   </main>
                 </div>
@@ -797,9 +977,13 @@ function App() {
         <CommandPalette
           tabs={tabs}
           activeTab={activeTab}
+          openMode={paletteMode}
+          symbols={paletteSymbols}
+          onGoToLine={(line, col) => { goToLineInEditor(line, col); }}
+          onGoToSymbol={(line) => { const p = activeTabRef.current; if (p) openTabAtLine(p, line, 1); }}
           onFileOpen={openTab}
           onFileOpenAtLine={(path, line) => { setPaletteOpen(false); openTabAtLine(path, line, 0); }}
-          onClose={() => setPaletteOpen(false)}
+          onClose={() => { setPaletteOpen(false); setPaletteMode('command'); }}
           onNewFile={() => { setPaletteOpen(false); handleNewFile(); }}
           onOpenFolder={() => { setPaletteOpen(false); handleOpenFolder(); }}
           onOpenFile={() => { setPaletteOpen(false); handleOpenFile(); }}

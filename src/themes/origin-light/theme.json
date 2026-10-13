@@ -10,8 +10,8 @@
     "bg.hover":               "#0000001a",
     "bg.active":              "#0000001a",
     "bg.input":               "#fafafa",
-    "bg.selection":           "#00000012",
-    "bg.selection-focused":   "#00000022",
+    "bg.selection":           "#add6ff80",
+    "bg.selection-focused":   "#add6ff",
 
     "fg.default": "#171717",
     "fg.muted":   "#666666",
