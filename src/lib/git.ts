@@ -96,3 +96,44 @@ export async function gitCommitSync(path: string, title: string, description: st
 export async function gitDiff(path: string, maxBytes?: number): Promise<string> {
   return invoke<string>('git_diff', { path, maxBytes }).catch(() => '');
 }
+
+// ── Contenu à HEAD (base de comparaison du gutter de l'éditeur) ───────────────
+
+export type GitHeadResult =
+  | { status: 'tracked'; content: string }
+  | { status: 'untracked' }
+  | { status: 'none' };
+
+/**
+ * Renvoie le contenu de `file` tel qu'il est dans HEAD, pour la comparaison du
+ * gutter :
+ * - `tracked`   → contenu du blob HEAD ;
+ * - `untracked` → le fichier n'existe pas dans HEAD (nouveau fichier) ;
+ * - `none`      → `repoPath` n'est pas un dépôt git (aucun marqueur à afficher).
+ *
+ * `file` est un chemin **relatif** au workspace (`repoPath`).
+ */
+export async function gitFileHead(repoPath: string, file: string): Promise<GitHeadResult> {
+  try {
+    const content = await invoke<string | null>('git_file_head', { path: repoPath, file });
+    return content === null ? { status: 'untracked' } : { status: 'tracked', content };
+  } catch {
+    return { status: 'none' };
+  }
+}
+
+// ── Bus d'événements git (rafraîchissement du gutter) ─────────────────────────
+
+const GIT_CHANGED_EVENT = 'origin:git-changed';
+
+/** Prévient les éditeurs ouverts qu'un état git a changé (commit, stage,
+ *  checkout…), afin qu'ils rechargent leur référence HEAD. */
+export function notifyGitChanged(): void {
+  window.dispatchEvent(new Event(GIT_CHANGED_EVENT));
+}
+
+/** S'abonne aux changements d'état git. Renvoie une fonction de désabonnement. */
+export function onGitChanged(cb: () => void): () => void {
+  window.addEventListener(GIT_CHANGED_EVENT, cb);
+  return () => window.removeEventListener(GIT_CHANGED_EVENT, cb);
+}

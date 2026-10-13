@@ -5,6 +5,124 @@
 
 ---
 
+### [2026-10-13T13:30] | Git — inline diff gutter + resolveur de conflits de merge
+
+- **Contexte :**
+  L'IDE gérait commit/stage/branches mais l'éditeur n'affichait **aucun repère** des modifications par rapport à HEAD, et les fichiers en conflit de merge s'ouvraient comme du texte brut (marqueurs `<<<<<<<` non exploitables). Deux manques majeurs par rapport à VS Code.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/git.rs`** : nouvelle commande `git_file_head(path, file) → Result<Option<String>, String>` — `git rev-parse --is-inside-work-tree` d'abord (sinon `Err`), puis `git show HEAD:./<rel>`. `Ok(Some)` = suivi (tracked), `Ok(None)` = nouveau fichier (untracked), `Err` = hors dépôt. Chemin validé par `validate_rel_path` (confinement workspace).
+  - **`src-tauri/src/lib.rs`** : `git::git_file_head` enregistrée dans `generate_handler!`.
+  - **`src/lib/git.ts`** : `gitFileHead` + type `GitHeadResult` (`tracked`/`untracked`/`none`) ; bus d'événements `notifyGitChanged()` / `onGitChanged(cb)` (CustomEvent `origin:git-changed`).
+  - **`src/lib/gitGutter.ts`** (créé) : `computeLineChanges(original, current)` (diff borné `timeout:60, scanLimit:8000`, normalisation CRLF, classification added/modified/deleted) ; `relativeToRoot` ; extension CM6 (`StateField` + `RangeSet` + `gutter()` + `EditorView.baseTheme`), triangle pour les suppressions, garde-fou `MAX_LINES = 50_000`.
+  - **`src/lib/gitConflict.ts`** (créé) : `findConflictBlocks` (appariement par pile, gère l'imbrication et les marqueurs suffixés `<<<<<<< HEAD`/`>>>>>>> branche`), `currentSide`/`incomingSide`, `resolveConflict(text, block, 'current'|'incoming'|'both')` (fonction pure → testable), extension CM6 (surlignage des blocs + widget 3 boutons **Accept Current / Incoming / Both** ancré en fin de ligne `<<<<<<<`).
+  - **`src/components/editor/Editor.tsx`** : `gitCompartment` + `conflictCompartment` ; `useEffect` (dépendant de `path`/`rootPath`) qui active les deux extensions, charge le baseline HEAD (`gitFileHead`), et le rafraîchit sur `onGitChanged`. Les compartiments sont capturés en variable locale (warnings `exhaustive-deps` évités).
+  - **`src/components/SourceTreePanel.tsx`** : `load(notify = false)` → `notifyGitChanged()` ; **toutes** les opérations mutantes (commit, stage/unstage, stageAll/unstageAll, discard, pull/push/fetch, checkout, createBranch, refresh manuel) appellent `load(true)` pour rafraîchir les gutters.
+  - **Tests** : `src/lib/__tests__/gitGutter.test.ts` (13) + `src/lib/__tests__/gitConflict.test.ts` (10).
+
+- **Décisions Techniques :**
+  - **Réutilisation de `diff()` de `@codemirror/merge`** (déjà en dépendance pour la revue de diff IA) plutôt que d'un merge view par éditeur : diff asynchrone borné, aucun état de merge dans le document, coût maîtrisé à la frappe.
+  - **Ligne de frontière pour les suppressions** (triangle posé sur `lineAt(fromB)`), comme VS Code.
+  - **Bug corrigé pendant les tests** : lors d'un ajout en fin de fichier, l'algorithme de diff inclut le `\n` final de la ligne précédente dans le bloc inséré → la ligne de frontière était marquée `added` à tort. Correctif : si le texte inséré commence par `\n` (et qu'il s'agit d'une insertion pure), on démarre après cette frontière.
+  - **Résolution via `EditorView.findFromDOM`** : le widget retrouve sa vue à partir de son nœud DOM (pas de capture de closure fragile), puis raisonne en lignes pour retrouver le bloc et réécrit le document en une transaction (curseur remis au début, `scrollIntoView`).
+  - **Détection courte-circuitée** (`text.includes('<<<<<<<')`) : coût nul sur les fichiers sans conflit, qui sont l'immense majorité.
+  - **Confirmation/consentement** : aucune opération git destructive nouvelle introduite ; le resolver ne fait qu'éditer le buffer (l'utilisateur sauvegarde/stage ensuite), donc pas de garde-fou supplémentaire requis.
+
+- **Impacts & Dépendances :**
+  - Nouvelle commande Tauri → nécessite un rebuild du binaire Rust (fait : `cargo build --lib` OK).
+  - Le gutter dépend de `localStorage`/dépôt git : hors dépôt, baseline = `null`, aucun marqueur (dégradation silencieuse).
+  - `SourceTreePanel.load` : signature étendue avec paramètre optionnel `notify` (rétrocompatible).
+  - Le resolver est activé pour les fichiers de travail uniquement (exclut les onglets virtuels `__*`).
+
+- **Prochaines étapes :**
+  - Lot 5 : Panels — Outline (symboles) + Output.
+  - Lot 8 : ajouter blame par ligne au survol du gutter git.
+
+---
+
+### [2026-10-13T13:20] | LSP — rename symbol (F2) + code actions (lightbulb) + format on save
+
+- **Contexte :**
+  Les capacités LSP exposées se limitaient à diagnostics/completion/hover/définition. VS Code propose en plus le renommage de symbole, les quick fixes (ampoule) et le formatage. Le paquet `codemirror-languageserver` gère `rename`/`formatting` mais **pas** les code actions, et son API ne couvre pas le rename multi-fichiers piloté par l'app.
+
+- **Modifications effectuées :**
+  - **`src/lib/lspEdits.ts`** (créé) : types + helpers neutres pour appliquer les `TextEdit` LSP (`lspPosToOffset`, `offsetToLspPos`, `applyLspEdits` trié fin→début, `flattenWorkspaceEdit` qui aplatit `changes` + `documentChanges`). Base partagée formatage/rename/code actions.
+  - **`src/lib/lspCm6.ts`** : `uriToPath` exporté ; ajout des requêtes ponctuelles via `lsp_request` (serveur CM6 déjà initialisé) : `lspFormatDocument`, `lspPrepareRename`, `lspRename`, `lspCodeActions`, `lspExecuteCommand`.
+  - **`src/components/editor/Editor.tsx`** : `lspServerIdRef` (id serveur résolu pour le fichier) ; `applyWorkspaceEditLocally` (applique la part « fichier courant » dans la vue, remonte le reste via `onApplyWorkspaceEdits`) ; `runFormatDocument`, `triggerRename`/`confirmRename`, `fetchCodeActions` (alimentées par les diagnostics `forEachDiagnostic`)/`triggerCodeActions`/`applyCodeAction`. Keymap : `F2` → rename, `Mod-.` → code actions, `Shift-Alt-f` → format. `EditorHandle` enrichi (`formatDocument`, `getContent`, `renameSymbol`, `showCodeActions`). UI : invite de renommage flottante (Entrée/Échap/blur) + menu des code actions (portail, quick fixes `isPreferred` en tête) + bouton **ampoule** visible quand la ligne du curseur porte un diagnostic.
+  - **`src/hooks/useTabs.ts`** : `handleSave(path, contentOverride?)` (le format-on-save relit le doc formaté depuis la vue) ; nouvelle `applyWorkspaceEdits` (fichiers ouverts → patch mémoire + `isDirty` ; fichiers fermés → lecture/patch/écriture disque, comme VS Code).
+  - **`src/components/editor/EditorArea.tsx`** / **`src/App.tsx`** / **`src/components/ai/AgentModeView.tsx`** : prop `onApplyWorkspaceEdits` câblée jusqu'à `useTabs.applyWorkspaceEdits`.
+  - **`src/App.tsx`** : `saveActiveFormatted` (formate via `editorRef.formatDocument()` puis sauvegarde le contenu relu depuis la vue) branché sur le raccourci de sauvegarde et la commande `onSave`.
+  - **`src/components/settings/SettingsPanel.tsx`** : réglage « Format on save » (localStorage `origin-editor-format-on-save`, défaut activé).
+  - **`src/lib/__tests__/lspEdits.test.ts`** (créé) : 19 tests sur les helpers (conversion positions, ordre d'application, aplatissement des WorkspaceEdits).
+
+- **Décisions Techniques :**
+  - **Requêtes ponctuelles via `lsp_request` plutôt que via le client CM6** : le serveur est déjà démarré/initialisé par `createLspExtension` ; éviter d'orchestrer le plugin du paquet tiers tout en récupérant les structures LSP brutes (dont le rename multi-fichiers).
+  - **`applyWorkspaceEditLocally`** : éditer en place la vue pour le fichier courant (pas de rechargement d'onglet, préserve le focus) et remonter les autres fichiers à `useTabs`.
+  - **Fichiers fermés patchés sur disque** (comportement VS Code) ; les fichiers ouverts sont modifiés en mémoire et marqués `isDirty`.
+  - **Keymap au niveau éditeur** (pas dans le registre global) : F2/Ctrl+. n'agissent que sous focus éditeur et évitent un double déclenchement avec le listener `window`.
+  - **Ampoule = heuristique diagnostic** (la ligne du curseur porte un diagnostic) plutôt qu'un round-trip LSP par mouvement de curseur : zéro requête supplémentaire, pas d'icône « morte ».
+
+- **Impacts & Dépendances :**
+  - Nouvelle prop `onApplyWorkspaceEdits` en cascade `App` → `EditorArea`/`AgentModeView` → `Editor`.
+  - `handleSave` accepte désormais un override de contenu (signature étendue, rétrocompatible).
+  - Le format-on-save lit la préférence `localStorage` (`origin-editor-format-on-save`) exposée dans Réglages > General.
+
+- **Prochaines étapes :**
+  - Lot 4 : Git (inline diff gutter + merge conflict resolver).
+  - Réutiliser `EditorArea` dans `AgentModeView` pour finaliser la déduplication (dette notée au Lot 2).
+
+---
+
+### [2026-10-13T13:00] | Éditeur — split côte à côte + extraction `EditorArea`
+
+- **Contexte :**
+  L'éditeur ne gérait qu'un seul groupe d'onglets. Le routage de l'onglet actif (diff, preview, médias, texte) était **dupliqué** entre `App.tsx` et `AgentModeView.tsx`, ce qui rendait l'ajout d'un second panneau risqué et coûteux.
+
+- **Modifications effectuées :**
+  - **`src/components/editor/EditorArea.tsx`** (créé) : extraction de la cascade de rendu de l'onglet actif (`EditorEmptyState` → `EditorWelcome` → `__diff__` → `__preview__` → `__mdpreview__` → kind image/pdf/binary/video/audio → `Editor` → erreurs → `LoadingPane`). Props explicites, `Ref<EditorHandle>` injectable par l'appelant.
+  - **`src/App.tsx`** : imports nettoyés (les panneaux ne sont plus importés en direct), `EditorArea` importé et rendu **deux fois** ; état de split `splitTab`/`splitEditorRef` ; second panneau (flex-1, bordure gauche) avec son propre `TabBar` + `EditorArea`.
+  - **`src/hooks/useGlobalKeybindings.ts`** : ajout de `toggleSplit?` dans `GlobalHandlers` + entrée `origin.toggleSplit` dans la table `dispatch`.
+  - **`src/lib/keybindings.ts`** : commande `origin.toggleSplit` (« Split Editor », catégorie View, défaut `Ctrl/Cmd+\`) + mapping d'import VS Code `workbench.action.splitEditor`.
+
+- **Décisions Techniques :**
+  - **Extraction `EditorArea` plutôt que duplication** : le split exige deux rendus de la même logique ; l'extraction supprime au passage la dette de duplication App/AgentModeView (routage par préfixe de path conservé à un seul endroit).
+  - **Deux groupes partagent la même liste d'onglets** (comportement VS Code) : chaque panneau a son propre `activeTab` visuel, mais ouvre les fichiers du même pool.
+  - **Non-objectif assumé** : l'éditeur d'une même ressource ouvert dans les deux panneaux garde deux états CodeMirror indépendants (pas de synchronisation live). Suffisant pour un premier lot ; à traiter si besoin (broadcast de `onChange`).
+
+- **Impacts & Dépendances :**
+  - `AgentModeView.tsx` peut désormais réutiliser `EditorArea` pour supprimer sa propre duplication (à faire dans un lot ultérieur).
+  - `Cmd/Ctrl+\` bascule le split ; fermer l'onglet du panneau droit (`×`) referme le split s'il n'y a plus d'onglet actif.
+
+- **Prochaines étapes :**
+  - Lot 3 : rename symbol (F2) + code actions (lightbulb) + format on save.
+  - Envisager la réutilisation d'`EditorArea` dans `AgentModeView` pour finaliser la déduplication.
+
+---
+
+### [2026-10-13T12:40] | Éditeur — minimap + folding + sticky scroll
+
+- **Contexte :**
+  Pour se rapprocher de l'ergonomie VS Code : navigation rapide (minimap), repli de code (folding) et contexte syntaxique persistant en haut du viewport (sticky scroll).
+
+- **Modifications effectuées :**
+  - **`src/components/editor/Editor.tsx`** : ajout de `codeFolding()`, `foldGutter()` et `...foldKeymap` (déjà fournis par `@codemirror/language`, aucune install). Compartiments `minimapCompartment` et `stickyCompartment` (reconfiguration à chaud) ; props `minimap` et `stickyScroll` (défaut `true`). `position: relative` ajouté au thème racine (requis pour le sticky absolu). Styles : gouttière de repli, placeholder, gouttière minimap, overlay `.cm-sticky-scroll`.
+  - **`src/lib/stickyScroll.ts`** (créé) : plugin `ViewPlugin` maison. `enclosingHeaders()` remonte la chaîne d'ancêtres syntaxiques (`tree.resolveInner` + `node.parent`) et retient les en-têtes multi-lignes strictement au-dessus du viewport ; l'overlay `.cm-sticky-scroll` s'aligne sur la largeur de la gouttière et ses lignes sont cliquables (saut + défilement).
+  - **`@replit/codemirror-minimap@0.5.2`** (MIT) installé via `bun add` ; intégré via `showMinimap.compute(['doc'], …)` avec `displayText: 'blocks'`.
+
+- **Décisions Techniques :**
+  - **Minimap via paquet tiers** (`@replit/codemirror-minimap`, licence MIT permissive) plutôt qu'une implémentation maison : coût/bénéfice défavorable pour un canvas de rendu.
+  - **Sticky scroll maison** : aucun paquet open-source CM6 stable ne le fournit ; l'heuristique des ancêtres syntaxiques est générique (indépendante du langage) et réutilise l'arbre Lezer déjà présent.
+  - **Compartiments** pour minimap/sticky/folding : permettent d'activer/désactiver sans recréer l'éditeur (perspective de réglages par onglet).
+
+- **Impacts & Dépendances :**
+  - Nouvelle dépendance front : `@replit/codemirror-minimap`.
+  - Le thème de l'éditeur ajoute `position: relative` sur `&` — prérequis pour le positionnement absolu de l'overlay sticky.
+
+- **Prochaines étapes :**
+  - Exposer minimap/sticky/folding dans les réglages utilisateur (aujourd'hui : props avec défaut `true`).
+
+---
+
 ### [2026-10-13T02:15] | LSP — ajout de 4 serveurs légers (Svelte, Vue, Astro, Prisma)
 
 - **Contexte :**

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { readFile, readFileBase64, writeFile } from "../lib/fs";
 import { fileKindOf, imageMimeOf, mediaMimeOf, isBinaryReadable } from "../lib/fileKind";
+import { applyLspEdits, type FileEdits } from "../lib/lspEdits";
 import type { Tab } from "../components/editor/TabBar";
 import { useToast } from "../components/ui/Toast";
 
@@ -149,8 +150,8 @@ export function useTabs() {
     setActiveTab(tabPath);
   }
 
-  async function handleSave(path: string) {
-    const content = fileContentsRef.current[path];
+  async function handleSave(path: string, contentOverride?: string) {
+    const content = contentOverride ?? fileContentsRef.current[path];
     if (content === undefined) return;
     const tab = tabs.find(t => t.path === path);
     if (tab?.isUntitled) {
@@ -187,6 +188,36 @@ export function useTabs() {
     for (const tab of dirty) await handleSave(tab.path);
   }
 
+  /**
+   * Applique des éditions LSP (rename / code action) touchant d'autres fichiers
+   * que l'éditeur courant. Les fichiers ouverts sont modifiés en mémoire (et
+   * marqués comme modifiés) ; les fichiers fermés sont patchés directement sur
+   * le disque, comme le fait VS Code.
+   */
+  async function applyWorkspaceEdits(edits: FileEdits[]): Promise<void> {
+    for (const { path, edits: fileEdits } of edits) {
+      const open = fileContentsRef.current[path];
+      if (open !== undefined) {
+        const next = applyLspEdits(open, fileEdits);
+        if (next === open) continue;
+        setFileContents(prev => ({ ...prev, [path]: next }));
+        setTabs(prev => prev.map(t => t.path === path ? { ...t, isDirty: true } : t));
+      } else {
+        try {
+          const current = await readFile(path);
+          const next = applyLspEdits(current, fileEdits);
+          if (next === current) continue;
+          await writeFile(path, next);
+          setFileTreeVersion(v => v + 1);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+          showToast(`Failed to update ${name}: ${msg}`, 'error');
+        }
+      }
+    }
+  }
+
   return {
     tabs, setTabs,
     activeTab, setActiveTab,
@@ -199,6 +230,6 @@ export function useTabs() {
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
-    handleSave, handleSaveAs, handleSaveAll,
+    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits,
   };
 }

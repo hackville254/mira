@@ -8,6 +8,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { LanguageServerClient, languageServerWithTransport } from 'codemirror-languageserver';
 import type { Transport } from 'codemirror-languageserver';
 import { getLspLanguageId, pathToUri, type LspServerId } from './lsp';
+import type { LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit } from './lspEdits';
 import { KNOWN_SERVERS } from './lspConfig';
 import type { KnownServer } from './lspConfig';
 import { parseLspBinaryError } from './lspProbe';
@@ -183,7 +184,7 @@ function posToOffset(doc: any, pos: { line: number; character: number }): number
   return line.from + Math.min(pos.character, line.length);
 }
 
-function uriToPath(uri: string): string {
+export function uriToPath(uri: string): string {
   if (!uri.startsWith('file://')) return uri;
   // decodeURIComponent handles both file:///d%3A/foo and file:///d:/foo
   let p = decodeURIComponent(uri.slice('file://'.length));
@@ -279,4 +280,98 @@ export async function createLspExtension(opts: LspExtensionOptions): Promise<Ext
     definitionKeymap,
     ...lspExtensions,
   ];
+}
+
+// ── Requêtes LSP ponctuelles (formatage, rename, code actions) ─────────────────
+// Passent par `lsp_request` (même serveur que le client CM6, déjà démarré et
+// initialisé). Le serveur répond avec les structures LSP brutes.
+
+/** Options de formatage envoyées au serveur. */
+export interface LspFormattingOptions { tabSize: number; insertSpaces: boolean }
+
+/** `textDocument/formatting` → liste d'éditions (ou `null` si non supporté). */
+export async function lspFormatDocument(
+  serverId: LspServerId,
+  filePath: string,
+  options: LspFormattingOptions,
+): Promise<LspTextEdit[] | null> {
+  return invoke<LspTextEdit[] | null>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/formatting',
+    params: { textDocument: { uri: pathToUri(filePath) }, options },
+  });
+}
+
+/** `textDocument/prepareRename` → plage + placeholder (ou `null`). */
+export async function lspPrepareRename(
+  serverId: LspServerId,
+  filePath: string,
+  position: LspPosition,
+): Promise<{ range: LspRange; placeholder: string } | null> {
+  const res = await invoke<unknown>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/prepareRename',
+    params: { textDocument: { uri: pathToUri(filePath) }, position },
+  });
+  if (!res || typeof res !== 'object') return null;
+  const r = res as { range?: LspRange; placeholder?: string; start?: LspPosition; end?: LspPosition };
+  if (r.range && r.placeholder !== undefined) return { range: r.range, placeholder: r.placeholder };
+  if (r.start && r.end) return { range: { start: r.start, end: r.end }, placeholder: r.placeholder ?? '' };
+  return null;
+}
+
+/** `textDocument/rename` → édition multi-fichiers (ou `null`). */
+export async function lspRename(
+  serverId: LspServerId,
+  filePath: string,
+  position: LspPosition,
+  newName: string,
+): Promise<LspWorkspaceEdit | null> {
+  return invoke<LspWorkspaceEdit | null>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/rename',
+    params: { textDocument: { uri: pathToUri(filePath) }, position, newName },
+  });
+}
+
+/** Élément renvoyé par `textDocument/codeAction` (Command ou CodeAction). */
+export interface RawCodeAction {
+  title?: string;
+  kind?: string;
+  isPreferred?: boolean;
+  edit?: LspWorkspaceEdit;
+  command?: string | { command: string; arguments?: unknown[] };
+  arguments?: unknown[];
+}
+
+/** `textDocument/codeAction` → actions disponibles dans la plage. */
+export async function lspCodeActions(
+  serverId: LspServerId,
+  filePath: string,
+  range: LspRange,
+  diagnostics: unknown[],
+): Promise<RawCodeAction[]> {
+  const res = await invoke<RawCodeAction[] | null>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/codeAction',
+    params: {
+      textDocument: { uri: pathToUri(filePath) },
+      range,
+      context: { diagnostics, only: null, triggerKind: 1 },
+    },
+  });
+  return res ?? [];
+}
+
+/** `workspace/executeCommand` — exécute la commande serveur d'une action. */
+export async function lspExecuteCommand(
+  serverId: LspServerId,
+  command: string,
+  args: unknown[],
+): Promise<void> {
+  await invoke('lsp_request', {
+    language: serverId,
+    method: 'workspace/executeCommand',
+    params: { command, arguments: args },
+  });
 }

@@ -8,6 +8,7 @@ import {
   gitPull, gitPush, gitFetch,
   gitListBranches, gitCheckout, gitCreateBranch,
   gitCommitAmend, gitCommitSync,
+  notifyGitChanged,
   type StatusFile, type FullCommitEntry, type BranchEntry,
 } from '../lib/git';
 import { generateCommitMessage } from '../lib/gitCommitMessage';
@@ -89,7 +90,7 @@ export default function SourceTreePanel() {
     return () => cancelAnimationFrame(id);
   }, [history]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (notify = false) => {
     if (!folderPath) return;
     const [f, h] = await Promise.all([
       getStatusFiles(folderPath),
@@ -97,6 +98,8 @@ export default function SourceTreePanel() {
     ]);
     setFiles(f);
     setHistory(h);
+    // Signale aux éditeurs ouverts de recharger leur référence HEAD (gutter).
+    if (notify) notifyGitChanged();
     return { files: f, history: h };
   }, [folderPath]);
 
@@ -114,7 +117,7 @@ export default function SourceTreePanel() {
     if (!folderPath || refreshing) return;
     setRefreshing(true);
     try {
-      const result = await load();
+      const result = await load(true);
       const f = result?.files ?? [];
       const h = result?.history ?? [];
       showToast(
@@ -169,7 +172,7 @@ export default function SourceTreePanel() {
         sync:   'Committed, synced and pushed.',
       };
       showToast(labels[mode], 'success');
-      await load();
+      await load(true);
     } catch (e: unknown) {
       showToast(String(e), 'error');
     } finally {
@@ -180,17 +183,17 @@ export default function SourceTreePanel() {
   // ── Staging ────────────────────────────────────────────────────────────────
   async function stageFile(file: string) {
     if (!folderPath) return;
-    try { await gitStage(folderPath, file); await load(); }
+    try { await gitStage(folderPath, file); await load(true); }
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
   async function unstageFile(file: string) {
     if (!folderPath) return;
-    try { await gitUnstage(folderPath, file); await load(); }
+    try { await gitUnstage(folderPath, file); await load(true); }
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
   async function stageAllFiles() {
     if (!folderPath) return;
-    try { await gitStageAll(folderPath); showToast('All changes staged.', 'success'); await load(); }
+    try { await gitStageAll(folderPath); showToast('All changes staged.', 'success'); await load(true); }
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
   async function unstageAllFiles() {
@@ -200,7 +203,7 @@ export default function SourceTreePanel() {
     try {
       for (const f of staged) await gitUnstage(folderPath, f.path);
       showToast('All changes unstaged.', 'success');
-      await load();
+      await load(true);
     } catch (e: unknown) { showToast(String(e), 'error'); }
   }
   async function discardFile(file: string) {
@@ -208,7 +211,7 @@ export default function SourceTreePanel() {
     try { await gitDiscard(folderPath, file); showToast('Changes discarded.', 'success'); }
     catch (e: unknown) { showToast(String(e), 'error'); }
     setPendingDelete(null);
-    await load();
+    await load(true);
   }
 
   // ── Remote ─────────────────────────────────────────────────────────────────
@@ -220,7 +223,7 @@ export default function SourceTreePanel() {
       else if (kind === 'push')  await gitPush(folderPath);
       else                       await gitFetch(folderPath);
       if (!silent) showToast(`${kind.charAt(0).toUpperCase()}${kind.slice(1)} done.`, 'success');
-      await load();
+      await load(true);
     } catch (e: unknown) {
       showToast(String(e), 'error');
     } finally {
@@ -236,14 +239,14 @@ export default function SourceTreePanel() {
   }
   async function checkoutBranch(branch: string) {
     if (!folderPath) return;
-    try { await gitCheckout(folderPath, branch); showToast(`Switched to ${branch}.`, 'success'); await load(); }
+    try { await gitCheckout(folderPath, branch); showToast(`Switched to ${branch}.`, 'success'); await load(true); }
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
   async function createBranch() {
     if (!folderPath) return;
     const name = window.prompt('New branch name:');
     if (!name || !name.trim()) return;
-    try { await gitCreateBranch(folderPath, name.trim()); showToast(`Created ${name.trim()}.`, 'success'); await load(); }
+    try { await gitCreateBranch(folderPath, name.trim()); showToast(`Created ${name.trim()}.`, 'success'); await load(true); }
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
 

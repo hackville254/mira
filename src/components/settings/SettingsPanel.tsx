@@ -767,6 +767,7 @@ function AppearanceSection() {
 const AUTOCOMPLETE_DELAY_KEY = 'origin-editor-autocomplete-delay';
 const AUTOCOMPLETE_DELAY_UNIT_KEY = 'origin-editor-autocomplete-delay-unit';
 const AUTOCOMPLETE_DELAY_DEFAULT_MS = 350;
+const FORMAT_ON_SAVE_KEY = 'origin-editor-format-on-save';
 
 type DelayUnit = 'ms' | 's';
 
@@ -793,6 +794,9 @@ function GeneralSection() {
   const [completionsEnabled, setCompletionsEnabled] = useState(
     () => localStorage.getItem('origin-editor-ai-autocomplete') !== 'false'
   );
+  const [formatOnSave, setFormatOnSave] = useState(
+    () => localStorage.getItem(FORMAT_ON_SAVE_KEY) !== 'false'
+  );
 
   function commitInput(raw: string) {
     const ms = displayToMs(raw, unit);
@@ -815,6 +819,12 @@ function GeneralSection() {
     const next = !completionsEnabled;
     localStorage.setItem('origin-editor-ai-autocomplete', next ? 'true' : 'false');
     setCompletionsEnabled(next);
+  }
+
+  function toggleFormatOnSave() {
+    const next = !formatOnSave;
+    localStorage.setItem(FORMAT_ON_SAVE_KEY, next ? 'true' : 'false');
+    setFormatOnSave(next);
   }
 
   const inputStyle: React.CSSProperties = {
@@ -863,6 +873,14 @@ function GeneralSection() {
           <option value="ms">ms</option>
           <option value="s">s</option>
         </select>
+      </SettingRow>
+
+      <SectionHeading>Editor</SectionHeading>
+      <SettingRow
+        title="Format on save"
+        description="Run the language server formatter on the active file before it is written to disk."
+      >
+        <Toggle on={formatOnSave} onToggle={toggleFormatOnSave} />
       </SettingRow>
     </div>
   );

@@ -5,19 +5,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import TitleBar from "./components/TitleBar";
 import Sidebar from "./components/Sidebar";
 import Onboarding from "./components/onboarding/Onboarding";
-import EditorEmptyState from "./components/editor/EditorEmptyState";
-import EditorWelcome from "./components/editor/EditorWelcome";
 import TabBar from "./components/editor/TabBar";
-import Editor, { type EditorHandle, type EditorContext } from "./components/editor/Editor";
-import AiDiffPane, { type AiDiffTabData } from "./components/editor/AiDiffPane";
-import WebPreviewPane from "./components/editor/WebPreviewPane";
-import MarkdownPreviewPane from "./components/editor/MarkdownPreviewPane";
-import ImageViewerPane from "./components/editor/ImageViewerPane";
-import PdfViewerPane from "./components/editor/PdfViewerPane";
-import VideoViewerPane from "./components/editor/VideoViewerPane";
-import AudioViewerPane from "./components/editor/AudioViewerPane";
-import UnsupportedFilePane from "./components/editor/UnsupportedFilePane";
-import { fileKindOf } from "./lib/fileKind";
+import EditorArea from "./components/editor/EditorArea";
+import type { EditorHandle, EditorContext } from "./components/editor/Editor";
 import StatusBar from "./components/StatusBar";
 import TerminalPanel, { type TerminalPanelHandle } from "./components/terminal/TerminalPanel";
 import CommandPalette from "./components/palette/CommandPalette";
@@ -52,6 +42,7 @@ import { CommandContext } from "./context/CommandContext";
 import { useTabs } from "./hooks/useTabs";
 import { useWorkspacePersistence } from "./hooks/useWorkspacePersistence";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
+import type { FileEdits } from "./lib/lspEdits";
 
 function App() {
   const { folderPath, setFolderPath } = useWorkspace();
@@ -73,7 +64,7 @@ function App() {
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
-    handleSave, handleSaveAs, handleSaveAll,
+    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits,
   } = useTabs();
 
   const {
@@ -111,6 +102,9 @@ function App() {
 
   const { showToast } = useToast();
   const editorRef      = useRef<EditorHandle>(null);
+  // Split editor : second groupe d'onglets (panneau droit). `null` = pas de split.
+  const splitEditorRef = useRef<EditorHandle>(null);
+  const [splitTab, setSplitTab] = useState<string | null>(null);
   const terminalRef    = useRef<TerminalPanelHandle>(null);
   const pendingDiffRef = useRef<{ code: string; targetPath: string } | null>(null);
   const [pendingDiffTick, setPendingDiffTick] = useState(0);
@@ -319,8 +313,28 @@ function App() {
     editorRef.current?.syncBreakpoints(lines, pausedLine);
   }, [activeTab, debugCtx.session.breakpoints, debugCtx.session.stackFrames]);
 
+  // Format-on-save : formate le document actif via le serveur LSP avant écriture
+  // (désactivable dans Réglages > General). Le contenu formaté est relu depuis la
+  // vue CodeMirror pour rester synchronisé avec les éditions dispatchées.
+  async function saveActiveFormatted() {
+    const path = activeTabRef.current;
+    if (!path) return;
+    const formatOnSave = localStorage.getItem('origin-editor-format-on-save') !== 'false';
+    let content: string | undefined;
+    if (formatOnSave && !path.startsWith('__') && editorRef.current) {
+      await editorRef.current.formatDocument();
+      content = editorRef.current.getContent();
+    }
+    await handleSave(path, content);
+  }
+
+  // Applique les éditions LSP (rename / code actions) touchant d'autres fichiers.
+  function handleApplyWorkspaceEdits(edits: FileEdits[]) {
+    void applyWorkspaceEdits(edits);
+  }
+
   const { isFullscreen, toggleFullscreen } = useGlobalKeybindings({
-    saveActive:        () => { if (activeTab) handleSave(activeTab); },
+    saveActive:        () => { void saveActiveFormatted(); },
     toggleTerminal:    () => setTerminalOpen(v => !v),
     togglePalette:     () => setPaletteOpen(v => !v),
     toggleSettings:    () => setSettingsOpen(v => !v),
@@ -328,6 +342,7 @@ function App() {
     openFile:          () => handleOpenFile(),
     closeTab:          () => { if (activeTab) closeTab(activeTab); },
     toggleSidebar:     () => setSidebarOpen(v => !v),
+    toggleSplit:       () => setSplitTab(prev => (prev !== null ? null : (activeTab && !activeTab.startsWith('__') ? activeTab : null))),
     zoomIn:            () => handleZoomIn(),
     zoomOut:           () => handleZoomOut(),
     zoomReset:         () => handleZoomReset(),
@@ -551,7 +566,7 @@ function App() {
     dirtyCount: tabs.filter(t => t.isDirty).length,
     hasActiveTab: !!activeTab && !activeTab.startsWith('__diff__'),
     hasFolderOpen: !!folderPath,
-    onSave: () => { if (activeTab) handleSave(activeTab); },
+    onSave: () => { void saveActiveFormatted(); },
     onSaveAs: handleSaveAs,
     onSaveAll: handleSaveAll,
     onCloseEditor: () => { if (activeTab) closeTab(activeTab); },
@@ -627,6 +642,7 @@ function App() {
           handleMissingServer={handleMissingServer}
           lspGeneration={lspGeneration}
           onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
+          onApplyWorkspaceEdits={handleApplyWorkspaceEdits}
           terminalRef={terminalRef}
           terminalHeight={terminalHeight}
           setTerminalHeight={setTerminalHeight}
@@ -659,148 +675,30 @@ function App() {
                       onStop={debugCtx.stopSession}
                     />
                   )}
-                  {!folderPath ? (
-                    <EditorEmptyState
-                      onOpenFolder={handleOpenFolder}
-                      onOpenProject={handleOpenProject}
-                    />
-                  ) : tabs.length === 0 ? (
-                    <EditorWelcome />
-                  ) : activeTab?.startsWith('__diff__') ? (
-                    (() => {
-                      const diffTab = tabs.find(t => t.path === activeTab) as AiDiffTabData | undefined;
-                      if (!diffTab) return null;
-                      return <AiDiffPane tab={diffTab} onClose={() => closeTab(activeTab)} />;
-                    })()
-                  ) : activeTab === '__preview__' ? (
-                    <WebPreviewPane />
-                  ) : activeTab?.startsWith('__mdpreview__') ? (
-                    (() => {
-                      const mdTab = tabs.find(t => t.path === activeTab);
-                      const fp = mdTab?.filePath ?? activeTab.slice('__mdpreview__'.length);
-                      return (
-                        <MarkdownPreviewPane
-                          content={fileContents[fp] ?? ''}
-                          fileName={fp.split(/[\\/]/).filter(Boolean).pop() ?? fp}
-                        />
-                      );
-                    })()
-                  ) : activeTab && fileKindOf(activeTab) === 'image' ? (
-                    binaryData[activeTab] ? (
-                      <ImageViewerPane
-                        base64={binaryData[activeTab].base64}
-                        mime={binaryData[activeTab].mime}
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                      />
-                    ) : fileErrors[activeTab] ? (
-                      <UnsupportedFilePane
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                        reason={fileErrors[activeTab]}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center">
-                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
-                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
-                        </span>
-                      </div>
-                    )
-                  ) : activeTab && fileKindOf(activeTab) === 'pdf' ? (
-                    binaryData[activeTab] ? (
-                      <PdfViewerPane
-                        base64={binaryData[activeTab].base64}
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                      />
-                    ) : fileErrors[activeTab] ? (
-                      <UnsupportedFilePane
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                        reason={fileErrors[activeTab]}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center">
-                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
-                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
-                        </span>
-                      </div>
-                    )
-                  ) : activeTab && fileKindOf(activeTab) === 'binary' ? (
-                    <UnsupportedFilePane
-                      fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                    />
-                  ) : activeTab && fileKindOf(activeTab) === 'video' ? (
-                    binaryData[activeTab] ? (
-                      <VideoViewerPane
-                        base64={binaryData[activeTab].base64}
-                        mime={binaryData[activeTab].mime}
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                      />
-                    ) : fileErrors[activeTab] ? (
-                      <UnsupportedFilePane
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                        reason={fileErrors[activeTab]}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center">
-                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
-                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
-                        </span>
-                      </div>
-                    )
-                  ) : activeTab && fileKindOf(activeTab) === 'audio' ? (
-                    binaryData[activeTab] ? (
-                      <AudioViewerPane
-                        base64={binaryData[activeTab].base64}
-                        mime={binaryData[activeTab].mime}
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                      />
-                    ) : fileErrors[activeTab] ? (
-                      <UnsupportedFilePane
-                        fileName={activeTab.split(/[\\/]/).filter(Boolean).pop() ?? activeTab}
-                        reason={fileErrors[activeTab]}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center">
-                        <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
-                          Loading<span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
-                        </span>
-                      </div>
-                    )
-                  ) : activeTab && fileContents[activeTab] !== undefined ? (
-                    <Editor
-                      ref={editorRef}
-                      path={activeTab}
-                      content={fileContents[activeTab]}
-                      onChange={v => handleEditorChange(activeTab, v)}
-                      onCursorChange={(line, col) =>
-                        setCursorPositions(prev => ({ ...prev, [activeTab]: { line, col } }))
-                      }
-                      initialCursor={cursorPositions[activeTab]}
-                      jumpTo={jumpRequest?.path === activeTab ? jumpRequest : undefined}
-                      onAddToAiContext={ctx => { setPinnedContext(ctx); setAiPanelOpen(true); }}
-                      onAcceptDiff={() => handleSave(activeTab)}
-                      rootPath={folderPath}
-                      onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
-                      onMissingServer={handleMissingServer}
-                      lspGeneration={lspGeneration}
-                      getAiCompletion={getAiCompletion}
-                      onToggleBreakpoint={(fp, line) => debugCtx.toggleBreakpoint(fp, line)}
-                    />
-                  ) : activeTab && fileErrors[activeTab] ? (
-                    <div className="flex-1 flex flex-col items-center justify-center gap-2">
-                      <p className="text-xs" style={{ color: "var(--origin-semantic-error)" }}>
-                        Failed to read {activeTab.split(/[\\/]/).pop()}
-                      </p>
-                      <p className="text-xs" style={{ color: "var(--origin-fg-subtle)" }}>
-                        {fileErrors[activeTab]}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="flex-1 flex items-center justify-center">
-                      <span className="text-xs" style={{ color: "var(--origin-fg-subtle)", opacity: 0.6, letterSpacing: "0.12em" }}>
-                        Loading
-                        <span style={{ animation: "origin-ellipsis 1.2s steps(4, end) infinite" }}>…</span>
-                      </span>
-                    </div>
-                  )}
+                  <EditorArea
+                    folderPath={folderPath}
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    fileContents={fileContents}
+                    binaryData={binaryData}
+                    fileErrors={fileErrors}
+                    cursorPositions={cursorPositions}
+                    jumpRequest={jumpRequest}
+                    editorRef={editorRef}
+                    lspGeneration={lspGeneration}
+                    getAiCompletion={getAiCompletion}
+                    onEditorChange={handleEditorChange}
+                    onCursorChange={(path, line, col) => setCursorPositions(prev => ({ ...prev, [path]: { line, col } }))}
+                    onCloseTab={path => { if (path === '__preview__') localStorage.removeItem('origin-preview-url'); closeTab(path); }}
+                    onAddToAiContext={ctx => { setPinnedContext(ctx); setAiPanelOpen(true); }}
+                    onAcceptDiff={handleSave}
+                    onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
+                    onMissingServer={handleMissingServer}
+                    onToggleBreakpoint={(fp, line) => debugCtx.toggleBreakpoint(fp, line)}
+                    onApplyWorkspaceEdits={handleApplyWorkspaceEdits}
+                    onOpenFolder={handleOpenFolder}
+                    onOpenProject={handleOpenProject}
+                  />
                   {terminalOpen && (
                     <div
                       style={{
@@ -824,6 +722,46 @@ function App() {
                   />
                 )}
               </div>
+              {splitTab !== null && (
+                <div className="flex-1 flex flex-col overflow-hidden gap-1 min-w-0" style={{ borderLeft: "1px solid var(--origin-border-default)" }}>
+                  <TabBar
+                    tabs={tabs}
+                    activeTab={splitTab}
+                    onSelect={setSplitTab}
+                    onClose={(path) => {
+                      if (path === '__preview__') localStorage.removeItem('origin-preview-url');
+                      closeTab(path);
+                      if (path === splitTab) setSplitTab(null);
+                    }}
+                  />
+                  <main className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--origin-bg-editor)", position: "relative" }}>
+                    <EditorArea
+                      folderPath={folderPath}
+                      tabs={tabs}
+                      activeTab={splitTab}
+                      fileContents={fileContents}
+                      binaryData={binaryData}
+                      fileErrors={fileErrors}
+                      cursorPositions={cursorPositions}
+                      jumpRequest={jumpRequest}
+                      editorRef={splitEditorRef}
+                      lspGeneration={lspGeneration}
+                      getAiCompletion={getAiCompletion}
+                      onEditorChange={handleEditorChange}
+                      onCursorChange={(path, line, col) => setCursorPositions(prev => ({ ...prev, [path]: { line, col } }))}
+                      onCloseTab={path => { if (path === '__preview__') localStorage.removeItem('origin-preview-url'); closeTab(path); if (path === splitTab) setSplitTab(null); }}
+                      onAddToAiContext={ctx => { setPinnedContext(ctx); setAiPanelOpen(true); }}
+                      onAcceptDiff={handleSave}
+                      onDefinitionJump={(fp, line, col) => openTabAtLine(fp, line, col)}
+                      onMissingServer={handleMissingServer}
+                      onToggleBreakpoint={(fp, line) => debugCtx.toggleBreakpoint(fp, line)}
+                      onApplyWorkspaceEdits={handleApplyWorkspaceEdits}
+                      onOpenFolder={handleOpenFolder}
+                      onOpenProject={handleOpenProject}
+                    />
+                  </main>
+                </div>
+              )}
               {aiPanelOpen && (
                 <AiPanel
                   getEditorContext={() => editorRef.current?.getEditorContext() ?? null}

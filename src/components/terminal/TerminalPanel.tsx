@@ -4,6 +4,7 @@ import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
 import { terminalShellName } from "../../lib/terminal";
 import TerminalInstance from "./Terminal";
 import ProblemsPanel from "../problems/ProblemsPanel";
+import OutputPanel from "../output/OutputPanel";
 
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 600;
@@ -30,6 +31,8 @@ export interface TerminalPanelHandle {
   runTaskInNewTab: (name: string, program: string, args: string[]) => void;
   /** Ouvre l'onglet Problems dans le panneau bas. */
   showProblems: () => void;
+  /** Ouvre l'onglet Output dans le panneau bas. */
+  showOutput: () => void;
 }
 
 interface Props {
@@ -44,7 +47,7 @@ interface Props {
   onOpenFile?: (path: string, line: number, col: number) => void;
 }
 
-type BottomView = 'terminal' | 'problems';
+type BottomView = 'terminal' | 'problems' | 'output';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -211,6 +214,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       setView('terminal');
     },
     showProblems() { setView('problems'); },
+    showOutput() { setView('output'); },
   }));
 
   // ── Resolve the real shell name, then restore/create the initial tab ─────
@@ -379,7 +383,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       >
         {/* Panel tabs */}
         <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, overflow: "hidden" }}>
-          {([['terminal', 'Terminal'], ['problems', 'Problems']] as const).map(([id, label]) => {
+          {([['terminal', 'Terminal'], ['problems', 'Problems'], ['output', 'Output']] as const).map(([id, label]) => {
             const active = view === id;
             return (
               <button
@@ -420,6 +424,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           rootPath={rootPath}
           onOpenFile={(path, line, col) => onOpenFile?.(path, line, col)}
         />
+      ) : view === "output" ? (
+        <OutputPanel />
       ) : (
       /* Body: terminal on the left, tab list on the right */
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>

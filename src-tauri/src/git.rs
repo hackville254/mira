@@ -503,3 +503,43 @@ pub fn git_diff(path: String, max_bytes: Option<usize>) -> String {
     }
     combined
 }
+
+// ── Contenu d'un fichier à HEAD (base du gutter « inline diff » de l'éditeur) ─
+
+/// Résultat de [`git_file_head`] :
+/// - `Ok(Some(content))` : le fichier existe dans HEAD → contenu du blob ;
+/// - `Ok(None)`          : le dépôt existe mais le fichier n'est pas dans HEAD
+///   (fichier non suivi / nouvellement créé) → tout est « ajouté » ;
+/// - `Err(msg)`          : `path` n'est pas un dépôt git (ou git indisponible)
+///   → l'éditeur n'affiche aucun marqueur.
+///
+/// `file` doit être un chemin relatif à `path` (le workspace). `HEAD:./<file>`
+/// résout le chemin relativement au répertoire courant, ce qui reste correct
+/// même si `path` est un sous-dossier du dépôt.
+#[tauri::command]
+pub fn git_file_head(path: String, file: String) -> Result<Option<String>, String> {
+    validate_rel_path(&file)?;
+
+    let inside = git_cmd()
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !inside.status.success()
+        || String::from_utf8_lossy(&inside.stdout).trim() != "true"
+    {
+        return Err("not a git repository".to_string());
+    }
+
+    let spec = format!("HEAD:./{}", file.replace('\\', "/"));
+    let out = git_cmd()
+        .args(["show", &spec])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // Fichier absent de HEAD, ou dépôt sans aucun commit.
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}

@@ -13,6 +13,7 @@ import {
   onTerminalExit,
 } from "../../lib/terminal";
 import { useTheme } from "../../themes/ThemeContext";
+import { appendOutput, appendOutputSystem, startOutputChannel } from "../../lib/outputStore";
 
 interface Props {
   cwd: string;
@@ -171,17 +172,24 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
     // Mode tâche « Run » : on spawn le programme directement (argv), sans shell.
     // On ne crée PAS de shell interactif ici.
     if (task) {
+      const channel = `${task.program} ${task.args.join(' ')}`;
+      startOutputChannel(channel, `$ ${channel}`);
       xterm.write(`\x1b[90m$ ${task.program} ${task.args.join(' ')}\x1b[0m\r\n`);
       terminalCreateTask(cwdRef.current, task.program, task.args, cols, rows)
         .then(async (id) => {
           termIdRef.current = id;
-          cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
+          cleanupOutput = await onTerminalOutput(id, (data) => {
+            xterm.write(data);
+            appendOutput(channel, data);
+          });
           cleanupExit = await onTerminalExit(id, () => {
             xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+            appendOutputSystem(channel, '[process exited]');
           });
         })
         .catch((err: unknown) => {
           xterm.write(`\r\n\x1b[31mFailed to run task: ${String(err)}\x1b[0m\r\n`);
+          appendOutput(channel, `Failed to run task: ${String(err)}`, 'stderr');
         });
     } else {
       terminalCreate(cwdRef.current, cols, rows)

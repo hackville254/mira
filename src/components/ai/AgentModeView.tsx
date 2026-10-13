@@ -19,6 +19,7 @@ import TerminalPanel, { type TerminalPanelHandle } from "../terminal/TerminalPan
 import SettingsPanel from "../settings/SettingsPanel";
 import type { AiCompletionFn } from "../../lib/aiAutocomplete";
 import type { MissingServerInfo } from "../../lib/lspCm6";
+import type { FileEdits } from "../../lib/lspEdits";
 
 type ToolTabId =
   | "terminal" | "editor" | "docview" | "settings" | "diffview" | "agents" | "browser";
@@ -69,6 +70,8 @@ interface AgentModeViewProps {
   /** Incrémenté après l'installation d'un serveur LSP → recrée l'extension LSP. */
   lspGeneration?: number;
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
+  /** Applique les éditions LSP (rename / code action) touchant d'autres fichiers. */
+  onApplyWorkspaceEdits?: (edits: FileEdits[]) => void;
   // Terminal
   terminalRef: React.RefObject<TerminalPanelHandle | null>;
   terminalHeight: number;
@@ -91,6 +94,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
     openTab, openTabAtLine, closeTab, setActiveTab, handleEditorChange,
     handleSave, handleNewFile, setPinnedContext, setCursorPositions, openAiDiffTab,
     getAiCompletion, handleMissingServer, onDefinitionJump, lspGeneration,
+    onApplyWorkspaceEdits,
     terminalRef, terminalHeight, setTerminalHeight, setTerminalOpen,
   } = props;
 
@@ -464,6 +468,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
                     onMissingServer={handleMissingServer}
                     lspGeneration={lspGeneration}
                     getAiCompletion={getAiCompletion}
+                    onApplyWorkspaceEdits={onApplyWorkspaceEdits}
                   />
                 ) : activeTab && fileErrors[activeTab] ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-2">

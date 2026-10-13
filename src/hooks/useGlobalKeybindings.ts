@@ -14,6 +14,7 @@ export interface GlobalHandlers {
   openFile?:         () => void;
   closeTab?:         () => void;
   toggleSidebar?:    () => void;
+  toggleSplit?:      () => void;
   zoomIn?:           () => void;
   zoomOut?:          () => void;
   zoomReset?:        () => void;
@@ -74,6 +75,7 @@ export function useGlobalKeybindings(handlers: GlobalHandlers) {
         "origin.openFile":         () => h.current.openFile?.(),
         "origin.closeTab":         () => h.current.closeTab?.(),
         "origin.toggleSidebar":    () => h.current.toggleSidebar?.(),
+        "origin.toggleSplit":      () => h.current.toggleSplit?.(),
         "origin.zoomIn":           () => h.current.zoomIn?.(),
         "origin.zoomOut":          () => h.current.zoomOut?.(),
         "origin.zoomReset":        () => h.current.zoomReset?.(),

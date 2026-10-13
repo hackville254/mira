@@ -1,24 +1,33 @@
 /* eslint-disable react-refresh/only-export-components -- this module exports helper hooks/utilities alongside the editor component */
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
+import { Lightbulb } from 'lucide-react';
 import {
   EditorView, keymap, lineNumbers,
   highlightActiveLineGutter, highlightActiveLine, drawSelection,
 } from '@codemirror/view';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState, Compartment, type Extension } from '@codemirror/state';
 import { undo as cmUndo, redo as cmRedo, selectAll as cmSelectAll, defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import {
   syntaxHighlighting, HighlightStyle,
   bracketMatching, indentOnInput,
+  codeFolding, foldGutter, foldKeymap,
 } from '@codemirror/language';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
+import { showMinimap } from '@replit/codemirror-minimap';
+import { stickyScroll } from '../../lib/stickyScroll';
 import { tags as t } from '@lezer/highlight';
 import { unifiedMergeView } from '@codemirror/merge';
 import { createHunkControls } from '../../lib/hunkControls';
+import { createGitGutter, setGitBaselineEffect, relativeToRoot } from '../../lib/gitGutter';
+import { createConflictResolver } from '../../lib/gitConflict';
+import { gitFileHead, onGitChanged } from '../../lib/git';
 import { getLanguageExtension, languageLabel } from './languageSupport';
 import { useExtensions } from '../../context/ExtensionsContext';
-import { createLspExtension } from '../../lib/lspCm6';
+import { createLspExtension, lspFormatDocument, lspPrepareRename, lspRename, lspCodeActions, lspExecuteCommand, uriToPath, type RawCodeAction } from '../../lib/lspCm6';
 import type { MissingServerInfo } from '../../lib/lspCm6';
+import { lspPosToOffset, offsetToLspPos, flattenWorkspaceEdit, type FileEdits, type LspWorkspaceEdit } from '../../lib/lspEdits';
+import { forEachDiagnostic } from '@codemirror/lint';
 import { isLspSupported } from '../../lib/lsp';
 import { resolveLspConfig, findServerForFile } from '../../lib/lspConfigStore';
 import { useToast } from '../ui/Toast';
@@ -72,6 +81,7 @@ export const originHighlight = HighlightStyle.define([
 export const originBaseTheme = EditorView.theme({
   '&': {
     height: '100%',
+    position: 'relative',
     backgroundColor: 'transparent',
     color: 'var(--origin-fg-default)',
   },
@@ -83,7 +93,7 @@ export const originBaseTheme = EditorView.theme({
     overflow: 'auto',
   },
   '.cm-content': {
-    padding: '8px 0',
+    padding: '2px 0',
     caretColor: 'var(--origin-accent-blue)',
   },
   '.cm-gutters': {
@@ -99,7 +109,48 @@ export const originBaseTheme = EditorView.theme({
     padding: '0 12px 0 8px',
     textAlign: 'right',
   },
-  '.cm-foldGutter .cm-gutterElement': { padding: '0 4px' },
+  '.cm-foldGutter .cm-gutterElement': { padding: '0 4px', cursor: 'pointer' },
+  '.cm-foldGutter .cm-gutterElement:hover': { color: 'var(--origin-accent-blue)' },
+  '.cm-foldPlaceholder': {
+    backgroundColor: 'var(--origin-bg-hover)',
+    border: '1px solid var(--origin-border-default)',
+    borderRadius: '4px',
+    color: 'var(--origin-fg-subtle)',
+    padding: '0 6px',
+    margin: '0 2px',
+    cursor: 'pointer',
+  },
+  // ── Minimap ────────────────────────────────────────────────────────────────
+  '.cm-minimap-gutter': {
+    borderRight: 'none',
+    borderLeft: '1px solid var(--origin-border-default)',
+    backgroundColor: 'transparent',
+  },
+  // ── Sticky scroll ────────────────────────────────────────────────────────────
+  '.cm-sticky-scroll': {
+    position: 'absolute',
+    top: '0',
+    right: '0',
+    zIndex: '6',
+    display: 'none',
+    backgroundColor: 'var(--origin-bg-base)',
+    borderBottom: '1px solid var(--origin-border-default)',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+    fontFamily: 'var(--font-mono, "Geist Mono", "Fira Code", monospace)',
+    fontSize: '13px',
+    lineHeight: '1.65',
+    overflow: 'hidden',
+    userSelect: 'none',
+  },
+  '.cm-sticky-scroll-row': {
+    padding: '0 12px 0 10px',
+    whiteSpace: 'pre',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    color: 'var(--origin-fg-muted)',
+    cursor: 'pointer',
+  },
+  '.cm-sticky-scroll-row:hover': { color: 'var(--origin-fg-default)', backgroundColor: 'var(--origin-bg-hover)' },
   '.cm-activeLine': { backgroundColor: 'var(--origin-bg-hover)' },
   '.cm-activeLineGutter': {
     backgroundColor: 'var(--origin-bg-hover)',
@@ -194,6 +245,23 @@ export const originBaseTheme = EditorView.theme({
   },
 });
 
+// ── Minimap ────────────────────────────────────────────────────────────────────
+
+/** Construit l'extension minimap ; renvoie `[]` pour la désactiver. */
+function minimapExtension(enabled: boolean): Extension {
+  if (!enabled) return [];
+  return showMinimap.compute(['doc'], () => ({
+    create: () => {
+      const dom = document.createElement('div');
+      return { dom };
+    },
+    // Rendu « texte réduit » (comme VS Code) : bien plus lisible que des blocs
+    // colorés qui, sur du code dense, produisent un bruit visuel illisible.
+    displayText: 'characters',
+    showOverlay: 'mouse-over',
+  }));
+}
+
 // ── Public types ───────────────────────────────────────────────────────────────
 
 export interface EditorContext {
@@ -221,6 +289,14 @@ export interface EditorHandle {
   paste: () => void;
   selectAll: () => void;
   openFind: () => void;
+  /** Formate le document via le serveur LSP (no-op si indisponible). */
+  formatDocument: () => Promise<void>;
+  /** Contenu texte actuel de la vue (source de vérité pour le « format on save »). */
+  getContent: () => string;
+  /** Ouvre l'invite de renommage du symbole sous le curseur (F2). */
+  renameSymbol: () => void;
+  /** Ouvre le menu des code actions (quick fix) à la position du curseur. */
+  showCodeActions: () => void;
   /**
    * Push debug breakpoint + paused-line state into the editor in one atomic
    * transaction. Called by App.tsx whenever DebugContext session changes.
@@ -243,6 +319,11 @@ interface Props {
   onDefinitionJump?: (filePath: string, line: number, col: number) => void;
   onMissingServer?: (info: MissingServerInfo) => void;
   /**
+   * Applique aux **autres** fichiers les éditions d'un WorkspaceEdit LSP
+   * (rename / code action) que l'éditeur ne peut pas appliquer lui-même.
+   */
+  onApplyWorkspaceEdits?: (edits: FileEdits[]) => void;
+  /**
    * Incrémenté quand un serveur LSP vient d'être installé : force la recréation
    * de l'extension LSP pour activer la complétion sans action de l'utilisateur.
    */
@@ -251,12 +332,16 @@ interface Props {
   getAiCompletion?: AiCompletionFn;
   // DAP debugging
   onToggleBreakpoint?: (filePath: string, line: number) => void;
+  /** Minimap (aperçu de la structure du fichier). Activée par défaut. */
+  minimap?: boolean;
+  /** Sticky scroll (en-têtes de blocs épinglés en haut). Activé par défaut. */
+  stickyScroll?: boolean;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const Editor = forwardRef<EditorHandle, Props>(function Editor(
-  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, lspGeneration, getAiCompletion, onToggleBreakpoint }, ref
+  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, onApplyWorkspaceEdits, lspGeneration, getAiCompletion, onToggleBreakpoint, minimap = true, stickyScroll: stickyScrollEnabled = true }, ref
 ) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const viewRef        = useRef<EditorView | null>(null);
@@ -273,6 +358,12 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   const autocompleteCompartment = useRef(new Compartment());
   // DAP breakpoint gutter + paused-line highlight compartment
   const dapCompartment = useRef(new Compartment());
+  // Gutter « inline diff » git (comparaison avec HEAD)
+  const gitCompartment = useRef(new Compartment());
+  const conflictCompartment = useRef(new Compartment());
+  // Minimap + sticky scroll compartments — togglables sans recréer la vue
+  const minimapCompartment = useRef(new Compartment());
+  const stickyCompartment = useRef(new Compartment());
   // Stable ref — trigger plugin reads .current so it always calls the latest function
   const getAiCompletionRef = useRef(getAiCompletion);
   getAiCompletionRef.current = getAiCompletion;
@@ -283,6 +374,49 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   onDefinitionJumpRef.current = onDefinitionJump;
   const onMissingServerRef = useRef(onMissingServer);
   onMissingServerRef.current = onMissingServer;
+  const onApplyWorkspaceEditsRef = useRef(onApplyWorkspaceEdits);
+  onApplyWorkspaceEditsRef.current = onApplyWorkspaceEdits;
+
+  // Id du serveur LSP actif pour ce fichier (renseigné par l'effet LSP) — requis
+  // par les requêtes ponctuelles : formatage, rename, code actions.
+  const lspServerIdRef = useRef<string | null>(null);
+  // Commandes LSP appelées depuis la keymap ; stockées en ref pour que la keymap
+  // (créée dans l'effet LSP) appelle toujours la version à jour, sans redémarrer
+  // le serveur à chaque rendu.
+  const lspCommandsRef = useRef({
+    rename: () => {}, codeActions: () => {}, format: () => {} } as {
+      rename: () => void; codeActions: () => void; format: () => void;
+    });
+
+  // Invite de renommage (F2) : plage + position d'origine du symbole.
+  const [renameTarget, setRenameTarget] = useState<{ from: number; to: number; initial: string; line: number; character: number } | null>(null);
+  // Menu des code actions (Ctrl+.) ancré à une position écran.
+  const [codeActionMenu, setCodeActionMenu] = useState<{ items: RawCodeAction[]; x: number; y: number } | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  // Ampoule (lightbulb) : visible quand la ligne du curseur porte un diagnostic,
+  // signal qu'un quick fix LSP peut être disponible. Cliquer ouvre les code actions.
+  const [showLightbulb, setShowLightbulb] = useState(false);
+
+  // Focus + sélection du texte dès l'ouverture de l'invite de renommage.
+  useEffect(() => {
+    if (renameTarget && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renameTarget]);
+
+  // Fermeture du menu code actions au clic extérieur ou sur Échap.
+  useEffect(() => {
+    if (!codeActionMenu) return;
+    function onDown() { setCodeActionMenu(null); }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setCodeActionMenu(null); }
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [codeActionMenu]);
 
   const { showToast } = useToast();
   const { getGrammarForPath, grammars } = useExtensions();
@@ -381,6 +515,11 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     selectAll() { if (viewRef.current) cmSelectAll(viewRef.current); },
     openFind() { if (viewRef.current) openSearchPanel(viewRef.current); },
 
+    formatDocument() { return runFormatDocument(); },
+    getContent() { return viewRef.current?.state.doc.toString() ?? ''; },
+    renameSymbol() { void triggerRename(); },
+    showCodeActions() { void triggerCodeActions(); },
+
     cut() {
       const view = viewRef.current;
       if (!view) return;
@@ -449,6 +588,157 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
     diffOriginalRef.current = '';
   }
 
+  // ── LSP : formatage, rename, code actions ───────────────────────────────────
+
+  /** Applique un WorkspaceEdit : la partie « fichier courant » dans la vue,
+   *  le reste (autres fichiers) remonté à l'app via `onApplyWorkspaceEdits`. */
+  function applyWorkspaceEditLocally(edit: LspWorkspaceEdit): void {
+    const view = viewRef.current;
+    if (!view) return;
+    const files = flattenWorkspaceEdit(edit, uriToPath);
+    const mine  = files.find(f => f.path === path);
+    if (mine) {
+      const text = view.state.doc.toString();
+      const changes = mine.edits
+        .map(e => ({
+          from: lspPosToOffset(text, e.range.start),
+          to:   lspPosToOffset(text, e.range.end),
+          insert: e.newText,
+        }))
+        .sort((a, b) => b.from - a.from);
+      view.dispatch({ changes });
+    }
+    const others = files.filter(f => f.path !== path);
+    if (others.length) onApplyWorkspaceEditsRef.current?.(others);
+  }
+
+  /** Formate le document entier via le serveur LSP. */
+  async function runFormatDocument(): Promise<void> {
+    const view = viewRef.current;
+    const serverId = lspServerIdRef.current;
+    if (!view || !serverId) return;
+    try {
+      const edits = await lspFormatDocument(serverId, path, {
+        tabSize: view.state.tabSize,
+        insertSpaces: true,
+      });
+      if (!edits || edits.length === 0) return;
+      const text = view.state.doc.toString();
+      const changes = edits
+        .map(e => ({
+          from: lspPosToOffset(text, e.range.start),
+          to:   lspPosToOffset(text, e.range.end),
+          insert: e.newText,
+        }))
+        .sort((a, b) => b.from - a.from);
+      view.dispatch({ changes });
+    } catch (err) {
+      showToast(`Format failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }
+
+  /** Ouvre l'invite de renommage (F2) si le symbole sous le curseur est renommable. */
+  async function triggerRename(): Promise<void> {
+    const view = viewRef.current;
+    const serverId = lspServerIdRef.current;
+    if (!view || !serverId) return;
+    const pos  = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    const position = { line: line.number - 1, character: pos - line.from };
+    try {
+      const prep = await lspPrepareRename(serverId, path, position);
+      if (!prep) { showToast('Nothing to rename here', 'info'); return; }
+      const text = view.state.doc.toString();
+      setRenameTarget({
+        from: lspPosToOffset(text, prep.range.start),
+        to:   lspPosToOffset(text, prep.range.end),
+        initial: prep.placeholder,
+        line: position.line,
+        character: position.character,
+      });
+    } catch (err) {
+      showToast(`Rename failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }
+
+  /** Confirme le renommage et applique l'édition (multi-fichiers). */
+  async function confirmRename(newName: string): Promise<void> {
+    const serverId = lspServerIdRef.current;
+    const target = renameTarget;
+    setRenameTarget(null);
+    viewRef.current?.focus();
+    if (!serverId || !target || !newName || newName === target.initial) return;
+    try {
+      const edit = await lspRename(serverId, path, { line: target.line, character: target.character }, newName);
+      if (edit) applyWorkspaceEditLocally(edit);
+    } catch (err) {
+      showToast(`Rename failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }
+
+  /** Récupère les code actions disponibles à la sélection courante. */
+  async function fetchCodeActions(view: EditorView, serverId: string): Promise<RawCodeAction[]> {
+    const sel  = view.state.selection.main;
+    const text = view.state.doc.toString();
+    const range = { start: offsetToLspPos(text, sel.from), end: offsetToLspPos(text, sel.to) };
+    // Les diagnostics (state lint) alimentent la requête : le serveur s'en sert
+    // pour proposer des « quick fix » pertinents.
+    const diagnostics: unknown[] = [];
+    forEachDiagnostic(view.state, (d, from, to) => {
+      diagnostics.push({
+        range: { start: offsetToLspPos(text, from), end: offsetToLspPos(text, to) },
+        severity: d.severity === 'error' ? 1 : d.severity === 'warning' ? 2 : d.severity === 'info' ? 3 : 4,
+        message: d.message,
+        source: d.source,
+        code: d.source,
+      });
+    });
+    try {
+      return await lspCodeActions(serverId, path, range, diagnostics);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Ouvre le menu des code actions (Ctrl+.) à la position du curseur. */
+  async function triggerCodeActions(): Promise<void> {
+    const view = viewRef.current;
+    const serverId = lspServerIdRef.current;
+    if (!view || !serverId) return;
+    const items = await fetchCodeActions(view, serverId);
+    if (items.length === 0) { showToast('No code actions available', 'info'); return; }
+    // Actions « preferred » (quick fixes prioritaires) en tête.
+    items.sort((a, b) => Number(!!b.isPreferred) - Number(!!a.isPreferred));
+    const coords = view.coordsAtPos(view.state.selection.main.head);
+    setCodeActionMenu({ items, x: coords?.left ?? 120, y: (coords?.bottom ?? 80) + 4 });
+  }
+
+  /** Applique la code action choisie (edit + éventuelle commande serveur). */
+  async function applyCodeAction(raw: RawCodeAction): Promise<void> {
+    setCodeActionMenu(null);
+    viewRef.current?.focus();
+    const serverId = lspServerIdRef.current;
+    if (raw.edit) applyWorkspaceEditLocally(raw.edit);
+    if (raw.command) {
+      const cmd  = typeof raw.command === 'string' ? raw.command : raw.command.command;
+      const args = typeof raw.command === 'string' ? (raw.arguments ?? []) : (raw.command.arguments ?? []);
+      if (serverId && cmd) {
+        try { await lspExecuteCommand(serverId, cmd, args); }
+        catch { /* la commande serveur a échoué : l'édition éventuelle est déjà appliquée */ }
+      }
+    }
+  }
+
+  // Garde lspCommandsRef pointé sur les dernières implémentations (sans relancer
+  // l'effet LSP à chaque rendu).
+  useEffect(() => {
+    lspCommandsRef.current = {
+      rename: () => { void triggerRename(); },
+      codeActions: () => { void triggerCodeActions(); },
+      format: () => { void runFormatDocument(); },
+    };
+  });
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -460,6 +750,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
           getAiCompletion ? createAiAutocompleteExtension(getAiCompletionRef) : []
         ),
         lineNumbers(),
+        codeFolding(),
+        foldGutter(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
         drawSelection(),
@@ -468,12 +760,23 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         history(),
         syntaxHighlighting(originHighlight),
         search({ top: false }),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, ...searchKeymap]),
+        keymap.of([
+          ...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab, ...searchKeymap,
+          // Raccourcis LSP — priorité au-dessus des défauts ci-dessus. Les commandes
+          // passent par lspCommandsRef pour rester à jour sans recréer la vue.
+          { key: 'F2',          run: () => { lspCommandsRef.current.rename();      return true; } },
+          { key: 'Mod-.',       run: () => { lspCommandsRef.current.codeActions(); return true; } },
+          { key: 'Shift-Alt-f', run: () => { lspCommandsRef.current.format();      return true; } },
+        ]),
         getLanguageExtension(path),
         dynLangCompartment.current.of(dynLang ?? []),
         mergeCompartment.current.of([]),
         lspCompartment.current.of([]),
         dapCompartment.current.of([]),
+        gitCompartment.current.of([]),
+        conflictCompartment.current.of([]),
+        minimapCompartment.current.of(minimapExtension(minimap)),
+        stickyCompartment.current.of(stickyScrollEnabled ? stickyScroll() : []),
         originBaseTheme,
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
@@ -484,6 +787,13 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
             const line = update.state.doc.lineAt(pos);
             onCursorRef.current?.(line.number, pos - line.from + 1);
           }
+          // Ampoule : vrai si la ligne du curseur porte au moins un diagnostic.
+          const curLine = update.state.doc.lineAt(update.state.selection.main.head).number;
+          let onDiagLine = false;
+          forEachDiagnostic(update.state, (_d, from) => {
+            if (update.state.doc.lineAt(from).number === curLine) onDiagLine = true;
+          });
+          setShowLightbulb(onDiagLine);
         }),
       ],
     });
@@ -561,6 +871,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         return;
       }
       if (cancelled) return;
+      lspServerIdRef.current = serverId;
 
       const exts = await createLspExtension({
         filePath: path,
@@ -578,6 +889,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
 
     return () => {
       cancelled = true;
+      lspServerIdRef.current = null;
       const v = viewRef.current;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- lspCompartment is a stable ref, never reassigned
       if (v) v.dispatch({ effects: lspCompartment.current.reconfigure([]) });
@@ -599,6 +911,50 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       viewRef.current?.dispatch({ effects: dapCompartment.current.reconfigure([]) });
     };
   }, [path]);
+
+  // Gutter « inline diff » git — compare le tampon courant au contenu à HEAD.
+  // La référence est rechargée au changement de fichier et à chaque opération
+  // git (commit, checkout…) signalée par `onGitChanged`.
+  useEffect(() => {
+    if (!rootPath || path.startsWith('__')) return;
+    const view = viewRef.current;
+    if (!view) return;
+    const root = rootPath;
+    const rel = relativeToRoot(root, path);
+    if (rel === null) return;
+    const relPath: string = rel;
+
+    const gitComp = gitCompartment.current;
+    const conflictComp = conflictCompartment.current;
+    view.dispatch({ effects: gitComp.reconfigure(createGitGutter()) });
+
+    // Résolveur de conflits de merge : actif uniquement sur les fichiers de
+    // travail (pas les onglets virtuels). Les boutons n'apparaissent que si des
+    // marqueurs `<<<<<<<` sont présents dans le document.
+    view.dispatch({ effects: conflictComp.reconfigure(createConflictResolver()) });
+
+    let cancelled = false;
+    async function loadBaseline() {
+      const res = await gitFileHead(root, relPath);
+      if (cancelled) return;
+      const v = viewRef.current;
+      if (!v) return;
+      const baseline =
+        res.status === 'tracked' ? res.content
+        : res.status === 'untracked' ? ''
+        : null;
+      v.dispatch({ effects: setGitBaselineEffect.of(baseline) });
+    }
+    void loadBaseline();
+    const off = onGitChanged(() => { void loadBaseline(); });
+
+    return () => {
+      cancelled = true;
+      off();
+      viewRef.current?.dispatch({ effects: gitComp.reconfigure([]) });
+      viewRef.current?.dispatch({ effects: conflictComp.reconfigure([]) });
+    };
+  }, [path, rootPath]);
 
   // Reconfigure autocomplete compartment when the prop goes from undefined ↔ function.
   useEffect(() => {
@@ -706,7 +1062,145 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
             </button>
           </div>
         )}
+
+        {/* Ampoule (lightbulb) — quick fix LSP disponible sur la ligne courante */}
+        {showLightbulb && !diffPending && (
+          <button
+            onClick={() => { void triggerCodeActions(); }}
+            title="Code actions (Ctrl+.)"
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 12,
+              zIndex: 55,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 5,
+              border: '1px solid var(--origin-border-default)',
+              backgroundColor: 'var(--origin-bg-base)',
+              color: 'var(--origin-accent-blue)',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--origin-bg-hover)'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--origin-bg-base)'; }}
+          >
+            <Lightbulb size={14} />
+          </button>
+        )}
+
+        {/* Invite de renommage (F2) — input flottant ancré en haut de la vue */}
+        {renameTarget && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 8,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 60,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 10px',
+              backgroundColor: 'var(--origin-bg-base)',
+              border: '1px solid var(--origin-border-default)',
+              borderRadius: 7,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <span style={{ fontSize: '11px', color: 'var(--origin-fg-subtle)', userSelect: 'none' }}>
+              Rename symbol
+            </span>
+            <input
+              ref={renameInputRef}
+              defaultValue={renameTarget.initial}
+              spellCheck={false}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void confirmRename((e.target as HTMLInputElement).value);
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setRenameTarget(null);
+                  viewRef.current?.focus();
+                }
+              }}
+              onBlur={e => { void confirmRename(e.target.value); }}
+              style={{
+                background: 'var(--origin-bg-input)',
+                border: '1px solid var(--origin-border-default)',
+                borderRadius: 5,
+                color: 'var(--origin-fg-default)',
+                padding: '3px 7px',
+                fontSize: '12px',
+                fontFamily: 'var(--font-mono)',
+                outline: 'none',
+                minWidth: '160px',
+              }}
+            />
+          </div>
+        )}
       </div>
+
+      {codeActionMenu && createPortal(
+        <div
+          onMouseDown={e => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            top: codeActionMenu.y,
+            left: codeActionMenu.x,
+            minWidth: '220px',
+            maxWidth: '420px',
+            background: 'color-mix(in srgb, var(--origin-bg-base) 85%, transparent)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            border: '1px solid var(--origin-border-default)',
+            borderRadius: '8px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+            padding: '4px',
+            zIndex: 9999,
+          }}
+        >
+          {codeActionMenu.items.map((item, i) => (
+            <button
+              key={`${item.title ?? 'action'}-${i}`}
+              onClick={() => { void applyCodeAction(item); }}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 10px',
+                borderRadius: '5px',
+                border: 'none',
+                cursor: 'pointer',
+                background: 'transparent',
+                textAlign: 'left',
+                fontSize: '12px',
+                color: 'var(--origin-fg-default)',
+                fontFamily: 'var(--font-sans)',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--origin-bg-hover)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              {item.isPreferred && (
+                <span style={{ color: 'var(--origin-accent-blue)', fontSize: '11px' }}>✦</span>
+              )}
+              <span style={{ flex: 1 }}>{item.title ?? 'Code action'}</span>
+              {item.kind && (
+                <span style={{ fontSize: '10px', color: 'var(--origin-fg-subtle)' }}>
+                  {item.kind.split('.').pop()}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
 
       {contextMenu && createPortal(
         <div

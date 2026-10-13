@@ -37,6 +37,7 @@ export const COMMANDS: CommandDef[] = [
   // View
   { id: "origin.togglePalette",  label: "Command Palette",      category: "View",    defaultKey: "ctrl+p" },
   { id: "origin.toggleSidebar",  label: "Toggle Sidebar",       category: "View",    defaultKey: "ctrl+b" },
+  { id: "origin.toggleSplit",    label: "Split Editor",         category: "View",    defaultKey: "ctrl+\\" },
   { id: "origin.toggleTerminal", label: "Toggle Terminal",      category: "View",    defaultKey: "ctrl+`" },
   { id: "origin.toggleSettings", label: "Open Settings",        category: "View",    defaultKey: "ctrl+," },
   { id: "origin.toggleFullscreen",label: "Toggle Full Screen",  category: "View",    defaultKey: "f11" },
@@ -161,6 +162,7 @@ const VSCODE_CMD_MAP: Record<string, string> = {
   "workbench.action.quickOpen":                "origin.togglePalette",
   "workbench.action.showCommands":             "origin.togglePalette",
   "workbench.action.toggleSidebarVisibility":  "origin.toggleSidebar",
+  "workbench.action.splitEditor":              "origin.toggleSplit",
   "workbench.action.terminal.toggleTerminal":  "origin.toggleTerminal",
   "workbench.action.openSettings":             "origin.toggleSettings",
   "workbench.action.toggleFullScreen":         "origin.toggleFullscreen",

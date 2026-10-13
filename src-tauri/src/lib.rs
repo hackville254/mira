@@ -147,6 +147,7 @@ pub fn run() {
             git::git_commit_amend,
             git::git_commit_sync,
             git::git_diff,
+            git::git_file_head,
             system::sys_memory,
             env::detect_dev_environment,
             terminal::terminal_create,
