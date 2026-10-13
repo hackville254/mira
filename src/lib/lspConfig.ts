@@ -133,6 +133,22 @@ export const KNOWN_SERVERS: KnownServer[] = [
     label: 'Dockerfile (dockerfile-language-server-nodejs)',
   },
   {
+    id: 'svelte-language-server',
+    label: 'Svelte (svelte-language-server)',
+  },
+  {
+    id: 'vue-language-server',
+    label: 'Vue (Volar)',
+  },
+  {
+    id: 'astro-language-server',
+    label: 'Astro (@astrojs/language-server)',
+  },
+  {
+    id: 'prisma-language-server',
+    label: 'Prisma (@prisma/language-server)',
+  },
+  {
     id: 'marksman',
     label: 'Markdown (marksman)',
   },
@@ -206,6 +222,30 @@ export const DEFAULT_LSP_CONFIG: LspConfig = {
       serverId: 'dockerfile-language-server-nodejs',
       extensions: ['dockerfile'],
       languageId: 'dockerfile',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'svelte-language-server',
+      extensions: ['svelte'],
+      languageId: 'svelte',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'vue-language-server',
+      extensions: ['vue'],
+      languageId: 'vue',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'astro-language-server',
+      extensions: ['astro'],
+      languageId: 'astro',
+      args: ['--stdio'],
+    },
+    {
+      serverId: 'prisma-language-server',
+      extensions: ['prisma'],
+      languageId: 'prisma',
       args: ['--stdio'],
     },
     {

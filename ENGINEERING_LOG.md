@@ -5,6 +5,34 @@
 
 ---
 
+### [2026-10-13T02:15] | LSP — ajout de 4 serveurs légers (Svelte, Vue, Astro, Prisma)
+
+- **Contexte :**
+  L'architecture LSP était complète (allowlist Rust + manifeste figé SHA-256 + pas de shell) mais ne couvrait que 14 serveurs. Les frameworks web modernes (Svelte, Vue/Volar, Astro) et Prisma manquaient, alors qu'ils sont légers et distribués via npm (Node déjà présent).
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/lsp.rs`** : ajout de 4 entrées dans `lsp_exe_and_args` (`svelteserver --stdio`, `vue-language-server --stdio`, `astro-ls --stdio`, `prisma-language-server --stdio`) ; dans `npm_packages_for` (`svelte-language-server`, `@vue/language-server`, `@astrojs/language-server`, `@prisma/language-server`) et `npm_bin_names` ; ajout des 4 ids dans la liste `SERVER_IDS` de `lsp_catalog`.
+  - **`src-tauri/src/lsp_index.rs`** : 4 nouveaux `Component` (npm, `artifacts: &[]`) avec `approx_mb` estimé.
+  - **`src/lib/lspConfig.ts`** : 4 entrées dans `KNOWN_SERVERS` et `DEFAULT_LSP_CONFIG` (extensions `.svelte`, `.vue`, `.astro`, `.prisma`).
+  - **`src/lib/languages.ts`** : 4 nouveaux `LanguageDef` (Svelte/Vue/Astro utilisent le parser `html()` ; Prisma sans parser dédié).
+  - **`src/themes/materialIcons.ts`** : glyphes `svelte` (#FF3E00), `vue` (#42b883), `astro` (#BC52EE), `prisma` (#5A67D8) ; `FILE_EXTENSIONS` mis à jour (vue ne pointe plus vers `html`).
+
+- **Décisions Techniques :**
+  - **Priorité aux serveurs npm** : légers, pas de toolchain système requise, installables en un clic via `npm install --prefix` isolé dans `app_data`.
+  - **Méthode d'installation homogène** : réutilisation du pipeline `install_via_npm` existant (pas de shell, validation des args).
+  - **Prisma sans parser CodeMirror** : aucun parser open-source léger disponible ; la coloration viendra d'une extension TextMate future.
+
+- **Impacts & Dépendances :**
+  - Aucune nouvelle dépendance Cargo ou npm côté app (les serveurs sont installés à la demande par l'utilisateur).
+  - Les 4 serveurs apparaissent dans le catalogue LSP avec bouton « Installer » actif.
+  - `vue: 'html'` remplacé par `vue: 'vue'` dans `FILE_EXTENSIONS` — les fichiers `.vue` affichent désormais le logo Vue.
+
+- **Prochaines étapes :**
+  - Ajouter d'autres serveurs légers si demandé (ex: `tailwindcss-language-server`, `graphql-language-service`, `emmet-ls`).
+  - Tester l'installation réelle d'un serveur (runtime Tauri) pour valider `npm install --prefix` + résolution du binaire.
+
+---
+
 ### [2026-10-12T23:10] | Éditeur — preview vidéo/audio + icônes médias fixes
 
 - **Contexte :**

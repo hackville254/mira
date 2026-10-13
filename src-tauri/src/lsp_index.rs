@@ -203,6 +203,34 @@ pub const COMPONENTS: &[Component] = &[
         approx_mb: 15,
         artifacts: &[],
     },
+    // Svelte : paquet npm `svelte-language-server` (licence MIT).
+    Component {
+        id: "svelte-language-server",
+        install_dir: "svelte-language-server",
+        approx_mb: 25,
+        artifacts: &[],
+    },
+    // Vue (Volar) : paquet npm `@vue/language-server` (licence MIT).
+    Component {
+        id: "vue-language-server",
+        install_dir: "vue-language-server",
+        approx_mb: 35,
+        artifacts: &[],
+    },
+    // Astro : paquet npm `@astrojs/language-server` (licence MIT).
+    Component {
+        id: "astro-language-server",
+        install_dir: "astro-language-server",
+        approx_mb: 30,
+        artifacts: &[],
+    },
+    // Prisma : paquet npm `@prisma/language-server` (licence Apache-2.0).
+    Component {
+        id: "prisma-language-server",
+        install_dir: "prisma-language-server",
+        approx_mb: 20,
+        artifacts: &[],
+    },
     // Markdown : binaire natif `marksman` (licence MIT), mono-fichier autonome.
     // Distribution GitHub = binaire nu (pas d'archive) → format "bin". Lancé
     // avec l'argument `server` (voir `lsp_exe_and_args` dans lsp.rs).

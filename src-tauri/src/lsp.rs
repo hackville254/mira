@@ -95,6 +95,12 @@ fn lsp_exe_and_args(server_id: &str) -> Option<(&'static str, &'static [&'static
         "vscode-html-language-server" => Some(("vscode-html-language-server", &["--stdio"])),
         "yaml-language-server"        => Some(("yaml-language-server", &["--stdio"])),
         "dockerfile-language-server-nodejs" => Some(("dockerfile-language-server-nodejs", &["--stdio"])),
+        // Frameworks web légers (npm) : Svelte, Vue (Volar), Astro.
+        "svelte-language-server"      => Some(("svelteserver", &["--stdio"])),
+        "vue-language-server"         => Some(("vue-language-server", &["--stdio"])),
+        "astro-language-server"       => Some(("astro-ls", &["--stdio"])),
+        // Prisma (npm) : schémas de base de données.
+        "prisma-language-server"      => Some(("prisma-language-server", &["--stdio"])),
         // Markdown : binaire natif marksman, sous-commande `server`.
         "marksman"                    => Some(("marksman", &["server"])),
         // Dart / Flutter : language server fourni par le SDK Dart (`dart
@@ -708,6 +714,10 @@ pub async fn lsp_catalog(app: tauri::AppHandle) -> Result<Vec<LspCatalogEntry>, 
         "vscode-html-language-server",
         "yaml-language-server",
         "dockerfile-language-server-nodejs",
+        "svelte-language-server",
+        "vue-language-server",
+        "astro-language-server",
+        "prisma-language-server",
         "marksman",
         "dart-analysis-server",
     ];
@@ -918,6 +928,10 @@ fn npm_packages_for(server_id: &str) -> Option<&'static [&'static str]> {
         "yaml-language-server" => Some(&["yaml-language-server"]),
         "bash-language-server" => Some(&["bash-language-server"]),
         "dockerfile-language-server-nodejs" => Some(&["dockerfile-language-server-nodejs"]),
+        "svelte-language-server" => Some(&["svelte-language-server"]),
+        "vue-language-server" => Some(&["@vue/language-server"]),
+        "astro-language-server" => Some(&["@astrojs/language-server"]),
+        "prisma-language-server" => Some(&["@prisma/language-server"]),
         _ => None,
     }
 }
@@ -934,6 +948,10 @@ fn npm_bin_names(server_id: &str) -> &'static [&'static str] {
         "yaml-language-server" => &["yaml-language-server"],
         "bash-language-server" => &["bash-language-server"],
         "dockerfile-language-server-nodejs" => &["dockerfile-language-server-nodejs"],
+        "svelte-language-server" => &["svelteserver"],
+        "vue-language-server" => &["vue-language-server"],
+        "astro-language-server" => &["astro-ls"],
+        "prisma-language-server" => &["prisma-language-server"],
         _ => &[],
     }
 }

@@ -167,6 +167,11 @@ export const LANGUAGES: LanguageDef[] = [
   { id: 'toml', label: 'TOML', extensions: ['toml'], parser: () => legacy(toml), icon: 'toml' },
   { id: 'ini', label: 'INI', extensions: ['ini', 'cfg'], parser: () => legacy(properties), icon: 'settings' },
   { id: 'protobuf', label: 'Protobuf', extensions: ['proto'], parser: () => legacy(protobuf), icon: 'protobuf' },
+  // ── Frameworks web (SFC, HTML-like) ───────────────────────────────────────
+  { id: 'svelte', label: 'Svelte', extensions: ['svelte'], parser: () => html(), lsp: 'svelte-language-server', languageId: 'svelte', icon: 'svelte' },
+  { id: 'vue', label: 'Vue', extensions: ['vue'], parser: () => html(), lsp: 'vue-language-server', languageId: 'vue', icon: 'vue' },
+  { id: 'astro', label: 'Astro', extensions: ['astro'], parser: () => html(), lsp: 'astro-language-server', languageId: 'astro', icon: 'astro' },
+  { id: 'prisma', label: 'Prisma', extensions: ['prisma'], parser: () => [], lsp: 'prisma-language-server', languageId: 'prisma', icon: 'prisma' },
 ];
 
 // ── Index dérivés (construits une seule fois) ────────────────────────────────
