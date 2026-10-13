@@ -543,3 +543,136 @@ pub fn git_file_head(path: String, file: String) -> Result<Option<String>, Strin
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
+
+// ── Stash ─────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct StashEntry {
+    /// Index dans la pile de stashes (0 = le plus récent). Sert à `stash@{N}`.
+    index:   usize,
+    /// Nom de la branche sur laquelle le stash a été créé.
+    branch:  String,
+    /// Message du stash (ou le sujet du commit HEAD à sa création par défaut).
+    message: String,
+}
+
+/// Construit la référence `stash@{N}` à partir d'un index numérique. L'index
+/// étant un `usize`, aucune injection n'est possible (la chaîne est formée côté
+/// Rust, jamais depuis une entrée utilisateur brute).
+fn stash_ref(index: usize) -> String {
+    format!("stash@{{{index}}}")
+}
+
+/// Enregistre les modifications courantes dans un stash. Par défaut les fichiers
+/// non suivis ne sont pas inclus (comportement git standard) ; `include_untracked`
+/// les ajoute via `-u`. Le message est optionnel.
+#[tauri::command]
+pub fn git_stash_save(
+    path: String,
+    message: Option<String>,
+    include_untracked: Option<bool>,
+) -> Result<String, String> {
+    // Le message est consommé comme valeur de `-m`, jamais comme option : on se
+    // contente de le borner pour éviter des entrées absurdes.
+    let msg = message.unwrap_or_default();
+    if msg.len() > 4096 {
+        return Err("stash message too long".to_string());
+    }
+
+    let mut cmd = git_cmd();
+    cmd.args(["stash", "push"]).current_dir(&path);
+    if include_untracked.unwrap_or(false) {
+        cmd.arg("-u");
+    }
+    if !msg.is_empty() {
+        cmd.args(["-m", &msg]);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Liste les stashes du dépôt, du plus récent au plus ancien.
+#[tauri::command]
+pub fn git_stash_list(path: String) -> Vec<StashEntry> {
+    // Format : stash@{N}\x01<branche>\x01<message>
+    let Ok(out) = git_cmd()
+        .args(["stash", "list", "--format=%gd\x01%gs"])
+        .current_dir(&path)
+        .output()
+    else { return vec![] };
+    if !out.status.success() { return vec![]; }
+
+    // `%gs` (reflog subject) a la forme « WIP on <branche>: <sujet> » ou
+    // « On <branche>: <message> ». On en extrait branche et message.
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .enumerate()
+        .map(|(i, l)| {
+            let mut p = l.splitn(2, '\x01');
+            let _ref = p.next().unwrap_or(""); // ex. stash@{0}
+            let subject = p.next().unwrap_or("").to_string();
+            let (branch, message) = parse_stash_subject(&subject);
+            StashEntry { index: i, branch, message }
+        })
+        .collect()
+}
+
+/// Parse le sujet reflog d'un stash : « WIP on main: 1a2b3c titre » ou
+/// « On main: mon message » → (branche, message).
+fn parse_stash_subject(subject: &str) -> (String, String) {
+    // Retire le préfixe « WIP on » / « On ».
+    let rest = subject
+        .strip_prefix("WIP on ")
+        .or_else(|| subject.strip_prefix("On "))
+        .unwrap_or(subject);
+    match rest.split_once(": ") {
+        Some((branch, msg)) => (branch.to_string(), msg.to_string()),
+        None => (rest.to_string(), String::new()),
+    }
+}
+
+/// Applique un stash puis le retire de la pile (`stash pop`).
+#[tauri::command]
+pub fn git_stash_pop(path: String, index: usize) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["stash", "pop", &stash_ref(index)])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Applique un stash sans le retirer de la pile (`stash apply`).
+#[tauri::command]
+pub fn git_stash_apply(path: String, index: usize) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["stash", "apply", &stash_ref(index)])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Supprime un stash de la pile (`stash drop`).
+#[tauri::command]
+pub fn git_stash_drop(path: String, index: usize) -> Result<String, String> {
+    let out = git_cmd()
+        .args(["stash", "drop", &stash_ref(index)])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}

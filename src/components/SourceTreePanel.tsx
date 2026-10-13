@@ -8,8 +8,9 @@ import {
   gitPull, gitPush, gitFetch,
   gitListBranches, gitCheckout, gitCreateBranch,
   gitCommitAmend, gitCommitSync,
+  gitStashSave, gitStashList, gitStashPop, gitStashApply, gitStashDrop,
   notifyGitChanged,
-  type StatusFile, type FullCommitEntry, type BranchEntry,
+  type StatusFile, type FullCommitEntry, type BranchEntry, type StashEntry,
 } from '../lib/git';
 import { generateCommitMessage } from '../lib/gitCommitMessage';
 
@@ -68,6 +69,8 @@ export default function SourceTreePanel() {
   const [graphOpen, setGraphOpen]     = useState(true);
   const [branchesOpen, setBranchesOpen] = useState(false);
   const [branches, setBranches]         = useState<BranchEntry[]>([]);
+  const [stashes, setStashes]           = useState<StashEntry[]>([]);
+  const [stashesOpen, setStashesOpen]   = useState(false);
   const [moreOpen, setMoreOpen]         = useState(false);
   const { showToast } = useToast();
   const [refreshing, setRefreshing] = useState(false);
@@ -92,12 +95,14 @@ export default function SourceTreePanel() {
 
   const load = useCallback(async (notify = false) => {
     if (!folderPath) return;
-    const [f, h] = await Promise.all([
+    const [f, h, s] = await Promise.all([
       getStatusFiles(folderPath),
       getGitLogFull(folderPath),
+      gitStashList(folderPath),
     ]);
     setFiles(f);
     setHistory(h);
+    setStashes(s);
     // Signale aux éditeurs ouverts de recharger leur référence HEAD (gutter).
     if (notify) notifyGitChanged();
     return { files: f, history: h };
@@ -250,6 +255,40 @@ export default function SourceTreePanel() {
     catch (e: unknown) { showToast(String(e), 'error'); }
   }
 
+  // ── Stash ──────────────────────────────────────────────────────────────────
+  async function stashChanges() {
+    if (!folderPath) return;
+    if (files.length === 0) { showToast('No changes to stash.', 'info'); return; }
+    const msg = window.prompt('Stash message (optional):') ?? '';
+    try {
+      await gitStashSave(folderPath, msg.trim() || undefined, true);
+      showToast('Changes stashed.', 'success');
+      await load(true);
+    } catch (e: unknown) {
+      showToast(String(e), 'error');
+    }
+  }
+
+  async function popStash(index: number) {
+    if (!folderPath) return;
+    try { await gitStashPop(folderPath, index); showToast('Stash popped.', 'success'); await load(true); }
+    catch (e: unknown) { showToast(String(e), 'error'); }
+  }
+
+  async function applyStash(index: number) {
+    if (!folderPath) return;
+    try { await gitStashApply(folderPath, index); showToast('Stash applied.', 'success'); await load(true); }
+    catch (e: unknown) { showToast(String(e), 'error'); }
+  }
+
+  async function dropStash(index: number) {
+    if (!folderPath) return;
+    const s = stashes.find(x => x.index === index);
+    if (!window.confirm(`Drop stash "${s?.message ?? `#${index}`}"? This cannot be undone.`)) return;
+    try { await gitStashDrop(folderPath, index); showToast('Stash dropped.', 'success'); await load(true); }
+    catch (e: unknown) { showToast(String(e), 'error'); }
+  }
+
   if (!folderPath) {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
@@ -349,9 +388,10 @@ export default function SourceTreePanel() {
                 <div onClick={() => setMoreOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
                 <div style={dropdownStyle}>
                   {[
-                    { label: 'Pull',        action: () => runRemote('pull') },
-                    { label: 'Push',        action: () => runRemote('push') },
-                    { label: 'Fetch',       action: () => runRemote('fetch') },
+                    { label: 'Pull',          action: () => runRemote('pull') },
+                    { label: 'Push',          action: () => runRemote('push') },
+                    { label: 'Fetch',         action: () => runRemote('fetch') },
+                    { label: 'Stash Changes…', action: () => stashChanges() },
                     { label: 'Unstage All', action: () => unstageAllFiles() },
                   ].map((o, i) => (
                     <button

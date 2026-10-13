@@ -122,6 +122,37 @@ export async function gitFileHead(repoPath: string, file: string): Promise<GitHe
   }
 }
 
+// ── Stash ─────────────────────────────────────────────────────────────────────
+
+export interface StashEntry { index: number; branch: string; message: string; }
+
+/** Enregistre les modifications courantes dans un stash (index 0 = plus récent). */
+export async function gitStashSave(
+  path: string,
+  message?: string,
+  includeUntracked?: boolean,
+): Promise<void> {
+  await invoke('git_stash_save', { path, message, includeUntracked });
+}
+
+export async function gitStashList(path: string): Promise<StashEntry[]> {
+  return invoke<StashEntry[]>('git_stash_list', { path }).catch(() => []);
+}
+
+/** Applique un stash puis le retire de la pile. */
+export async function gitStashPop(path: string, index: number): Promise<void> {
+  await invoke('git_stash_pop', { path, index });
+}
+
+/** Applique un stash sans le retirer de la pile. */
+export async function gitStashApply(path: string, index: number): Promise<void> {
+  await invoke('git_stash_apply', { path, index });
+}
+
+export async function gitStashDrop(path: string, index: number): Promise<void> {
+  await invoke('git_stash_drop', { path, index });
+}
+
 // ── Bus d'événements git (rafraîchissement du gutter) ─────────────────────────
 
 const GIT_CHANGED_EVENT = 'origin:git-changed';

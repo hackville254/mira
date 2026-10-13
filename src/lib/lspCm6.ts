@@ -375,3 +375,40 @@ export async function lspExecuteCommand(
     params: { command, arguments: args },
   });
 }
+
+// ── Symboles de document (Outline) ────────────────────────────────────────────
+
+/**
+ * Sous-ensemble du `DocumentSymbol` LSP (vscode-languageserver-types) dont on a
+ * besoin pour l'Outline. `range` = étendue du symbole (bloc entier), utilisé
+ * pour le repli ; `selectionRange` = position du nom, utilisée pour le saut.
+ */
+export interface RawDocumentSymbol {
+  name: string;
+  detail?: string;
+  kind: number;
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  selectionRange: { start: { line: number; character: number }; end: { line: number; character: number } };
+  children?: RawDocumentSymbol[];
+}
+
+/**
+ * `textDocument/documentSymbol` → arbre de symboles (ou `[]` si le serveur ne
+ * supporte pas la requête). Le serveur doit être démarré et le document ouvert
+ * (`lspDidOpen`) au préalable.
+ */
+export async function lspDocumentSymbols(
+  serverId: LspServerId,
+  filePath: string,
+): Promise<RawDocumentSymbol[]> {
+  const res = await invoke<RawDocumentSymbol[] | null>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/documentSymbol',
+    params: { textDocument: { uri: pathToUri(filePath) } },
+  });
+  // Certains serveurs renvoient des `SymbolInformation` (à plat, avec `location`)
+  // au lieu de `DocumentSymbol` (hiérarchique). On ne garde que le format
+  // hiérarchique : les autres seront couverts par le fallback regex.
+  if (!Array.isArray(res)) return [];
+  return res.filter(s => s && typeof s.name === 'string' && s.selectionRange);
+}

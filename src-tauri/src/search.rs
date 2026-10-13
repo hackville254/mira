@@ -6,6 +6,23 @@ pub(crate) const SEARCH_IGNORE: &[&str] = &[
 
 // ── Text search ───────────────────────────────────────────────────────────────
 
+const MAX_MATCHES: usize = 500;
+const MAX_REPLACE_FILES: usize = 5000;
+
+/// Options de recherche/remplacement transmises depuis le frontend.
+/// `is_regex` : le motif est une expression régulière.
+/// `case_sensitive` : respecte la casse (par défaut insensible).
+/// `whole_word` : n'accepte que des correspondances sur des mots entiers.
+#[derive(serde::Deserialize)]
+pub struct SearchOptions {
+    #[serde(default)]
+    pub is_regex: bool,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_word: bool,
+}
+
 #[derive(serde::Serialize)]
 pub struct SearchMatch {
     path: String,
@@ -14,46 +31,277 @@ pub struct SearchMatch {
     text: String,
 }
 
-fn search_file(path: &std::path::Path, query: &str, results: &mut Vec<SearchMatch>) {
+/// Échappe une chaîne pour l'utiliser comme littéral dans une regex.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) { out.push('\\'); }
+        out.push(c);
+    }
+    out
+}
+
+/// Compile le motif + options en une regex avec ancrage « mot entier » si demandé.
+fn build_regex(query: &str, opts: &SearchOptions) -> Result<regex::Regex, String> {
+    let base = if opts.is_regex { query.to_string() } else { regex_escape(query) };
+    let pattern = if opts.whole_word { format!(r"\b(?:{})\b", base) } else { base };
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!opts.case_sensitive)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Compile un glob simplifié (support `*`, `**`, `?`) en regex ancrée.
+/// Un `**/` en tête est rendu optionnel (comportement gitignore : le motif
+/// s'applique aussi à la racine).
+fn glob_to_regex(glob: &str) -> String {
+    let g = glob.replace('\\', "/");
+    let mut re = String::from("^");
+    let chars: Vec<char> = g.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '*' => {
+                if i + 1 < chars.len() && chars[i + 1] == '*' {
+                    // `**/` ou `**`
+                    if i + 2 < chars.len() && chars[i + 2] == '/' {
+                        if i == 0 { re.push_str("(?:.*/)?"); } else { re.push_str(".*/"); }
+                        i += 3;
+                    } else {
+                        re.push_str(".*");
+                        i += 2;
+                    }
+                } else {
+                    re.push_str("[^/]*");
+                    i += 1;
+                }
+            }
+            '?' => { re.push_str("[^/]"); i += 1; }
+            '.' => { re.push_str("\\."); i += 1; }
+            other => {
+                if "\\.+()|[]{}^$".contains(other) { re.push('\\'); }
+                re.push(other);
+                i += 1;
+            }
+        }
+    }
+    re.push('$');
+    re
+}
+
+/// Ensemble de matchers d'exclusion compilés à partir des motifs fournis.
+fn compile_excludes(excludes: &str) -> Vec<regex::Regex> {
+    excludes
+        .lines()
+        .map(|l| l.trim().trim_start_matches("./").trim_matches('/'))
+        .filter(|l| !l.is_empty())
+        .filter_map(|pattern| {
+            if pattern.ends_with('/') {
+                let name = pattern.trim_end_matches('/');
+                regex::Regex::new(&format!("(^|/){}($|/.*)", regex_escape(name))).ok()
+            } else if pattern.contains('/') {
+                let core = pattern.trim_start_matches("**/");
+                regex::Regex::new(&glob_to_regex(core)).ok()
+            } else if pattern.contains('*') || pattern.contains('?') {
+                // Glob sans chemin (ex: `*.lock`) : s'applique à tout l'arbre.
+                regex::Regex::new(&glob_to_regex(&format!("**/{}", pattern))).ok()
+            } else {
+                // Nom simple : exclut le dossier/fichier partout dans l'arbre.
+                regex::Regex::new(&format!("(^|/){}($|/.*)", regex_escape(pattern))).ok()
+            }
+        })
+        .collect()
+}
+
+/// Vrai si le chemin relatif (séparateurs `/`) correspond à une exclusion.
+fn is_excluded(rel: &str, rules: &[regex::Regex]) -> bool {
+    rules.iter().any(|r| r.is_match(rel))
+}
+
+fn search_file(
+    path: &std::path::Path,
+    re: &regex::Regex,
+    results: &mut Vec<SearchMatch>,
+) {
     let Ok(bytes) = std::fs::read(path) else { return };
     if bytes.contains(&0u8) { return }
     let Ok(text) = std::str::from_utf8(&bytes) else { return };
     for (i, line) in text.lines().enumerate() {
-        if results.len() >= 500 { return }
-        if let Some(col) = line.to_lowercase().find(query) {
+        if results.len() >= MAX_MATCHES { return }
+        if let Some(m) = re.find(line) {
             results.push(SearchMatch {
                 path: path.to_string_lossy().into_owned(),
                 line: (i + 1) as u32,
-                col:  col as u32,
+                col:  m.start() as u32,
                 text: line.trim().to_string(),
             });
         }
     }
 }
 
-fn walk_search(dir: &std::path::Path, query: &str, results: &mut Vec<SearchMatch>) {
-    if results.len() >= 500 { return }
+/// Parcours récursif. `folder` sert de base pour calculer le chemin relatif
+/// utilisé par l'évaluation des règles d'exclusion.
+fn walk_search(
+    dir: &std::path::Path,
+    folder: &std::path::Path,
+    re: &regex::Regex,
+    excludes: &[regex::Regex],
+    results: &mut Vec<SearchMatch>,
+) {
+    if results.len() >= MAX_MATCHES { return }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut subdirs = vec![];
     for entry in rd.flatten() {
         let path = entry.path();
-        let name = entry.file_name();
-        let ns = name.to_string_lossy();
-        if SEARCH_IGNORE.iter().any(|&s| s == ns.as_ref()) { continue }
-        if path.is_dir() { subdirs.push(path) } else { search_file(&path, query, results) }
+        let ns = entry.file_name().to_string_lossy().into_owned();
+        if SEARCH_IGNORE.iter().any(|&s| s == ns.as_str()) { continue }
+        if path.is_dir() {
+            subdirs.push(path);
+        } else {
+            let rel = path.strip_prefix(folder).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            if is_excluded(&rel, excludes) { continue }
+            search_file(&path, re, results);
+        }
     }
-    for d in subdirs { walk_search(&d, query, results) }
+    for d in subdirs { walk_search(&d, folder, re, excludes, results) }
 }
 
 #[tauri::command]
-pub async fn search_in_files(folder: String, query: String) -> Result<Vec<SearchMatch>, String> {
-    if query.trim().is_empty() { return Ok(vec![]) }
-    let q = query.to_lowercase();
+pub async fn search_in_files(
+    folder: String,
+    query: String,
+    options: Option<SearchOptions>,
+    excludes: Option<String>,
+) -> Result<Vec<SearchMatch>, String> {
+    if query.is_empty() { return Ok(vec![]) }
+    let opts = options.unwrap_or(SearchOptions { is_regex: false, case_sensitive: false, whole_word: false });
+    let re = build_regex(&query, &opts)?;
+    let excl = compile_excludes(excludes.as_deref().unwrap_or(""));
     tokio::task::spawn_blocking(move || {
         let mut results = Vec::new();
-        walk_search(std::path::Path::new(&folder), &q, &mut results);
+        let base = std::path::Path::new(&folder);
+        walk_search(base, base, &re, &excl, &mut results);
         results
     }).await.map_err(|e| e.to_string())
+}
+
+// ── Replace in files ──────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ReplaceResult {
+    files_changed: u32,
+    replacements:  u32,
+    /// Chemins absolus des fichiers effectivement modifiés (pour rafraîchir les
+    /// onglets ouverts). Source de vérité : ne dépend pas d'une re-recherche.
+    files:         Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReplaceRequest {
+    folder: String,
+    query: String,
+    replacement: String,
+    options: Option<SearchOptions>,
+    excludes: Option<String>,
+    /// Chemins absolus des fichiers à traiter. Si `None`, tout le dossier est traité.
+    #[serde(default)]
+    files: Option<Vec<String>>,
+}
+
+/// Construit la chaîne de remplacement en développant les groupes `$1`..`$9`
+/// lorsque le motif est une regex. En mode littéral, le remplacement est
+/// inséré tel quel (protégé contre l'interprétation `$` par la regex).
+fn expand_replacement(caps: &regex::Captures, replacement: &str, is_regex: bool) -> String {
+    if is_regex {
+        let mut out = String::new();
+        caps.expand(replacement, &mut out);
+        out
+    } else {
+        replacement.to_string()
+    }
+}
+
+fn replace_in_file(
+    path: &std::path::Path,
+    re: &regex::Regex,
+    replacement: &str,
+    is_regex: bool,
+) -> Option<u32> {
+    let Ok(bytes) = std::fs::read(path) else { return None };
+    if bytes.contains(&0u8) { return None }
+    let Ok(text) = std::str::from_utf8(&bytes) else { return None };
+    let mut count = 0u32;
+    let new_text = re
+        .replace_all(text, |caps: &regex::Captures| {
+            count += 1;
+            expand_replacement(caps, replacement, is_regex)
+        })
+        .into_owned();
+    if new_text != text {
+        std::fs::write(path, new_text).ok()?;
+    }
+    Some(count)
+}
+
+#[tauri::command]
+pub async fn replace_in_files(req: ReplaceRequest) -> Result<ReplaceResult, String> {
+    if req.query.is_empty() { return Ok(ReplaceResult { files_changed: 0, replacements: 0, files: vec![] }) }
+    let opts = req.options.unwrap_or(SearchOptions { is_regex: false, case_sensitive: false, whole_word: false });
+    let re = build_regex(&req.query, &opts)?;
+    let excl = compile_excludes(req.excludes.as_deref().unwrap_or(""));
+    let is_regex = opts.is_regex;
+    let replacement = req.replacement;
+    tokio::task::spawn_blocking(move || {
+        let base = std::path::Path::new(&req.folder);
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        match req.files {
+            Some(list) => {
+                for f in list {
+                    let p = std::path::PathBuf::from(&f);
+                    if p.is_file() { files.push(p); }
+                }
+            }
+            None => collect_files(base, base, &excl, &mut files),
+        }
+        let mut changed = 0u32;
+        let mut total = 0u32;
+        let mut changed_files: Vec<String> = Vec::new();
+        for f in files.iter().take(MAX_REPLACE_FILES) {
+            if let Some(n) = replace_in_file(f, &re, &replacement, is_regex) {
+                if n > 0 {
+                    changed += 1;
+                    total += n;
+                    changed_files.push(f.to_string_lossy().into_owned());
+                }
+            }
+        }
+        ReplaceResult { files_changed: changed, replacements: total, files: changed_files }
+    }).await.map_err(|e| e.to_string())
+}
+
+/// Collecte tous les fichiers d'un dossier en respectant les règles d'exclusion.
+fn collect_files(
+    dir: &std::path::Path,
+    folder: &std::path::Path,
+    excludes: &[regex::Regex],
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    if out.len() >= MAX_REPLACE_FILES { return }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut subdirs = vec![];
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let ns = entry.file_name().to_string_lossy().into_owned();
+        if SEARCH_IGNORE.iter().any(|&s| s == ns.as_str()) { continue }
+        if path.is_dir() {
+            subdirs.push(path);
+        } else {
+            let rel = path.strip_prefix(folder).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            if !is_excluded(&rel, excludes) { out.push(path); }
+        }
+    }
+    for d in subdirs { collect_files(&d, folder, excludes, out) }
 }
 
 // ── Symbol search ─────────────────────────────────────────────────────────────
@@ -230,6 +478,108 @@ pub async fn list_workspace_files(folder: String) -> Result<Vec<WorkspaceFile>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opts(is_regex: bool, case_sensitive: bool, whole_word: bool) -> SearchOptions {
+        SearchOptions { is_regex, case_sensitive, whole_word }
+    }
+
+    // ── build_regex ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn build_regex_literal_case_insensitive_by_default() {
+        let re = build_regex("Foo", &opts(false, false, false)).unwrap();
+        assert!(re.is_match("foo bar"));
+        assert!(re.is_match("FOO"));
+    }
+
+    #[test]
+    fn build_regex_literal_case_sensitive() {
+        let re = build_regex("Foo", &opts(false, true, false)).unwrap();
+        assert!(re.is_match("Foo"));
+        assert!(!re.is_match("foo"));
+    }
+
+    #[test]
+    fn build_regex_literal_escapes_metacharacters() {
+        // Un « . » littéral ne doit pas matcher n'importe quel caractère.
+        let re = build_regex("a.b", &opts(false, false, false)).unwrap();
+        assert!(re.is_match("a.b"));
+        assert!(!re.is_match("axb"));
+    }
+
+    #[test]
+    fn build_regex_regex_mode() {
+        let re = build_regex("a.b", &opts(true, false, false)).unwrap();
+        assert!(re.is_match("axb"));
+    }
+
+    #[test]
+    fn build_regex_whole_word() {
+        let re = build_regex("cat", &opts(false, false, true)).unwrap();
+        assert!(re.is_match("a cat here"));
+        assert!(!re.is_match("category"));
+    }
+
+    #[test]
+    fn build_regex_invalid_regex_errors() {
+        assert!(build_regex("(", &opts(true, false, false)).is_err());
+    }
+
+    // ── glob_to_regex / excludes ─────────────────────────────────────────────────
+
+    #[test]
+    fn excludes_dir_name_matches_anywhere() {
+        let rules = compile_excludes("node_modules");
+        assert!(is_excluded("a/node_modules/b.js", &rules));
+        assert!(is_excluded("node_modules/x", &rules));
+        assert!(!is_excluded("src/app.js", &rules));
+    }
+
+    #[test]
+    fn excludes_extension_glob() {
+        let rules = compile_excludes("*.lock");
+        assert!(is_excluded("Cargo.lock", &rules));
+        assert!(is_excluded("sub/dir/package.lock", &rules));
+        assert!(!is_excluded("Cargo.toml", &rules));
+    }
+
+    #[test]
+    fn excludes_path_glob() {
+        let rules = compile_excludes("src/**/*.test.ts");
+        assert!(is_excluded("src/a/b/foo.test.ts", &rules));
+        assert!(!is_excluded("src/a/b/foo.ts", &rules));
+    }
+
+    #[test]
+    fn excludes_ignores_blank_lines_and_leading_dot_slash() {
+        let rules = compile_excludes("\n  ./dist  \n\n");
+        assert_eq!(rules.len(), 1);
+        assert!(is_excluded("dist/x.js", &rules));
+    }
+
+    // ── regex_escape ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn regex_escape_special_chars() {
+        assert_eq!(regex_escape("a.b*c"), r"a\.b\*c");
+        assert_eq!(regex_escape("plain"), "plain");
+    }
+
+    // ── expand_replacement ──────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_replacement_literal_is_verbatim() {
+        let re = build_regex("foo", &opts(false, false, false)).unwrap();
+        let caps = re.captures("foo").unwrap();
+        assert_eq!(expand_replacement(&caps, "$1bar", false), "$1bar");
+    }
+
+    #[test]
+    fn expand_replacement_regex_expands_groups() {
+        let re = build_regex(r"(\w+)@(\w+)", &opts(true, false, false)).unwrap();
+        let caps = re.captures("user@host").unwrap();
+        assert_eq!(expand_replacement(&caps, "$2:$1", true), "host:user");
+    }
 
     // ── classify_ts ────────────────────────────────────────────────────────────
 

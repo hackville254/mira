@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, X } from 'lucide-react';
+import { ChevronRight, ChevronDown } from 'lucide-react';
 import { useDebugContext } from '../context/DebugContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { dapRequest } from '../lib/dap';
 import type { DapVariable } from '../lib/dap';
 import DebugLaunchForm from './DebugLaunchForm';
+import DebugConsole from './debug/DebugConsole';
+import WatchSection from './debug/WatchSection';
+import BreakpointRow from './debug/BreakpointRow';
 
 // ── Section header ─────────────────────────────────────────────────────────────
 
@@ -111,12 +114,17 @@ interface Props {
 
 export default function DebugPanel({ onFileOpenAtLine }: Props) {
   const { folderPath } = useWorkspace();
-  const { session, toggleBreakpoint } = useDebugContext();
+  const {
+    session, toggleBreakpoint,
+    setBreakpointCondition, setBreakpointHitCondition, setBreakpointLogMessage,
+  } = useDebugContext();
   const { sessionId, status, threads, stackFrames, scopes, breakpoints, outputLines } = session;
 
   const [callStackOpen, setCallStackOpen] = useState(true);
   const [variablesOpen, setVariablesOpen] = useState(true);
+  const [watchOpen, setWatchOpen] = useState(true);
   const [breakpointsOpen, setBreakpointsOpen] = useState(true);
+  const [consoleOpen, setConsoleOpen] = useState(true);
   const [outputOpen, setOutputOpen] = useState(false);
 
   if (!folderPath) {
@@ -210,6 +218,10 @@ export default function DebugPanel({ onFileOpenAtLine }: Props) {
           </div>
         )}
 
+        {/* Watch */}
+        <SectionHeader label="Watch" open={watchOpen} onToggle={() => setWatchOpen(v => !v)} />
+        {watchOpen && <WatchSection />}
+
         {/* Breakpoints */}
         <SectionHeader label="Breakpoints" open={breakpointsOpen} onToggle={() => setBreakpointsOpen(v => !v)} />
         {breakpointsOpen && (
@@ -229,41 +241,27 @@ export default function DebugPanel({ onFileOpenAtLine }: Props) {
                   {fp.split(/[\\/]/).pop()}
                 </div>
                 {entries.map(entry => (
-                  <div
+                  <BreakpointRow
                     key={entry.line}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 6,
-                      padding: '2px 8px 2px 16px', fontSize: '11px',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--origin-bg-hover)'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                  >
-                    <span style={{
-                      width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-                      border: entry.verified ? 'none' : '1.5px solid var(--origin-semantic-error)',
-                      backgroundColor: entry.verified ? 'var(--origin-semantic-error)' : 'transparent',
-                    }} />
-                    <span
-                      style={{ flex: 1, cursor: 'pointer', color: 'var(--origin-fg-default)' }}
-                      onClick={() => onFileOpenAtLine(fp, entry.line, 1)}
-                    >
-                      Ln {entry.line}
-                    </span>
-                    <button
-                      onClick={() => toggleBreakpoint(fp, entry.line)}
-                      style={{
-                        background: 'none', border: 'none', padding: 2,
-                        cursor: 'pointer', color: 'var(--origin-fg-subtle)',
-                        display: 'flex', alignItems: 'center',
-                      }}
-                      title="Remove breakpoint"
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
+                    filePath={fp}
+                    entry={entry}
+                    onOpen={() => onFileOpenAtLine(fp, entry.line, 1)}
+                    onRemove={() => toggleBreakpoint(fp, entry.line)}
+                    onCondition={v => setBreakpointCondition(fp, entry.line, v)}
+                    onHitCondition={v => setBreakpointHitCondition(fp, entry.line, v)}
+                    onLogMessage={v => setBreakpointLogMessage(fp, entry.line, v)}
+                  />
                 ))}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Debug Console */}
+        <SectionHeader label="Debug Console" open={consoleOpen} onToggle={() => setConsoleOpen(v => !v)} />
+        {consoleOpen && (
+          <div style={{ display: 'flex', flexDirection: 'column', height: 200, minHeight: 120 }}>
+            <DebugConsole />
           </div>
         )}
 

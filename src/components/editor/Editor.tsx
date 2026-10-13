@@ -16,6 +16,7 @@ import {
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { stickyScroll } from '../../lib/stickyScroll';
+import { createBracketColorizationExtension } from '../../lib/bracketColorCm6';
 import { tags as t } from '@lezer/highlight';
 import { unifiedMergeView } from '@codemirror/merge';
 import { createHunkControls } from '../../lib/hunkControls';
@@ -336,12 +337,14 @@ interface Props {
   minimap?: boolean;
   /** Sticky scroll (en-têtes de blocs épinglés en haut). Activé par défaut. */
   stickyScroll?: boolean;
+  /** Colorisation des paires de parenthèses par niveau (rainbow brackets). */
+  bracketColorization?: boolean;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const Editor = forwardRef<EditorHandle, Props>(function Editor(
-  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, onApplyWorkspaceEdits, lspGeneration, getAiCompletion, onToggleBreakpoint, minimap = true, stickyScroll: stickyScrollEnabled = true }, ref
+  { path, content, onChange, onCursorChange, initialCursor, jumpTo, onAddToAiContext, onAcceptDiff, onReady, rootPath, onDefinitionJump, onMissingServer, onApplyWorkspaceEdits, lspGeneration, getAiCompletion, onToggleBreakpoint, minimap = true, stickyScroll: stickyScrollEnabled = true, bracketColorization = true }, ref
 ) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const viewRef        = useRef<EditorView | null>(null);
@@ -364,6 +367,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   // Minimap + sticky scroll compartments — togglables sans recréer la vue
   const minimapCompartment = useRef(new Compartment());
   const stickyCompartment = useRef(new Compartment());
+  // Colorisation des paires de parenthèses (rainbow brackets)
+  const bracketColorCompartment = useRef(new Compartment());
   // Stable ref — trigger plugin reads .current so it always calls the latest function
   const getAiCompletionRef = useRef(getAiCompletion);
   getAiCompletionRef.current = getAiCompletion;
@@ -777,6 +782,9 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         conflictCompartment.current.of([]),
         minimapCompartment.current.of(minimapExtension(minimap)),
         stickyCompartment.current.of(stickyScrollEnabled ? stickyScroll() : []),
+        bracketColorCompartment.current.of(
+          bracketColorization ? createBracketColorizationExtension() : []
+        ),
         originBaseTheme,
         EditorView.updateListener.of(update => {
           if (update.docChanged) {

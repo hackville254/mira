@@ -22,10 +22,13 @@ export function useTabs() {
   // Always-current snapshots used by callbacks that fire before re-render
   const activeTabRef      = useRef<string | null>(activeTab);
   const fileContentsRef   = useRef<Record<string, string>>(fileContents);
+  const tabsRef           = useRef<Tab[]>(tabs);
   // eslint-disable-next-line react-hooks/refs -- stable ref pattern: keep current values visible to pre-render callbacks
   activeTabRef.current    = activeTab;
   // eslint-disable-next-line react-hooks/refs -- stable ref pattern: keep current values visible to pre-render callbacks
   fileContentsRef.current = fileContents;
+  // eslint-disable-next-line react-hooks/refs -- stable ref pattern: keep current values visible to pre-render callbacks
+  tabsRef.current         = tabs;
 
   useEffect(() => {
     if (!activeTab || activeTab.startsWith('__')) return;
@@ -218,6 +221,29 @@ export function useTabs() {
     }
   }
 
+  /**
+   * Recharge depuis le disque le contenu des fichiers ouverts après une action
+   * externe (ex: replace in files). Les fichiers non ouverts sont ignorés.
+   * Un onglet comportant des modifications non sauvegardées n'est PAS écrasé,
+   * pour éviter une perte de données silencieuse. L'utilisateur devra
+   * sauvegarder ou fermer l'onglet avant.
+   */
+  async function reloadFilesFromDisk(paths: string[]): Promise<void> {
+    const dirty = new Set(tabsRef.current.filter(t => t.isDirty).map(t => t.path));
+    for (const path of paths) {
+      if (fileContentsRef.current[path] === undefined) continue;
+      if (fileKindOf(path) === 'binary') continue;
+      if (dirty.has(path)) continue; // modifications locales en cours : ne pas écraser
+      try {
+        const content = await readFile(path);
+        setFileContents(prev => ({ ...prev, [path]: content }));
+        setTabs(prev => prev.map(t => t.path === path ? { ...t, isDirty: false } : t));
+      } catch {
+        // Fichier supprimé ou illisible : on laisse l'état courant.
+      }
+    }
+  }
+
   return {
     tabs, setTabs,
     activeTab, setActiveTab,
@@ -230,6 +256,6 @@ export function useTabs() {
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
-    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits,
+    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
   };
 }

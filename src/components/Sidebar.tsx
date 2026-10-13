@@ -5,6 +5,7 @@ import SearchPanel from "./SearchPanel";
 import SourceTreePanel from "./SourceTreePanel";
 import DebugPanel from "./DebugPanel";
 import ExtensionsPanel from "./ExtensionsPanel";
+import OutlinePanel from "./outline/OutlinePanel";
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 500;
@@ -16,26 +17,36 @@ interface Props {
   onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
   defaultCollapsed?: boolean;
+  activePath?: string;
+  activeContent?: string;
+  rootPath?: string;
+  /** Recharge depuis le disque des fichiers modifiés à l'extérieur (replace in files). */
+  onFilesChanged?: (paths: string[]) => void;
 }
 
-function ActivePanel({ id, onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey }: {
+function ActivePanel({ id, onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, activePath, activeContent, rootPath, onFilesChanged }: {
   id: string;
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
   onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
+  activePath?: string;
+  activeContent?: string;
+  rootPath?: string;
+  onFilesChanged?: (paths: string[]) => void;
 }) {
   switch (id) {
     case "explorer":   return <FileTree onFileOpen={onFileOpen} onMarkdownPreview={onMarkdownPreview} refreshKey={fileTreeKey} />;
-    case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} />;
+    case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} onFilesChanged={onFilesChanged} />;
     case "sourcetree": return <SourceTreePanel />;
+    case "outline":    return <OutlinePanel activePath={activePath} content={activeContent} rootPath={rootPath} onFileOpenAtLine={onFileOpenAtLine} />;
     case "debug":      return <DebugPanel onFileOpenAtLine={onFileOpenAtLine} />;
     case "extensions": return <ExtensionsPanel />;
     default:           return null;
   }
 }
 
-export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, defaultCollapsed = false }: Props) {
+export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, defaultCollapsed = false, activePath, activeContent, rootPath, onFilesChanged }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [active, setActive] = useState("explorer");
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -86,6 +97,10 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPrevie
         onFileOpenAtLine={onFileOpenAtLine}
         onMarkdownPreview={onMarkdownPreview}
         fileTreeKey={fileTreeKey}
+        activePath={activePath}
+        activeContent={activeContent}
+        rootPath={rootPath}
+        onFilesChanged={onFilesChanged}
       />
 
       {/* Resize handle */}

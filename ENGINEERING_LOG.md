@@ -5,6 +5,119 @@
 
 ---
 
+### [2026-10-13T15:20] | Recherche — replace in files + exclusions glob + regex/case/whole-word
+
+- **Contexte :**
+  Le panneau de recherche se limitait à une recherche littérale insensible à la casse, sans option ni remplacement. Pour parité VS Code il manquait : **regex**, **casse**, **mot entier**, **exclusions glob**, et surtout **Replace / Replace All** (global et par fichier). La logique de scan vivait côté Rust (`search_in_files`) : c'est donc là que les options et le remplacement devaient être portés pour rester performant sur de gros workspaces.
+
+- **Modifications effectuées :**
+  - **`src-tauri/Cargo.toml`** : ajout de la dépendance `regex = "1"`.
+  - **`src-tauri/src/search.rs`** (refonte de la section text search) :
+    - `SearchOptions { is_regex, case_sensitive, whole_word }` (deserialize, `#[serde(default)]`).
+    - `regex_escape` (littéral sûr), `build_regex` (compile + `case_insensitive` + ancrage `\b(?:…)\b` mot entier), `glob_to_regex` (globs `*`/`**`/`?`, `**/` initial optionnel façon gitignore), `compile_excludes` (dossier, extension, chemin), `is_excluded`.
+    - `search_in_files(folder, query, options, excludes)` : signature étendue, paramètres optionnels pour ne rien casser.
+    - **`replace_in_files(ReplaceRequest)`** (nouveau) : `ReplaceRequest { folder, query, replacement, options, excludes, files? }` ; `expand_replacement` (développe `$1..$9` en mode regex, littéral sinon), `replace_in_file`, `collect_files`. Limite `MAX_REPLACE_FILES = 5000`, écriture uniquement si le contenu change.
+    - Tests Rust +14 : build_regex (6), glob/excludes (4), regex_escape (1), expand_replacement (2), + le test « dir name partout ».
+  - **`src-tauri/src/lib.rs`** : enregistrement de `search::replace_in_files`.
+  - **`src/lib/search.ts`** : types `SearchOptions`, `DEFAULT_SEARCH_OPTIONS`, `toWireOptions` (camelCase → snake_case), `searchInFiles` étendu, `replaceInFiles` + `ReplaceResult`.
+  - **`src/components/SearchPanel.tsx`** : toggles `Aa` (casse), `W` (mot entier), `.*` (regex), champ **excludes**, zone **Replace** repliable (Replace All global + « All » par fichier), surlignage adapté aux options (`highlightRange`), gestion d'erreur (regex invalide / aucun remplacement), rafraîchissement des résultats après remplacement.
+  - **`src/hooks/useTabs.ts`** : `reloadFilesFromDisk(paths)` — recharge le contenu des fichiers ouverts (et les démarque) après une modification externe.
+  - **`src/components/Sidebar.tsx` / `src/App.tsx`** : prop `onFilesChanged` propagée jusqu'au panneau.
+
+- **Décisions Techniques :**
+  - **Scan/remplacement côté Rust** : parcourir un workspace en JS serait lent et bloquerait l'UI ; `spawn_blocking` + `regex` (compilé une fois) garde l'opération hors du thread principal. Les exclusions sont compilées en `Regex` une seule fois, pas par fichier.
+  - **Rétrocompatibilité de `search_in_files`** : `options`/`excludes` en `Option<…>` → aucun autre appelant casse.
+  - **`$` littéral protégé en mode non-regex** : `expand_replacement` renvoie le texte tel quel hors regex, sinon une regex `$` serait interprétée comme référence de groupe.
+  - **Glob `**/` initial optionnel** : reproduit un piège gitignore classique (un motif simple doit matcher la racine *et* les sous-dossiers) — détecté par les tests avant merge.
+  - **Écriture conditionnelle** (`new_text != text`) : évite de toucher les mtimes inutilement et de déclencher des watchers.
+  - **`files` optionnel dans la requête de remplacement** : permet le « replace in file » sans re-scanner tout l'arbre.
+
+- **Impacts & Dépendances :**
+  - Nouveau paramètre `options`/`excludes` sur `search_in_files` : tout appelant direct doit les fournir (ici uniquement `SearchPanel`, mis à jour).
+  - Nouvelle commande Tauri `replace_in_files` + dépendance `regex` (compilée dans le binaire).
+  - `useTabs` expose `reloadFilesFromDisk` ; `Sidebar`/`SearchPanel` acceptent `onFilesChanged` (optionnel, rétrocompatible).
+
+- **Prochaines étapes :**
+  - Lot 8 — Finitions : breadcrumbs, brackets colorization, stash, blame.
+
+- **Validation :** `cargo test --lib` ✅ 74/74 (dont 14 search) · `cargo build --lib` ✅ · `npx tsc --noEmit` ✅ · `npx eslint` ✅ (0 erreur) · `npx vitest run` ✅ 215/215 · `npx vite build` ✅.
+
+---
+
+### [2026-10-13T15:05] | Debug — breakpoints conditionnels/log points + Watch + Debug Console
+
+- **Contexte :**
+  Le débogueur DAP savait poser des breakpoints simples, afficher call stack, variables et output, mais il manquait trois capacités standard de VS Code : (1) **breakpoints conditionnels / hit count / log points**, (2) un panneau **Watch** (expressions suivies), (3) une **Debug Console** (REPL d'évaluation). Le call stack existait déjà — conservé tel quel.
+
+- **Modifications effectuées :**
+  - **`src/lib/dapWatch.ts`** (créé) : logique pure testable — `toSourceBreakpoints` (UI → payload DAP, ignore les champs vides), `isLogPoint`/`isConditional`, `fromEvaluate` (normalisation d'une réponse `evaluate`), `addWatch`/`removeWatch`.
+  - **`src/context/DebugContext.tsx`** (modifié) :
+    - `BreakpointEntry` enrichi (`condition`, `hitCondition`, `logMessage`).
+    - État : `watchExpressions: string[]`, `evalEntries: DebugEvalEntry[]`.
+    - Nouvelles actions : `setBreakpointCondition/HitCondition/LogMessage`, `addWatchExpression` (dédoublonnée + évaluation immédiate), `removeWatchExpression`, `evaluateExpression` (contexte `repl`), `clearConsole`.
+    - Helper interne `mutateBreakpoints` : calcule la liste cible depuis la ref (pas d'écriture dans le setter React → pas de doublon en StrictMode) puis pousse `setBreakpoints` avec qualificatifs **uniquement si** une session est `running`/`paused`.
+    - Handler `stopped` : réévalue **toutes** les expressions de watch dans la frame courante (`Promise.all`, contexte `watch`).
+    - Carrying des breakpoints au lancement via `toSourceBreakpoints` (les qualificatifs survivent au démarrage de session).
+  - **`src/components/debug/BreakpointRow.tsx`** (créé) : ligne de breakpoint avec éditeur inline (condition / hit count / log message), indicateurs visuels log point / conditionnel.
+  - **`src/components/debug/WatchSection.tsx`** (créé) : liste d'expressions, ajout/suppression, valeur ou erreur par expression.
+  - **`src/components/debug/DebugConsole.tsx`** (créé) : REPL avec historique (↑/↓), bouton Clear, colorisation expression/valeur/erreur.
+  - **`src/components/DebugPanel.tsx`** (modifié) : sections **Watch** et **Debug Console** ajoutées ; la liste des breakpoints utilise `BreakpointRow`.
+  - **Tests** : `src/lib/__tests__/dapWatch.test.ts` (14).
+
+- **Décisions Techniques :**
+  - **Aucun changement backend Rust** : `dap_request` est un passe-plat générique — `evaluate` et `setBreakpoints` avec `condition`/`hitCondition`/`logMessage` étaient déjà supportés par le protocole. Éviter d'ajouter des commandes Tauri inutiles réduit la surface d'attaque.
+  - **`mutateBreakpoints` lit `sessionRef.current`** (pas le setter `prev`) : en React 18 StrictMode, un setter peut s'exécuter deux fois ; calculer la valeur cible hors du setter garantit une seule synchronisation adaptateur et évite les divergences.
+  - **Envoi DAP conditionné à `running`/`paused`** : hors session, il n'y a pas d'adaptateur ; au lancement, c'est la config de launch qui porte les breakpoints.
+  - **`fromEvaluate` tolère `success: false`** : une expression invalide au point d'arrêt courant doit s'afficher comme erreur, pas faire planter le panneau.
+  - **Watch réévalué au `stopped`** (et non à chaque frappe) : cohérent avec VS Code, borné, sans martèlement de l'adaptateur.
+
+- **Impacts & Dépendances :**
+  - `DebugContextType` reçoit 7 nouvelles entrées (consommateurs existants inchangés — ajout rétrocompatible).
+  - `DapSourceBreakpoint` n'était plus importé directement dans le contexte (délégué à `dapWatch.ts`).
+  - Fichiers touchés : `dapWatch.ts`, `DebugContext.tsx`, `DebugPanel.tsx`, `debug/BreakpointRow.tsx`, `debug/WatchSection.tsx`, `debug/DebugConsole.tsx`.
+
+- **Prochaines étapes :**
+  - Lot 7 — Recherche : replace in files + exclusions glob + regex/case.
+  - Lot 8 — Finitions : breadcrumbs, brackets colorization, stash, blame.
+
+- **Validation :** `npx tsc --noEmit` ✅ · `npx eslint` ✅ (0 erreur) · `npx vitest run` ✅ 215/215 · `npx vite build` ✅.
+
+---
+
+### [2026-10-13T14:50] | Panels — Outline (symboles) + Output (console texte)
+
+- **Contexte :**
+  Deux panels attendus d'un IDE « pro » manquaient : (1) un **Outline** (arbre des symboles du fichier actif, comme VS Code), (2) un onglet **Output** découplé du terminal xterm pour lire la sortie brute des tâches (copiable/sélectionnable, sans le bruit de contrôle du terminal). Lot 5 du gap analysis IDE vs VS Code.
+
+- **Modifications effectuées :**
+  - **Output** — `src/lib/outputStore.ts` (créé) : buffer texte singleton en mémoire (Map ordonnée `canal → OutputLine[]`, `OutputLine { channel, text, kind: 'stdout'|'stderr'|'system' }`), bornes `MAX_LINES = 5000` / `MAX_CHANNELS = 20` (éviction du plus ancien canal), API `appendOutput`, `startOutputChannel`, `appendOutputSystem`, `clearOutput`, `listOutputChannels`, `getOutput`, `subscribeOutput` + `getOutputVersion` (compatibles `useSyncExternalStore`).
+  - **Output** — `src/components/output/OutputPanel.tsx` (créé) : onglet console (sélecteur de canal, checkbox Auto-scroll, bouton Clear, coloration par `kind`, `whiteSpace: pre-wrap`, état vide explicite).
+  - **Output** — `src/components/terminal/Terminal.tsx` + `TerminalPanel.tsx` (modifiés) : le mode tâche alimente le store (`appendOutput` en parallèle de `xterm.write`), `TerminalPanelHandle.showOutput()` + 3ᵉ onglet « Output ».
+  - **Outline** — `src/lib/lspCm6.ts` (modifié) : `RawDocumentSymbol` + `lspDocumentSymbols(serverId, filePath)` (`textDocument/documentSymbol`).
+  - **Outline** — `src/lib/outline.ts` (créé) : type unifié `OutlineSymbol`/`OutlineKind` (26 valeurs), mapping `SYMBOL_KIND` (numéro LSP → catégorie), `outlineFromLsp` (null si pas de serveur), `hasLspForFile`/`languageIdOf`, et **fallback regex** frontend (`TS_RULES`/`RUST_RULES`/`PY_RULES`) opérant sur le contenu déjà en mémoire (garde-fou 100k lignes).
+  - **Outline** — `src/components/outline/OutlinePanel.tsx` (créé) : arbre récursif (icônes `lucide:*`, couleurs syntaxiques, repli, clic → `onFileOpenAtLine`), source **LSP prioritaire** (débounce 250 ms) avec fallback regex dérivé, spinner de chargement.
+  - **Branchement** : `ActivityBar.tsx` (entrée `outline` / `lucide:list-tree`), `Sidebar.tsx` (props `activePath`/`activeContent`/`rootPath`, `case "outline"`), `App.tsx` (passe `activeTab`, `fileContents[activeTab]`, `folderPath`).
+
+- **Décisions Techniques :**
+  - **Output store en mémoire** plutôt que lecture du buffer xterm : xterm est un canvas/DOM à sémantique de terminal (ANSI, redraw) — inadapté au texte sélectionnable. Un buffer dédié est simple, testable, et évite un re-render global (abonnements via `useSyncExternalStore`).
+  - **Outline LSP d'abord, regex en secours** : le LSP donne des symboles exacts et hiérarchisés ; le fallback garantit un affichage même sans serveur actif. Choix de **ne pas** utiliser la commande Rust `search_symbols` (elle parcourt tout le workspace, inadaptée à un fichier unique) → fallback purement frontend.
+  - **Fallback en `useMemo` et non en `setState` d'effet** : éviter le warning `react-hooks/set-state-in-effect` et les rendus en cascade ; le contenu étant déjà en mémoire, la dérivation est synchrone et gratuite.
+  - **Débounce 250 ms + garde `reqId`** : évite de marteler le serveur à chaque frappe et ignore les réponses obsolètes (course async).
+
+- **Impacts & Dépendances :**
+  - `Sidebar` reçoit 3 nouvelles props optionnelles (aucune régression pour les autres panels).
+  - `Terminal.tsx` écrit désormais dans deux cibles (xterm **et** store) : coût négligeable, borné par `MAX_LINES`.
+  - Fichiers touchés : `outputStore.ts`, `OutputPanel.tsx`, `outline.ts`, `OutlinePanel.tsx`, `lspCm6.ts`, `Terminal.tsx`, `TerminalPanel.tsx`, `ActivityBar.tsx`, `Sidebar.tsx`, `App.tsx`.
+
+- **Prochaines étapes :**
+  - Lot 6 — Debug : watch + breakpoints conditionnels + debug console + call stack.
+  - Lot 7 — Recherche : replace in files + exclusions glob + regex/case.
+  - Lot 8 — Finitions : breadcrumbs, brackets colorization, stash, blame.
+
+- **Validation :** `npx tsc --noEmit` ✅ · `npx eslint` ✅ (0 erreur) · `npx vitest run` ✅ 201/201 · `npx vite build` ✅.
+
+---
+
 ### [2026-10-13T13:30] | Git — inline diff gutter + resolveur de conflits de merge
 
 - **Contexte :**

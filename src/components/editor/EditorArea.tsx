@@ -10,6 +10,7 @@ import AudioViewerPane from './AudioViewerPane';
 import UnsupportedFilePane from './UnsupportedFilePane';
 import EditorEmptyState from './EditorEmptyState';
 import EditorWelcome from './EditorWelcome';
+import Breadcrumbs from '../breadcrumbs/Breadcrumbs';
 import { fileKindOf } from '../../lib/fileKind';
 import type { Tab } from './TabBar';
 import type { MissingServerInfo } from '../../lib/lspCm6';
@@ -115,24 +116,33 @@ export default function EditorArea(props: EditorAreaProps) {
   }
   if (activeTab && fileContents[activeTab] !== undefined) {
     return (
-      <Editor
-        ref={editorRef}
-        path={activeTab}
-        content={fileContents[activeTab]}
-        onChange={v => onEditorChange(activeTab, v)}
-        onCursorChange={(line, col) => onCursorChange(activeTab, line, col)}
-        initialCursor={cursorPositions[activeTab]}
-        jumpTo={jumpRequest?.path === activeTab ? jumpRequest : undefined}
-        onAddToAiContext={onAddToAiContext}
-        onAcceptDiff={() => onAcceptDiff(activeTab)}
-        rootPath={folderPath}
-        onDefinitionJump={onDefinitionJump}
-        onMissingServer={onMissingServer}
-        lspGeneration={lspGeneration}
-        getAiCompletion={getAiCompletion}
-        onToggleBreakpoint={onToggleBreakpoint}
-        onApplyWorkspaceEdits={onApplyWorkspaceEdits}
-      />
+      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+        <Breadcrumbs
+          activePath={activeTab}
+          content={fileContents[activeTab]}
+          rootPath={folderPath ?? undefined}
+          cursorLine={cursorPositions[activeTab]?.line}
+          onJump={(line, col) => onDefinitionJump(activeTab, line, col)}
+        />
+        <Editor
+          ref={editorRef}
+          path={activeTab}
+          content={fileContents[activeTab]}
+          onChange={v => onEditorChange(activeTab, v)}
+          onCursorChange={(line, col) => onCursorChange(activeTab, line, col)}
+          initialCursor={cursorPositions[activeTab]}
+          jumpTo={jumpRequest?.path === activeTab ? jumpRequest : undefined}
+          onAddToAiContext={onAddToAiContext}
+          onAcceptDiff={() => onAcceptDiff(activeTab)}
+          rootPath={folderPath}
+          onDefinitionJump={onDefinitionJump}
+          onMissingServer={onMissingServer}
+          lspGeneration={lspGeneration}
+          getAiCompletion={getAiCompletion}
+          onToggleBreakpoint={onToggleBreakpoint}
+          onApplyWorkspaceEdits={onApplyWorkspaceEdits}
+        />
+      </div>
     );
   }
   if (activeTab && fileErrors[activeTab]) {

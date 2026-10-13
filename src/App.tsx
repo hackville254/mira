@@ -64,7 +64,7 @@ function App() {
     fileContentsRef,
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
-    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits,
+    handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
   } = useTabs();
 
   const {
@@ -651,7 +651,7 @@ function App() {
         />
       ) : (
         <div className="flex flex-1 overflow-hidden gap-1">
-            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} />}
+            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} onFilesChanged={reloadFilesFromDisk} activePath={activeTab ?? undefined} activeContent={activeTab ? fileContents[activeTab] : undefined} rootPath={folderPath ?? undefined} />}
             <div className="flex flex-1 overflow-hidden gap-1">
               <div className="flex-1 flex flex-col overflow-hidden gap-1">
                 <TabBar
