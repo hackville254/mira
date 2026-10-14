@@ -18,8 +18,21 @@ mod system;
 mod terminal;
 mod tree;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl};
 use dpi::{LogicalPosition, LogicalSize};
+
+/// URL courante des webviews embarqués (`embed_ide_panel`), indexée par label.
+///
+/// On NE lit PAS `webview.url()` : dans wry 0.55.1, `url_from_webview` fait
+/// `webview.URL().unwrap()`, qui **panic** (et tue tout le process) dès que le
+/// WKWebView n'a pas encore d'URL non-nulle — cas systématique pendant le
+/// chargement initial. Ce state est la source de vérité, alimenté à l'embed et
+/// mis à jour par le handler de navigation.
+#[derive(Default)]
+struct PanelUrlState(Mutex<HashMap<String, String>>);
 
 // IMPORTANT: these commands MUST be `async fn`.
 //
@@ -34,6 +47,7 @@ use dpi::{LogicalPosition, LogicalSize};
 #[tauri::command]
 async fn embed_ide_panel(
     app: AppHandle,
+    state: tauri::State<'_, PanelUrlState>,
     panel_id: String,
     url: String,
     x: f64,
@@ -50,9 +64,27 @@ async fn embed_ide_panel(
         .ok_or_else(|| "Host window not found".to_string())?;
     let window = host.as_ref().window();
     let parsed_url = url::Url::parse(&url).map_err(|e| e.to_string())?;
+
+    // Capture l'URL demandée comme source de vérité, et mets à jour ce state à
+    // chaque navigation (clics de liens, redirections). On évite ainsi tout
+    // appel à `webview.url()` qui paniquerait tant que le WKWebView n'a pas
+    // d'URL non-nulle.
+    if let Ok(mut map) = state.0.lock() {
+        map.insert(panel_id.clone(), url.clone());
+    }
+    let nav_app = app.clone();
+    let nav_panel = panel_id.clone();
     window
         .add_child(
-            WebviewBuilder::new(&panel_id, WebviewUrl::External(parsed_url)),
+            WebviewBuilder::new(&panel_id, WebviewUrl::External(parsed_url))
+                .on_navigation(move |target| {
+                    if let Some(s) = nav_app.try_state::<PanelUrlState>() {
+                        if let Ok(mut map) = s.0.lock() {
+                            map.insert(nav_panel.clone(), target.to_string());
+                        }
+                    }
+                    true // n'interrompt jamais la navigation
+                }),
             LogicalPosition::new(x, y),
             LogicalSize::new(width, height),
         )
@@ -83,8 +115,12 @@ async fn resize_ide_panel(
 #[tauri::command]
 async fn destroy_ide_panel(
     app: AppHandle,
+    state: tauri::State<'_, PanelUrlState>,
     panel_id: String,
 ) -> Result<(), String> {
+    if let Ok(mut map) = state.0.lock() {
+        map.remove(&panel_id);
+    }
     if let Some(webview) = app.get_webview(&panel_id) {
         webview.close().map_err(|e| e.to_string())?;
     }
@@ -92,12 +128,15 @@ async fn destroy_ide_panel(
 }
 
 #[tauri::command]
-async fn get_ide_panel_url(app: AppHandle, panel_id: String) -> Result<String, String> {
-    if let Some(webview) = app.get_webview(&panel_id) {
-        webview.url().map(|u| u.to_string()).map_err(|e| e.to_string())
-    } else {
-        Err("panel not found".to_string())
-    }
+async fn get_ide_panel_url(
+    state: tauri::State<'_, PanelUrlState>,
+    panel_id: String,
+) -> Result<String, String> {
+    // Lecture depuis le state : on n'appelle JAMAIS `webview.url()` (panic wry).
+    let map = state.0.lock().map_err(|e| e.to_string())?;
+    map.get(&panel_id)
+        .cloned()
+        .ok_or_else(|| "panel not found".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -112,6 +151,7 @@ pub fn run() {
         .manage(terminal::TerminalState::new())
         .manage(lsp::LspState::new())
         .manage(dap::DapState::new())
+        .manage(PanelUrlState::default())
         .invoke_handler(tauri::generate_handler![
             keychain::set_secret,
             keychain::get_secret,

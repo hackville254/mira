@@ -30,6 +30,7 @@ import {
 import { getEffectiveKey } from '../../lib/keybindings';
 import { formatShortcut } from '../../lib/platform';
 import type { OutlineSymbol } from '../../lib/outline';
+import { workspaceSymbolsFromLsp, type WorkspaceSymbolHit } from '../../lib/outline';
 import type { Tab } from '../editor/TabBar';
 
 // ── workspace walker ─────────────────────────────────────────────────────────
@@ -99,13 +100,15 @@ export interface CommandPaletteProps {
   terminalOpen: boolean;
   sidebarOpen: boolean;
   /** Mode d'ouverture : quick open fichiers, palette de commandes, ligne ou symbole. */
-  openMode?: 'quickopen' | 'command' | 'line' | 'symbol';
+  openMode?: 'quickopen' | 'command' | 'line' | 'symbol' | 'workspace-symbol';
   /** Symboles du fichier actif (mode « Go to Symbol »). */
   symbols?: OutlineSymbol[];
   /** Va à une position (mode « Go to Line »). */
   onGoToLine?: (line: number, col: number) => void;
   /** Va à un symbole (mode « Go to Symbol »). */
   onGoToSymbol?: (line: number) => void;
+  /** Va à un symbole du workspace, éventuellement dans un autre fichier. */
+  onGoToWorkspaceSymbol?: (path: string, line: number, col: number) => void;
 }
 
 // ── component ────────────────────────────────────────────────────────────────
@@ -121,19 +124,21 @@ export default function CommandPalette({
   onToggleSidebar, onToggleTerminal, onOpenSettings,
   onOpenMarkdownPreview,
   terminalOpen, sidebarOpen,
-  openMode = 'command', symbols, onGoToLine, onGoToSymbol,
+  openMode = 'command', symbols, onGoToLine, onGoToSymbol, onGoToWorkspaceSymbol,
 }: CommandPaletteProps) {
   const { folderPath } = useWorkspace();
   const { theme, themes, setTheme } = useTheme();
   // En mode « command », la palette démarre avec le préfixe « > » (comme VS Code
   // via Cmd/Ctrl+Shift+P). En mode fichier rapide (Cmd/Ctrl+P), champ vide.
   const [query, setQuery] = useState(
-    openMode === 'line' ? ':' : openMode === 'symbol' ? '#' : openMode === 'command' ? `${CMD_PREFIX} ` : '',
+    openMode === 'line' ? ':' : (openMode === 'symbol' || openMode === 'workspace-symbol') ? '#' : openMode === 'command' ? `${CMD_PREFIX} ` : '',
   );
   const [selected, setSelected] = useState(0);
   const [wsFiles, setWsFiles] = useState<WorkspaceFile[]>([]);
   const [textResults, setTextResults] = useState<SearchMatch[]>([]);
   const [textLoading, setTextLoading] = useState(false);
+  const [wsSymbols, setWsSymbols] = useState<WorkspaceSymbolHit[]>([]);
+  const [wsSymbolLoading, setWsSymbolLoading] = useState(false);
 
   // Commandes contribuées à l'exécution par les extensions (niveau 2).
   const extensionCommands = useSyncExternalStore(subscribeRegistry, getRegisteredCommands, getRegisteredCommands);
@@ -196,6 +201,29 @@ export default function CommandPalette({
     return () => clearTimeout(timer);
   }, [query, folderPath]);
 
+  // Go to Symbol in Workspace — interroge `workspace/symbol` du serveur LSP.
+  useEffect(() => {
+    const isWsSymbolMode = query.startsWith('#') && openMode === 'workspace-symbol';
+    if (!isWsSymbolMode || !folderPath || !activeTab || activeTab.startsWith('__')) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- guard reset when not in workspace-symbol mode
+      setWsSymbols([]);
+      setWsSymbolLoading(false);
+      return;
+    }
+    const symbolQuery = query.slice(1).trim();
+    setWsSymbolLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        setWsSymbols(await workspaceSymbolsFromLsp(folderPath, activeTab, symbolQuery));
+      } catch {
+        setWsSymbols([]);
+      } finally {
+        setWsSymbolLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [query, folderPath, activeTab, openMode]);
+
   // Auto-focus input
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -211,6 +239,10 @@ export default function CommandPalette({
   const isFileMode   = query.startsWith('@');
   const isLineMode   = query.startsWith(':');
   const isSymbolMode = query.startsWith('#');
+  // Le préfixe « # » sert de deux modes : symboles du fichier actif (Go to Symbol)
+  // et symboles du workspace (Ctrl+T). Le mode d'ouverture tranche.
+  const isWsSymbolMode = isSymbolMode && openMode === 'workspace-symbol';
+  const isFileSymbolMode = isSymbolMode && !isWsSymbolMode;
   // Préfixe « > » : commandes uniquement (comportement VS Code au Cmd/Ctrl+Shift+P).
   const isCmdPrefix  = query.startsWith(CMD_PREFIX) && !isTextMode && !isFileMode && !isLineMode && !isSymbolMode;
   // Mode « fichier rapide » : pas de préfixe spécial ni « > » → Cmd/Ctrl+P.
@@ -307,7 +339,7 @@ export default function CommandPalette({
 
   // Go to Symbol — aplatit l'arbre de symboles du fichier actif.
   const symbolItems = useMemo<PaletteItem[]>(() => {
-    if (!isSymbolMode || !onGoToSymbol) return [];
+    if (!isFileSymbolMode || !onGoToSymbol) return [];
     const flat: { sym: OutlineSymbol; depth: number }[] = [];
     const walk = (list: OutlineSymbol[], depth: number) => {
       for (const s of list) { flat.push({ sym: s, depth }); if (s.children?.length) walk(s.children, depth + 1); }
@@ -330,7 +362,29 @@ export default function CommandPalette({
     }
     result.sort((a, b) => a.score - b.score);
     return result.slice(0, 100);
-  }, [isSymbolMode, symbolQuery, symbols, onGoToSymbol, onClose]);
+  }, [isFileSymbolMode, symbolQuery, symbols, onGoToSymbol, onClose]);
+
+  // Go to Symbol in Workspace — symboles remontés par le serveur LSP (Ctrl+T).
+  const wsSymbolItems = useMemo<PaletteItem[]>(() => {
+    if (!isWsSymbolMode || !onGoToWorkspaceSymbol) return [];
+    const result: PaletteItem[] = [];
+    for (const sym of wsSymbols) {
+      const score = fuzzyScore(symbolQuery, sym.name);
+      if (score === null) continue;
+      result.push({
+        id: `wsym:${sym.path}:${sym.line}:${sym.name}`,
+        kind: 'command',
+        label: sym.name,
+        detail: sym.containerName ? `${sym.containerName} · ${sym.relPath}` : sym.relPath,
+        icon: <AlignLeft size={14} style={{ color: 'var(--origin-fg-muted)', flexShrink: 0 }} />,
+        badge: <span style={{ fontSize: '10px', color: 'var(--origin-fg-subtle)', flexShrink: 0 }}>{sym.kind}</span>,
+        score,
+        action: () => { onGoToWorkspaceSymbol(sym.path, sym.line, sym.col); onClose(); },
+      });
+    }
+    result.sort((a, b) => a.score - b.score);
+    return result.slice(0, 100);
+  }, [isWsSymbolMode, symbolQuery, wsSymbols, onGoToWorkspaceSymbol, onClose]);
 
   // Commandes (préfixe « > ») : cœur IDE (runtime) + extensions + actions de base.
   const commandItems = useMemo<PaletteItem[]>(() => {
@@ -441,10 +495,11 @@ export default function CommandPalette({
     () => isTextMode ? textItems
       : isFileMode ? fileItems
       : isLineMode ? lineItems
-      : isSymbolMode ? symbolItems
+      : isWsSymbolMode ? wsSymbolItems
+      : isFileSymbolMode ? symbolItems
       : isCmdPrefix ? commandItems
       : quickOpenItems,
-    [isTextMode, isFileMode, isLineMode, isSymbolMode, isCmdPrefix, textItems, fileItems, lineItems, symbolItems, commandItems, quickOpenItems],
+    [isTextMode, isFileMode, isLineMode, isWsSymbolMode, isFileSymbolMode, isCmdPrefix, textItems, fileItems, lineItems, wsSymbolItems, symbolItems, commandItems, quickOpenItems],
   );
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- reset selection to top whenever the result set changes
@@ -467,7 +522,7 @@ export default function CommandPalette({
     (listRef.current?.children[selected] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
-  const isLoading = isTextMode && textLoading;
+  const isLoading = (isTextMode && textLoading) || (isWsSymbolMode && wsSymbolLoading);
   const activeQuery = isTextMode ? textQuery
     : isFileMode ? fileQuery
     : isLineMode ? lineQuery
@@ -485,7 +540,8 @@ export default function CommandPalette({
   const emptyMessage = isCmdPrefix ? 'No matching commands'
     : isQuickOpen ? 'No matching results'
     : isFileMode ? 'No matching files'
-    : isSymbolMode ? 'No matching symbols'
+    : isWsSymbolMode ? 'No matching workspace symbols'
+    : isFileSymbolMode ? 'No matching symbols'
     : isLineMode ? 'Type a line number to jump to it'
     : 'No results';
 
@@ -531,7 +587,8 @@ export default function CommandPalette({
             onChange={e => setQuery(e.target.value)}
             placeholder={
               isLineMode ? 'Type a line number (or line:column)…'
-              : isSymbolMode ? 'Type a symbol name…'
+              : isWsSymbolMode ? 'Type a workspace symbol name…'
+              : isFileSymbolMode ? 'Type a symbol name…'
               : 'Search files by name (@ files · % text · : line · # symbol · > commands)'
             }
             style={{

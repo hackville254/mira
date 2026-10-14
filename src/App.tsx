@@ -128,7 +128,7 @@ function App() {
   const [topLines, setTopLines] = useState<Record<string, number>>({});
   const [gitBranch,      setGitBranch]     = useState<string | null>(null);
   const [paletteOpen,    setPaletteOpen]   = useState(false);
-  const [paletteMode,    setPaletteMode]   = useState<'quickopen' | 'command' | 'line' | 'symbol'>('command');
+  const [paletteMode,    setPaletteMode]   = useState<'quickopen' | 'command' | 'line' | 'symbol' | 'workspace-symbol'>('command');
   const [paletteSymbols, setPaletteSymbols] = useState<OutlineSymbol[]>([]);
   const [settingsOpen,   setSettingsOpen]  = useState(false);
   // Apparence de l'éditeur — pilotée par les commandes « Toggle … » de la palette.
@@ -737,6 +737,7 @@ function App() {
       // ── Go ──
       { id: 'origin.goToLine',       title: 'Go to Line/Column…', category: 'Go', keywords: 'goto line number', run: () => { setPaletteMode('line'); setPaletteOpen(true); } },
       { id: 'origin.gotoSymbol',     title: 'Go to Symbol in File…', category: 'Go', keywords: 'symbol outline', run: () => { void openSymbolPalette(); } },
+      { id: 'origin.gotoWorkspaceSymbol', title: 'Go to Symbol in Workspace…', category: 'Go', keywords: 'workspace symbol project ctrl+t', run: () => { setPaletteMode('workspace-symbol'); setPaletteOpen(true); } },
 
       // ── Terminal ──
       { id: 'origin.newTerminal',    title: 'Create New Terminal', category: 'Terminal', keywords: 'shell new',  run: () => handleNewTerminalTab() },
@@ -981,6 +982,7 @@ function App() {
           symbols={paletteSymbols}
           onGoToLine={(line, col) => { goToLineInEditor(line, col); }}
           onGoToSymbol={(line) => { const p = activeTabRef.current; if (p) openTabAtLine(p, line, 1); }}
+          onGoToWorkspaceSymbol={(path, line, col) => { setPaletteOpen(false); openTabAtLine(path, line, col); }}
           onFileOpen={openTab}
           onFileOpenAtLine={(path, line) => { setPaletteOpen(false); openTabAtLine(path, line, 0); }}
           onClose={() => { setPaletteOpen(false); setPaletteMode('command'); }}

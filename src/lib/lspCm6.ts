@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- LSP JSON-RPC payloads are protocol-defined, untyped JSON */
 import { linter, lintGutter } from '@codemirror/lint';
-import { keymap } from '@codemirror/view';
+import { keymap, hoverTooltip } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -278,6 +278,9 @@ export async function createLspExtension(opts: LspExtensionOptions): Promise<Ext
     linter(() => [], { delay: Infinity }),
     lintGutter(),
     definitionKeymap,
+    // Hover custom (signature/doc au survol) : le package n'en fournit pas de
+    // fiable, on interroge nous-mêmes textDocument/hover.
+    createLspHoverExtension(serverId, filePath),
     ...lspExtensions,
   ];
 }
@@ -334,6 +337,85 @@ export async function lspRename(
   });
 }
 
+// ── Hover (signature / documentation au survol) ───────────────────────────────
+
+/** Sous-ensemble du `Hover` LSP dont on a besoin pour l'affichage. */
+interface RawHover {
+  contents?: unknown;
+  range?: { start: LspPosition; end: LspPosition };
+}
+
+/** Bloc de contenu renvoyé par le serveur (MarkupContent ou MarkedString). */
+type HoverContents =
+  | string
+  | { value: string; language?: string }
+  | { kind: 'plaintext' | 'markdown'; value: string };
+
+/**
+ * Normalise `contents` d'un Hover LSP (string | MarkupContent | MarkedString[] |
+ * MarkedString | MarkedString[][]) en une chaîne lisible. Les blocs de code sont
+ * rendus en texte (le widget affiche en mono) : on retire le langage, on garde
+ * le contenu — comportement suffisant et sûr (pas de HTML injecté).
+ */
+function hoverContentsToText(contents: unknown): string {
+  const one = (c: HoverContents): string => {
+    if (typeof c === 'string') return c;
+    if (c && typeof c === 'object') return c.value ?? '';
+    return '';
+  };
+  if (Array.isArray(contents)) {
+    // MarkedString[] ou MarkedString[][] : on aplatit d'un niveau.
+    return contents.map(c => (Array.isArray(c) ? c.map(one).join('\n\n') : one(c as HoverContents))).join('\n\n');
+  }
+  return one(contents as HoverContents);
+}
+
+/** `textDocument/hover` → contenu formaté (ou `null` si rien à afficher). */
+export async function lspHover(
+  serverId: LspServerId,
+  filePath: string,
+  position: LspPosition,
+): Promise<{ text: string; range?: { start: LspPosition; end: LspPosition } } | null> {
+  const res = await invoke<RawHover | null>('lsp_request', {
+    language: serverId,
+    method: 'textDocument/hover',
+    params: { textDocument: { uri: pathToUri(filePath) }, position },
+  });
+  if (!res || !res.contents) return null;
+  const text = hoverContentsToText(res.contents).trim();
+  if (!text) return null;
+  return { text, range: res.range };
+}
+
+/**
+ * Extension CodeMirror affichant la signature/documentation LSP au survol d'un
+ * symbole (parité VS Code). Asynchrone : `hoverTooltip` accepte une promesse.
+ * Le survol est ignoré hors session LSP (serverId/filePath vides).
+ */
+export function createLspHoverExtension(serverId: LspServerId, filePath: string): Extension {
+  return hoverTooltip((view, pos) => {
+    const line = view.state.doc.lineAt(pos);
+    const position = { line: line.number - 1, character: pos - line.from };
+    return lspHover(serverId, filePath, position).then((res) => {
+      if (!res) return null;
+      // Restreint la zone de survol à la plage renvoyée par le serveur si fournie.
+      const start = res.range ? posToOffset(view.state.doc, res.range.start) : pos;
+      const end = res.range ? posToOffset(view.state.doc, res.range.end) : pos;
+      return {
+        pos: start,
+        end: Math.max(end, start),
+        above: true,
+        create: () => {
+          const dom = document.createElement('div');
+          dom.className = 'origin-lsp-hover';
+          dom.textContent = res.text;
+          return { dom };
+        },
+      };
+    }).catch(() => null);
+  });
+}
+
 /** Élément renvoyé par `textDocument/codeAction` (Command ou CodeAction). */
 export interface RawCodeAction {
   title?: string;
@@ -374,6 +456,37 @@ export async function lspExecuteCommand(
     method: 'workspace/executeCommand',
     params: { command, arguments: args },
   });
+}
+
+// ── Symboles de workspace (Go to Symbol in Workspace) ─────────────────────────
+
+/** `SymbolInformation`/`WorkspaceSymbol` LSP aplati — ce dont la palette a besoin. */
+export interface RawWorkspaceSymbol {
+  name: string;
+  kind: number;
+  containerName?: string;
+  location: {
+    uri: string;
+    range: { start: LspPosition; end: LspPosition };
+  };
+}
+
+/**
+ * `workspace/symbol` → symboles de tout le workspace correspondant à `query`.
+ * Parité VS Code « Go to Symbol in Workspace » (Ctrl+T). Renvoie `[]` si le
+ * serveur ne supporte pas la requête.
+ */
+export async function lspWorkspaceSymbols(
+  serverId: LspServerId,
+  query: string,
+): Promise<RawWorkspaceSymbol[]> {
+  const res = await invoke<RawWorkspaceSymbol[] | null>('lsp_request', {
+    language: serverId,
+    method: 'workspace/symbol',
+    params: { query },
+  });
+  if (!Array.isArray(res)) return [];
+  return res.filter(s => s && typeof s.name === 'string' && s.location?.uri);
 }
 
 // ── Symboles de document (Outline) ────────────────────────────────────────────

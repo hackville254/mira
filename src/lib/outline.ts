@@ -10,7 +10,7 @@
  * l'UI ne dépende jamais des numéros `SymbolKind` du protocole.
  */
 import { getLspServerId, ensureLspServer, getLspLanguageId } from './lsp';
-import { lspDocumentSymbols, type RawDocumentSymbol } from './lspCm6';
+import { lspDocumentSymbols, lspWorkspaceSymbols, type RawDocumentSymbol } from './lspCm6';
 
 /** Catégorie de symbole, normalisée pour l'affichage (icône + libellé). */
 export type OutlineKind =
@@ -82,6 +82,75 @@ export async function outlineFromLsp(
 /** Indique si un langage LSP est disponible (pour choisir la stratégie). */
 export function hasLspForFile(filePath: string): boolean {
   return getLspServerId(filePath) !== null;
+}
+
+// ── Go to Symbol in Workspace ───────────────────────────────────────────────────
+
+/** Résultat de recherche de symbole dans tout le workspace (Ctrl+T). */
+export interface WorkspaceSymbolHit {
+  name: string;
+  kind: OutlineKind;
+  containerName?: string;
+  /** Chemin absolu du fichier contenant le symbole. */
+  path: string;
+  /** Chemin relatif au dossier du workspace (pour l'affichage). */
+  relPath: string;
+  /** Ligne (1-based) du symbole — cible du saut. */
+  line: number;
+  /** Colonne (1-based) du symbole sur la ligne. */
+  col: number;
+}
+
+/** Convertit un URI `file://` en chemin absolu (décodage des échappements). */
+function uriToPath(uri: string): string {
+  let p = uri.replace(/^file:\/\//, '');
+  try { p = decodeURIComponent(p); } catch { /* URI déjà décodée */ }
+  // Windows : `/C:/…` → `C:/…`.
+  if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+  return p.replace(/\\/g, '/');
+}
+
+/**
+ * Interroge `workspace/symbol` (Go to Symbol in Workspace, Ctrl+T).
+ *
+ * Le serveur LSP interrogé est celui qui gère `refPath` (un fichier ouvert) :
+ * `workspace/symbol` est une requête projet, donc n'importe quel fichier du
+ * langage suffit à cibler le bon serveur. Renvoie `[]` si aucun serveur ne gère
+ * ce fichier.
+ */
+export async function workspaceSymbolsFromLsp(
+  rootPath: string,
+  refPath: string,
+  query: string,
+): Promise<WorkspaceSymbolHit[]> {
+  const serverId = getLspServerId(refPath);
+  if (!serverId) return [];
+  try {
+    await ensureLspServer(serverId, rootPath);
+    const raw = await lspWorkspaceSymbols(serverId, query);
+    const hits: WorkspaceSymbolHit[] = [];
+    for (const sym of raw) {
+      const loc = sym.location;
+      // `location` peut être `Location` ou `WorkspaceSymbol.location` (avec uri).
+      if (!loc || typeof loc.uri !== 'string') continue;
+      const path = uriToPath(loc.uri);
+      const relPath = path.startsWith(rootPath)
+        ? path.slice(rootPath.length).replace(/^[/\\]/, '')
+        : path;
+      hits.push({
+        name: sym.name,
+        kind: kindFromNumber(sym.kind),
+        containerName: sym.containerName,
+        path,
+        relPath,
+        line: loc.range.start.line + 1,
+        col: loc.range.start.character + 1,
+      });
+    }
+    return hits.slice(0, 200);
+  } catch {
+    return [];
+  }
 }
 
 /** Identifiant de langage (pour le fallback regex). */

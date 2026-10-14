@@ -134,15 +134,35 @@ html[data-density="compact"] [data-origin-tree-row] {
 }
 
 /* Occurrences de la sélection / du mot sous le curseur (highlightSelectionMatches).
-   VS Code utilise un encadré discret (editor.selectionHighlightBorder) : on
-   réplique avec une teinte d'accent + une fine bordure bleue. */
+   VS Code utilise un simple encadré discret (editor.selectionHighlightBorder),
+   SANS fond : on réplique avec une fine bordure, sans remplissage, pour ne pas
+   agresser l'œil (surtout pour le mot sous le curseur). */
 .cm-selectionMatch {
-  background-color: color-mix(in srgb, var(--origin-accent-blue) 18%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 55%, transparent);
-  border-radius: 1px;
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 40%, transparent);
+  border-radius: 2px;
 }
+/* Le mot sous le curseur : bordure un peu plus marquée mais toujours SANS fond. */
 .cm-selectionMatch-main {
-  background-color: color-mix(in srgb, var(--origin-accent-blue) 30%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 70%, transparent);
-  border-radius: 1px;
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 55%, transparent);
+  border-radius: 2px;
+}
+
+/* Tooltip hover LSP (signature / documentation au survol) — façon VS Code. */
+.cm-tooltip.cm-tooltip-hover {
+  max-width: 560px;
+  background: var(--origin-bg-overlay, var(--origin-bg-sidebar));
+  border: 1px solid var(--origin-border-default);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  color: var(--origin-fg-default);
+}
+.origin-lsp-hover {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
 }

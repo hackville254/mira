@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# pnpm local store/tmp (used to keep installs inside the workspace)
+.pnpm-store
+.pnpm-tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

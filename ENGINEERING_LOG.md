@@ -5,6 +5,33 @@
 
 ---
 
+### [2026-10-13T19:55] | IDE : Hover LSP + Go to Symbol in Workspace (Ctrl+T) + occurrences sous curseur adoucies
+
+- **Contexte :**
+  Audit de parité VS Code (« il manque quoi pour avoir un IDE pro comme vscode »). Trois manques retenus par ordre d'importance : (1) le **surlignage du mot sous le curseur** avait un fond qui « fait mal aux yeux » ; (2) pas de **hover LSP** (signature/doc au survol) ; (3) pas de **Go to Symbol in Workspace** (Ctrl+T), le préfixe `#` ne couvrant que le fichier actif.
+
+- **Modifications effectuées :**
+  - **`src/index.css`** : `.cm-selectionMatch` / `.cm-selectionMatch-main` perdent leur **fond** au profit d'une simple **bordure** `color-mix` sur `accent-blue` (confort visuel) ; ajout du style `.cm-tooltip.cm-tooltip-hover` + `.origin-lsp-hover` (tooltip LSP : largeur max 560 px, mono, scroll vertical).
+  - **`src/lib/lspCm6.ts`** : nouveau provider `createLspHoverExtension(serverId, filePath)` basé sur `hoverTooltip` natif de `@codemirror/view` — interroge `textDocument/hover` via `invoke('lsp_request')` et normalise `HoverContents` (string/MarkupContent/MarkedString[]…) en texte ; intégré dans `createLspExtension`. Ajout de `RawWorkspaceSymbol` + `lspWorkspaceSymbols(serverId, query)` (`workspace/symbol`).
+  - **`src/lib/outline.ts`** : nouveau `WorkspaceSymbolHit` + `workspaceSymbolsFromLsp(rootPath, refPath, query)` — cible le serveur LSP du **fichier de référence** (`getLspServerId(refPath)`), convertit les URI `file://` en chemins et normalise `kind` via la table `SYMBOL_KIND` existante.
+  - **`src/components/palette/CommandPalette.tsx`** : nouveau mode `workspace-symbol` (prop `onGoToWorkspaceSymbol`, query initiale `#`, `useEffect` async debounced 250 ms, memo `wsSymbolItems` avec `containerName · relPath`) ; le mode `#` fichier (`symbol`) est préservé via `isFileSymbolMode` / `isWsSymbolMode`.
+  - **`src/App.tsx`** : `paletteMode` étendu à `'workspace-symbol'` ; commande `origin.gotoWorkspaceSymbol` ; prop `onGoToWorkspaceSymbol` câblée sur `openTabAtLine` (ouverture **cross-file** à la ligne/colonne).
+  - **`src/lib/keybindings.ts`** : `origin.gotoWorkspaceSymbol` → **Ctrl+T**.
+
+- **Décisions Techniques :**
+  - **Hover natif plutôt que `codemirror-languageserver`** : le package impose sa propre extension `languageServerWithTransport` ; un provider `hoverTooltip` sur le transport JSON-RPC déjà en place (`lsp_request`) évite une dépendance supplémentaire et reste maître du rendu. `lsp_request` côté Rust ne filtre aucune méthode → `textDocument/hover` et `workspace/symbol` passent sans modification backend.
+  - **Serveur résolu depuis le fichier actif, pas le dossier** : `getLspServerId` matche par extension de fichier ; un `rootPath` de dossier ne résout rien. `workspace/symbol` étant une requête projet, n'importe quel fichier ouvert du bon langage cible le serveur correct.
+  - **Fond retiré, bordure conservée** : VS Code marque l'occurrence courante sans aplat criard ; on garde la lisibilité (bordure) sans l'agression visuelle du fond.
+
+- **Impacts & Dépendances :**
+  - `CommandPalette` : préfixe `#` désormais bimodal (`openMode` tranche) — tout futur appelant doit fournir le bon `openMode`.
+  - Aucun impact backend. `Engine` LSP inchangé.
+
+- **Prochaines étapes :**
+  - Navigation **back/forward** (Ctrl+Alt+- / Ctrl+Shift+-) sur l'historique de positions, puis **Snippets** (moteur + définitions utilisateur).
+
+---
+
 ### [2026-10-13T18:55] | Search : aperçu du remplacement (occurrence barrée + remplacement) façon VS Code
 
 - **Contexte :**

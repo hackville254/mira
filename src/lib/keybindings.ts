@@ -37,6 +37,7 @@ export const COMMANDS: CommandDef[] = [
   // Go
   { id: "origin.goToLine",       label: "Go to Line/Column",    category: "Go",      defaultKey: "ctrl+g" },
   { id: "origin.gotoSymbol",     label: "Go to Symbol in File", category: "Go",      defaultKey: "ctrl+shift+o" },
+  { id: "origin.gotoWorkspaceSymbol", label: "Go to Symbol in Workspace", category: "Go", defaultKey: "ctrl+t" },
   // Selection (multi-curseurs)
   { id: "editor.selectNextOccurrence",  label: "Select Next Occurrence",  category: "Selection", defaultKey: "ctrl+d" },
   { id: "editor.selectAllOccurrences",  label: "Select All Occurrences",  category: "Selection", defaultKey: "ctrl+shift+l" },
