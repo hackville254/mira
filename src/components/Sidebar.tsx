@@ -4,7 +4,6 @@ import FileTree from "./FileTree";
 import SearchPanel from "./SearchPanel";
 import SourceTreePanel from "./SourceTreePanel";
 import DebugPanel from "./DebugPanel";
-import ExtensionsPanel from "./ExtensionsPanel";
 import OutlinePanel from "./outline/OutlinePanel";
 
 const MIN_WIDTH = 180;
@@ -41,7 +40,6 @@ function ActivePanel({ id, onFileOpen, onFileOpenAtLine, onMarkdownPreview, file
     case "sourcetree": return <SourceTreePanel />;
     case "outline":    return <OutlinePanel activePath={activePath} content={activeContent} rootPath={rootPath} onFileOpenAtLine={onFileOpenAtLine} />;
     case "debug":      return <DebugPanel onFileOpenAtLine={onFileOpenAtLine} />;
-    case "extensions": return <ExtensionsPanel />;
     default:           return null;
   }
 }

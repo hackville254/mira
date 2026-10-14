@@ -718,8 +718,8 @@ function AppearanceSection() {
           color: "var(--origin-fg-muted)",
           lineHeight: 1.5,
         }}>
-          No colour theme from an extension is installed yet. Install one from the Extensions panel
-          (e.g. <span style={{ color: "var(--origin-fg-default)" }}>One Dark Pro</span>) and it will show up here.
+          No colour theme from an extension is installed yet. Installing a theme extension makes
+          it appear here automatically (e.g. <span style={{ color: "var(--origin-fg-default)" }}>One Dark Pro</span>).
         </div>
       )}
 

@@ -5,7 +5,40 @@
 
 ---
 
-### [2026-10-13T19:55] | IDE : Hover LSP + Go to Symbol in Workspace (Ctrl+T) + occurrences sous curseur adoucies
+### [2026-10-14T03:40] | Extensions : sortie du modèle VS Code → API native `origin.*` + retrait marketplace & UI
+
+- **Contexte :**
+  Décision produit : « supprimer le système d'extension façon VS Code et créer notre propre système comme Zed, pour rendre l'outil plus léger ». Approche retenue (validée) : **garder le sandbox QuickJS** mais remplacer le shim `vscode.*` par une **API `origin.*` maison** ; **retirer le marketplace Open VSX** ; **retirer l'icône/menu Extensions de l'activity bar** (UI masquée « pour le moment »).
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/extensions_market.rs`** : **supprimé** (client Open VSX, structs `MarketExtension`/`MarketSearchResult`, `valid_segment` anti-SSRF, commandes `market_search`/`market_install`, 4 tests).
+  - **`src-tauri/src/lib.rs`** : `mod extensions_market;` et les 2 commandes marketplace retirées de l'`invoke_handler` (seules les commandes d'install/inventaire locales subsistent).
+  - **`src/lib/extensions.ts`** : bloc Open VSX retiré (`MarketExtension`, `MarketSearchResult`, `marketSearch`, `marketInstall`) ; `readExtensionManifest` conservé.
+  - **`src/lib/extensions/runtime.ts`** : l'en-tête décrit désormais l'API `origin` ; `installVscodeShim` → **`installOriginApi`** (surface plate `origin.commands/workspace/editors/extensions/notify/log/version`), exposée via `globalThis.origin` et `globalThis.__originApi`. `require("origin")` résout l'API ; `require("vscode")` conservé comme **alias legacy** vers le même objet. Builders morts supprimés (`buildCommands`, `buildWindow`, `buildWorkspace`, `buildUri`, `buildExtensionMode`, `buildExtensions`, `buildEnv`, `buildEventEmitter`) ainsi que `uriToPath`/`encodeUtf8`/`decodeUtf8`, devenus inutiles. Helpers conservés : `buildDisposable`, `buildExtensionContext`, `buildMemento`, `installConsole`, `installWebGlobals`, `wrapCommonJs`, `settleCallResult`, etc.
+  - **`src/components/ActivityBar.tsx`** : item `{ id: "extensions", icon: "lucide:puzzle" }` retiré.
+  - **`src/components/Sidebar.tsx`** : import `ExtensionsPanel` et `case "extensions"` retirés.
+  - **`src/components/ExtensionsPanel.tsx`** : **supprimé** (plus référencé).
+  - **`src/components/settings/SettingsPanel.tsx`** : message de thème ne renvoie plus vers le « Extensions panel » supprimé.
+
+- **Décisions Techniques :**
+  - **API plate et opportuniste plutôt que clone de `vscode`** : une surface étroite (`commands`, `workspace`, `editors`, `extensions`, `notify`) mappée 1:1 sur le `HostBridge` (capability-gated) réduit la surface d'attaque et reste plus simple à raisonner. Le sandbox QuickJS est conservé : le code `main.js` reste **non fiable** (pas de DOM/réseau/FS/`invoke`).
+  - **Alias `vscode` conservé volontairement** : les bundles webpack existants font `require("vscode")` au chargement ; couper net ferait planter toute extension déjà installée. L'alias renvoie le **même** objet `origin` — zéro duplication, dette nulle.
+  - **Marketplace supprimé, pas désactivé** : le retrait est total (Rust + TS + UI) pour éviter du code mort et un vecteur réseau/SSRF. L'installation reste possible via fichier `.vsix` local (dialog natif, aucun fetch distant).
+  - **UI retirée « pour le moment »** : l'infra d'extensions (host, grammaires, thèmes, i18n, registre de commandes) reste **active** — elle alimente l'éditeur (coloration, thèmes, commandes palette). Seul le point d'entrée visuel (activity bar + panneau) est masqué.
+
+- **Impacts & Dépendances :**
+  - **Rust** : `install_from_bytes` reste public et partagé ; plus aucun appelant marketplace. Tests lib : **74/74** (4 tests marketplace supprimés).
+  - **Manifeste** : inchangé pour l'instant — `package.json` façon VS Code (`contributes.grammars/snippets/themes/iconThemes/commands`) + section non-standard `origin.binaries`. Décision : **garder la compat VSIX** et documenter une section `origin` native plus tard.
+  - **Palette** : les commandes d'extension déclarées continuent d'apparaître (via `lib/extensions/registry`) ; l'i18n NLS reste.
+  - **Settings / Thèmes / IconTheme** : lisent toujours `listExtensions()` — le masquage UI n'affecte pas la détection des thèmes/grammaires installés.
+
+- **Prochaines étapes :**
+  - Définir un **manifeste `origin` natif** (contributions + section `origin`) sans casser le parse VSIX.
+  - **Nettoyage résiduel** : `lsp.rs` (`find_in_extensions` lisant `<app_data>/extensions`) si on veut découpler complètement.
+  - Reprendre les lots IDE en attente : **navigation back/forward** puis **Snippets**.
+
+---
+
 
 - **Contexte :**
   Audit de parité VS Code (« il manque quoi pour avoir un IDE pro comme vscode »). Trois manques retenus par ordre d'importance : (1) le **surlignage du mot sous le curseur** avait un fond qui « fait mal aux yeux » ; (2) pas de **hover LSP** (signature/doc au survol) ; (3) pas de **Go to Symbol in Workspace** (Ctrl+T), le préfixe `#` ne couvrant que le fichier actif.

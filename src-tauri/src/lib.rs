@@ -7,7 +7,6 @@ pub mod downloader;
 mod env;
 mod env_path;
 mod extensions;
-mod extensions_market;
 mod fs;
 mod git;
 mod keychain;
@@ -228,8 +227,6 @@ pub fn run() {
             extensions::uninstall_extension,
             extensions::read_extension_asset,
             extensions::inspect_extension,
-            extensions_market::market_search,
-            extensions_market::market_install,
             embed_ide_panel,
             resize_ide_panel,
             destroy_ide_panel,
