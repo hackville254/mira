@@ -1,21 +1,24 @@
 import { useState } from "react";
-import { ChevronRight, Layers, RefreshCw } from "lucide-react";
+import { ChevronRight, Layers, Network, RefreshCw } from "lucide-react";
 
 // ── Bannière système in-line ────────────────────────────────────────────────────
 //
 // Affiche dans le fil les événements internes du moteur qui ne sont pas du texte
-// de l'assistant : « Compaction de l'historique » (réduction de contexte) et
-// « Reprise automatique » (retry après erreur transitoire). Calqué sur Trae, où
-// la compaction apparaît comme une ligne repliable dans la conversation.
+// de l'assistant : « Compaction de l'historique » (réduction de contexte),
+// « Reprise automatique » (retry après erreur transitoire) et « Orchestration »
+// (trace discrète des sous-agents lancés pendant le tour). Calqué sur Trae, où
+// ces événements apparaissent comme une ligne repliable dans la conversation.
 
 export default function StatusNotice({ kind, detail, savedTokens }: {
-  kind: "compaction" | "retry";
+  kind: "compaction" | "retry" | "orchestration";
   detail: string;
   savedTokens?: number;
 }) {
   const [open, setOpen] = useState(false);
   const isCompaction = kind === "compaction";
-  const Icon = isCompaction ? Layers : RefreshCw;
+  const isOrchestration = kind === "orchestration";
+  const Icon = isOrchestration ? Network : isCompaction ? Layers : RefreshCw;
+  const label = isOrchestration ? "Orchestration" : isCompaction ? "Compaction de l'historique" : "Reprise automatique";
   const hasDetail = !!savedTokens || !!detail;
 
   return (
@@ -33,7 +36,7 @@ export default function StatusNotice({ kind, detail, savedTokens }: {
           <ChevronRight size={11} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.12s" }} />
         )}
         <Icon size={12} style={{ flexShrink: 0 }} />
-        <span>{isCompaction ? "Compaction de l'historique" : "Reprise automatique"}</span>
+        <span>{label}</span>
       </button>
       {open && hasDetail && (
         <div style={{ marginTop: "4px", marginLeft: "6px", paddingLeft: "10px",

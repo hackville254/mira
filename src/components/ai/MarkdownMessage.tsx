@@ -3,7 +3,7 @@ import remarkGfm from "remark-gfm";
 import { useState } from "react";
 import { Check, Copy, Wand2 } from "lucide-react";
 import type { Components } from "react-markdown";
-import { stripDecorativeEmojis } from "../../lib/textStyle";
+import { sanitizeProse } from "../../lib/textStyle";
 
 interface Props {
   content: string;
@@ -278,7 +278,7 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
   return (
     <div style={{ fontSize: "13px", color: "var(--origin-fg-default)", lineHeight: 1.65 }}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {stripDecorativeEmojis(content)}
+        {sanitizeProse(content)}
       </ReactMarkdown>
     </div>
   );

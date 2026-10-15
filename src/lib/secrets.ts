@@ -5,16 +5,36 @@ function accountKey(providerId: string) {
   return `provider:${providerId}`;
 }
 
+/**
+ * Cache mémoire des clés API lues depuis le keychain OS.
+ *
+ * `loadApiKey` était appelé à CHAQUE tour et faisait un aller-retour IPC +
+ * accès keychain avant le premier token : c'est un coût de TTFT pur, alors que
+ * la clé d'un provider ne change pas en cours de session. On mémorise donc la
+ * valeur par provider (y compris `null` = clé absente, pour ne pas re-sonder le
+ * keychain à chaque tour). `saveApiKey` / `deleteApiKey` invalident l'entrée,
+ * ce qui garde le cache cohérent avec toute modification faite dans l'UI.
+ *
+ * Sécurité : la clé reste en mémoire de processus, jamais écrite sur disque ni
+ * dans un bundle. Elle n'est lue qu'au moment de construire le client LLM.
+ */
+const apiKeyCache = new Map<string, string | null>();
+
 export async function saveApiKey(providerId: string, secret: string): Promise<void> {
   await invoke('set_secret', { account: accountKey(providerId), secret });
+  apiKeyCache.set(providerId, secret);
 }
 
 export async function loadApiKey(providerId: string): Promise<string | null> {
-  return invoke<string | null>('get_secret', { account: accountKey(providerId) });
+  if (apiKeyCache.has(providerId)) return apiKeyCache.get(providerId) ?? null;
+  const key = await invoke<string | null>('get_secret', { account: accountKey(providerId) });
+  apiKeyCache.set(providerId, key ?? null);
+  return key;
 }
 
 export async function deleteApiKey(providerId: string): Promise<void> {
   await invoke('delete_secret', { account: accountKey(providerId) });
+  apiKeyCache.set(providerId, null);
 }
 
 /**
@@ -32,6 +52,8 @@ export interface DevAiConfig {
   model: string | null;
   apiKey: string | null;
   baseUrl: string | null;
+  /** Liste ordonnée d'ids de modèles autorisés (cascade rate-limit). */
+  allowedModels: string | null;
   configured: boolean;
 }
 
@@ -40,6 +62,7 @@ const EMPTY_DEV_CONFIG: DevAiConfig = {
   model: null,
   apiKey: null,
   baseUrl: null,
+  allowedModels: null,
   configured: false,
 };
 
@@ -77,4 +100,18 @@ export async function resolveDefaultModel(fallback: string): Promise<string> {
   // Le modèle du `.env` n'est cohérent qu'avec son propre provider.
   if (storedProvider && dev.provider && storedProvider !== dev.provider) return fallback;
   return dev.model;
+}
+
+/**
+ * Liste brute des modèles autorisés (cascade), priorité : localStorage > `.env`.
+ *
+ * Renvoie la chaîne brute séparée par des virgules (ou null). Le découpage /
+ * dédup est fait par `parseAllowedModels` du module `modelCascade`, pour garder
+ * la logique de cascade testable et centralisée.
+ */
+export async function resolveAllowedModels(): Promise<string | null> {
+  const stored = localStorage.getItem('origin-ai-allowed-models');
+  if (stored) return stored;
+  const dev = await loadDevAiConfig();
+  return dev.allowedModels ?? null;
 }

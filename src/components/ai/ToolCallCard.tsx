@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, Check, ShieldAlert } from "lucide-react";
+import { ChevronDown, Check, ShieldAlert, HelpCircle } from "lucide-react";
 import type { ToolCallDisplay } from "../../lib/aiTypes";
 import { toolTargetPath } from "../../lib/toolGroups";
 import AskUserCard from "./AskUserCard";
@@ -79,6 +79,13 @@ export default function ToolCallCard({
     </>
   );
 
+  // Les outils de plan (todo_write / todo_read) ne sont PAS des étapes de travail
+  // visibles : c'est l'état interne d'une checklist que l'UI affiche déjà sous
+  // forme de TodoList épinglée (pattern « Focus Chain » de Cline, où la todo est
+  // un état d'UI, pas un tool-call mis en avant). On les masque donc entièrement
+  // du fil — pas de ligne, pas d'accordéon — pour ne pas polluer la réponse.
+  if (tc.toolName === "todo_write" || tc.toolName === "todo_read") return null;
+
   // Encadré réservé aux cas « sensibles » (approbation) : les états running et
   // complete restent des accordéons nus, alignés sur le rendu Trae.
   const boxedStyle: React.CSSProperties = {
@@ -113,19 +120,19 @@ export default function ToolCallCard({
   if (tc.status === "approval-required" && tc.action) {
     const action = tc.action;
 
-    // Question interactive : pas d'approbation binaire mais un choix cliquable.
+    // Question interactive : la carte n'est PAS rendue dans le fil — la question
+    // est dockée au-dessus de l'input (là où l'utilisateur regarde). On garde
+    // seulement une ligne discrète pour la traçabilité.
     if (action.type === "ask_user") {
       if (tc.reject) {
         return (
-          <AskUserCard
-            question={action.question}
-            options={action.options}
-            allowFreeform={action.allowFreeform}
-            onAnswer={(answer) => tc.reject?.(answer)}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0", color: "var(--origin-fg-subtle)", fontSize: "12px" }}>
+            <HelpCircle size={12} style={{ flexShrink: 0, color: "var(--origin-accent-blue)" }} />
+            <span>Asked a question</span>
+          </div>
         );
       }
-      // Question déjà répondue : le résultat porte la réponse.
+      // Question déjà répondue : on garde une trace figée (question + réponse).
       const answered = (tc.result as { answer?: string } | undefined)?.answer;
       return (
         <AskUserCard

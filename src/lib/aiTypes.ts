@@ -30,6 +30,8 @@ export interface SubAgentChild {
   inputTokens: number;
   outputTokens: number;
   report?:     string;
+  /** Texte produit EN DIRECT par le sous-agent (suivi pendant l'exécution). */
+  stream?:     string;
   /** Outils (lecture seule) exécutés par le sous-agent, pour la carte repliée. */
   tools?:      ToolCallDisplay[];
 }
@@ -39,7 +41,7 @@ export type MessagePart =
   | { type: "reasoning"; content: string }
   | { type: "tool-call"; tc: ToolCallDisplay }
   | { type: "plan-card"; plan: ParsedPlan; status: "pending" | "approved" | "rejected" }
-  | { type: "status"; kind: "compaction" | "retry"; detail: string; savedTokens?: number };
+  | { type: "status"; kind: "compaction" | "retry" | "orchestration"; detail: string; savedTokens?: number };
 
 export interface DisplayMessage {
   role: "user" | "assistant";
@@ -63,6 +65,21 @@ export interface PinnedMessage {
   pinnedAt: number;
   sessionId?: string;
   label?: string;
+}
+
+/**
+ * Message saisi par l'utilisateur pendant qu'un tour est déjà en cours. Il est
+ * conservé tel quel et envoyé automatiquement dès que le tour courant se
+ * termine (fin normale, erreur ou stop manuel). Trae/Cursor appellent cet état
+ * « Waiting to send ».
+ */
+export interface QueuedMessage {
+  text: string;
+  modelId: string;
+  providerId: string;
+  fileMentions: string[];
+  editorContext: EditorContext | null;
+  mode: "agent" | "ask" | "plan";
 }
 
 export interface SessionMeta {

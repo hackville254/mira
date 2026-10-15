@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square } from "lucide-react";
+import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square, Clock, Pencil, Trash2 } from "lucide-react";
 import PreferencesDropdown from "./PreferencesDropdown";
 import MentionDropdown from "./MentionDropdown";
 import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
@@ -8,15 +8,26 @@ import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
 import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
+import {
+  AGENTS as AGENT_DESCRIPTORS,
+  type Mode,
+  type AgentIcon,
+  readStoredMode,
+  writeStoredMode,
+  parseSlashCommand,
+} from "../../lib/inputCommands";
 
 // ── Agent selector ────────────────────────────────────────────────────────────
 
-type Mode = "agent" | "ask" | "plan";
+/** Mappe le libellé d'icône du module vers un composant lucide. */
+const AGENT_ICONS: Record<AgentIcon, typeof Bot> = {
+  chat: MessageSquare,
+  agent: Bot,
+  plan: Waypoints,
+};
 
-const AGENTS = [
-  { id: "ask" as Mode,   label: "Chat",  Icon: MessageSquare },
-  { id: "agent" as Mode, label: "Agent", Icon: Bot },
-];
+/** Agents affichés dans le menu : identifiants + libellés viennent du module. */
+const AGENTS = AGENT_DESCRIPTORS.map(a => ({ ...a, Icon: AGENT_ICONS[a.icon] }));
 
 function ModeDropdown({ anchorEl, selected, onSelect, onClose }: {
   anchorEl: HTMLElement | null; selected: Mode; onSelect: (m: Mode) => void; onClose: () => void;
@@ -345,6 +356,13 @@ function contextLabel(ctx: EditorContext): string {
   return `L${ctx.startLine}–${ctx.endLine}`;
 }
 
+/** Style des petits boutons du bandeau « Waiting to send » (éditer, retirer). */
+const queuedMiniBtn: React.CSSProperties = {
+  display: "flex", alignItems: "center", justifyContent: "center",
+  background: "none", border: "none", cursor: "pointer",
+  padding: "1px", color: "var(--origin-fg-subtle)", flexShrink: 0,
+};
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 /** API impérative exposée au parent (ex. « éditer et renvoyer » un message). */
@@ -364,9 +382,27 @@ interface ChatBoxProps {
   onStop?: () => void;
   /** Ref transmise par le parent pour piloter l'éditeur (edit & resend). */
   handleRef?: React.RefObject<ChatBoxHandle | null>;
+  /**
+   * Message actuellement en file d'attente (envoyé automatiquement à la fin du
+   * tour courant). Rendu sous forme de bandeau « Waiting to send ».
+   */
+  queued?: { text: string; fileMentions?: string[] } | null;
+  /** Retire de la file le message en attente. */
+  onRemoveQueued?: () => void;
+  /**
+   * Réinjecte le message en attente dans l'éditeur pour le modifier. Le message
+   * est retiré de la file (le parent gère le retrait).
+   */
+  onEditQueued?: () => void;
+  /**
+   * Appelé lorsqu'un envoi survient ALORS qu'un tour est déjà en cours : le
+   * message doit être mis en file d'attente au lieu de lancer un nouveau run.
+   * Renvoie `true` si le message a bien été pris en charge par la file.
+   */
+  onQueue?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode) => boolean;
 }
 
-export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef }: ChatBoxProps) {
+export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
@@ -377,7 +413,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
   const [isEmpty, setIsEmpty] = useState(true);
   const [focused, setFocused] = useState(false);
-  const [mode, setMode] = useState<Mode>("agent");
+  const [mode, setMode] = useState<Mode>(() => readStoredMode());
   const [modeOpen, setModeOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
@@ -478,13 +514,56 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     }
   };
 
+  /** Change le mode et le mémorise (survit à un reload). */
+  const handleModeSelect = useCallback((m: Mode) => {
+    setMode(m);
+    writeStoredMode(m);
+  }, []);
+
   const handleSend = () => {
     const el = editableRef.current;
     if (!el) return;
     const { displayText, fileMentions } = parseContent(el);
     if (!displayText && fileMentions.length === 0) return;
+
+    // Slash-command pilotée depuis l'input : `/plan …`, `/agent …`, `/ask …`.
+    // On change le mode puis on envoie le reste comme texte (le défaut garde
+    // le texte complet quand aucune commande n'est reconnue).
+    let text = displayText;
+    let sendMode = mode;
+    const slash = parseSlashCommand(displayText);
+    if (slash.command && slash.command.action.kind === "set-mode") {
+      sendMode = slash.command.action.mode;
+      setMode(sendMode);
+      writeStoredMode(sendMode);
+      text = slash.rest;
+      // Commande seule (ex. `/plan`) : on bascule le mode sans envoyer de message.
+      if (!text && fileMentions.length === 0) {
+        el.innerHTML = "";
+        setIsEmpty(true);
+        setMentionActive(false);
+        setMentionQuery('');
+        mentionRangeRef.current = null;
+        return;
+      }
+    }
+
     const editorContext = contextDismissed ? null : contextSnap;
-    onSend?.(displayText, selectedModelId, selectedProviderId, fileMentions, editorContext, mode);
+
+    // Un tour est déjà en cours : on met le message en file d'attente au lieu de
+    // lancer un nouveau run (le parent l'enverra automatiquement à la fin).
+    if (isStreaming && onQueue?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode)) {
+      el.innerHTML = "";
+      setIsEmpty(true);
+      setMentionActive(false);
+      setMentionQuery('');
+      mentionRangeRef.current = null;
+      setContextDismissed(false);
+      setContextSnap(null);
+      return;
+    }
+
+    onSend?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode);
     el.innerHTML = "";
     setIsEmpty(true);
     setMentionActive(false);
@@ -611,6 +690,58 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           }}
           onClose={() => setFilePickerOpen(false)}
         />
+      )}
+
+      {/* Waiting-to-send banner : message mis en file pendant un tour en cours.
+          Il sera envoyé automatiquement dès la fin du tour. Le bandeau est
+          explicite (icône horloge) et propose éditer / retirer. */}
+      {queued && (
+        <div style={{
+          margin: "6px 8px 0",
+          border: "1px solid var(--origin-border-default)",
+          borderRadius: "7px",
+          backgroundColor: "var(--origin-bg-panel)",
+          overflow: "hidden",
+        }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            padding: "5px 8px",
+            fontSize: "12px",
+            color: "var(--origin-fg-muted)",
+            fontFamily: "var(--font-sans)",
+          }}>
+            <Clock size={11} style={{ flexShrink: 0, color: "var(--origin-fg-subtle)" }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+              {queued.text || (queued.fileMentions?.join(", ") ?? "")}
+            </span>
+            <button
+              onMouseDown={e => { e.preventDefault(); onEditQueued?.(); }}
+              title="Edit queued message"
+              style={queuedMiniBtn}
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              onMouseDown={e => { e.preventDefault(); onRemoveQueued?.(); }}
+              title="Remove queued message"
+              style={queuedMiniBtn}
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+          <div style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            padding: "5px 8px",
+            borderTop: "1px solid var(--origin-border-default)",
+            fontSize: "12px",
+            color: "var(--origin-fg-subtle)",
+            fontFamily: "var(--font-sans)",
+          }}>
+            <SquareSlash size={12} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
+            Waiting to send...
+            <ChevronDown size={12} style={{ marginLeft: "auto", color: "var(--origin-fg-subtle)" }} />
+          </div>
+        </div>
       )}
 
       {/* Auto context badge */}
@@ -798,7 +929,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
         </div>
         {modeOpen && (
           // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the anchor button
-          <ModeDropdown anchorEl={modeAnchorRef.current} selected={mode} onSelect={setMode} onClose={() => setModeOpen(false)} />
+          <ModeDropdown anchorEl={modeAnchorRef.current} selected={mode} onSelect={handleModeSelect} onClose={() => setModeOpen(false)} />
         )}
 
         {/* Model selector */}

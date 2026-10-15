@@ -12,6 +12,7 @@ mod extensions;
 mod fs;
 mod git;
 mod keychain;
+mod log;
 mod lsp;
 pub mod lsp_index;
 mod search;
@@ -224,7 +225,10 @@ pub fn run() {
             checkpoint::checkpoint_count,
             checkpoint::checkpoint_summary,
             checkpoint::checkpoint_file_before,
+            checkpoint::checkpoint_revert_preview,
+            checkpoint::checkpoint_undo_many,
             ai_env::dev_ai_config,
+            log::origin_log,
             lsp::lsp_start,
             lsp::lsp_request,
             lsp::lsp_notify,

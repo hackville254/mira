@@ -46,7 +46,17 @@ export interface SubAgentResult {
 
 export interface SubAgentRunOptions {
   model:         LanguageModel;
+  /** Cascade de modèles de secours — héritée du root (voir `runAgent`). */
+  modelChain?:   LanguageModel[];
+  /** Identifiants alignés sur `modelChain` (trace `timing`). */
+  modelIds?:     string[];
   folderPath:    string;
+  /**
+   * Identifiant du sous-agent, généré par l'HÔTE (jamais ici). Il sert à router
+   * les events vers la bonne carte : l'hôte émet déjà `subagent-start` avec cet
+   * id, on ne le ré-émet donc pas ici (sinon double entrée → suivi cassé).
+   */
+  spawnId:       string;
   /** Identifiant de rôle demandé par le root — résolu/normalisé par l'hôte. */
   role:          string;
   task:          string;
@@ -67,13 +77,13 @@ export interface SubAgentRunOptions {
  */
 export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentResult> {
   const role = resolveRole(opts.role);
-  const spawnId = `sub-${crypto.randomUUID()}`;
+  // Le `spawnId` est FOURNI par l'hôte : il l'a déjà émis via `subagent-start`.
+  // On ne le ré-émet pas ici, sous peine de créer une seconde carte fantôme.
+  const { spawnId } = opts;
 
   // Tous les events du run enfant sont préfixés par `spawnId` : l'hôte peut ainsi
   // les router sans jamais les confondre avec le flux du root.
   const route = (event: AgentEvent) => opts.onEvent({ ...event, spawnId } as AgentEvent);
-
-  route({ type: "subagent-start", spawnId, role: role.label, task: opts.task, toolCallId: undefined });
 
   const systemPrompt = buildSystemPrompt(role, opts);
   const tools = createReadOnlyToolset({ folderPath: opts.folderPath, allow: role.tools }) as ToolSet;
@@ -93,8 +103,10 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
     const isRetry = attempt > 1;
 
     const pass = await runPass({
-      model: opts.model, tools, systemPrompt, task, isRetry,
+      model: opts.model, modelChain: opts.modelChain, modelIds: opts.modelIds,
+      tools, systemPrompt, task, isRetry,
       cacheSystem: opts.cacheSystem, role, budget, route,
+      baseIterations: iterations,
       onTimedOut: () => { timedOut = true; },
     });
 
@@ -132,6 +144,8 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
 
 interface PassDeps {
   model:        LanguageModel;
+  modelChain?:  LanguageModel[];
+  modelIds?:    string[];
   tools:        ToolSet;
   systemPrompt: string;
   task:         string;
@@ -140,6 +154,8 @@ interface PassDeps {
   role:         SubAgentRoleDefinition;
   budget:       { exceeded: boolean };
   route:        (event: AgentEvent) => void;
+  /** Steps déjà consommés par les passes précédentes (progression cumulée). */
+  baseIterations: number;
   onTimedOut:   () => void;
 }
 
@@ -162,6 +178,8 @@ async function runPass(deps: PassDeps): Promise<PassResult> {
 
   const handle = runAgent({
     model:         deps.model,
+    modelChain:    deps.modelChain,
+    modelIds:      deps.modelIds,
     messages:      [{ role: "user", content: deps.task }],
     tools:         deps.tools,
     systemPrompt:  deps.systemPrompt,
@@ -182,6 +200,15 @@ async function runPass(deps: PassDeps): Promise<PassResult> {
           break;
         case "step-finish":
           iterations += 1;
+          // Progression visible dans l'UI (carte + onglet Agents) : on émet un
+          // `subagent-step` routé vers la carte, avec le total CUMULÉ (les passes
+          // précédentes comptent). Sans ça, la carte resterait muette jusqu'à la
+          // fin — c'était le « problème de suivi » constaté.
+          deps.route({
+            type: "subagent-step",
+            spawnId: "",
+            iteration: deps.baseIterations + iterations,
+          });
           break;
         case "finish":
           inputTokens = event.usage.inputTokens;

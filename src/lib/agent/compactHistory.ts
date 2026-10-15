@@ -1,5 +1,5 @@
 import type { ModelMessage } from "ai";
-import { estimateTokens, COMPACTION_THRESHOLD, DEFAULT_TOKEN_BUDGET } from "./tokenBudget";
+import { estimateTokens, PRESERVE_RECENT_TOKENS } from "./tokenBudget";
 
 // ── Types mirroring what buildModelHistory emits ───────────────────────────────
 
@@ -14,16 +14,7 @@ type ToolResultPart = {
   output: unknown;
 };
 
-// ── Token-budget gate ──────────────────────────────────────────────────────────
-//
-// Only compact once the conversation grows large enough to matter. The estimate
-// (1 token ≈ 4 chars, cf. `tokenBudget.ts`) now gates on the same 80 % pressure
-// threshold jcode uses, against a 200k default budget: short sessions are never
-// touched and we avoid mangling history we don't need to.
-
-const COMPACT_TOKEN_GATE = COMPACTION_THRESHOLD * DEFAULT_TOKEN_BUDGET;
-
-// ── compactHistory ─────────────────────────────────────────────────────────────
+// ── Stale-read rewriting (port de Cline `message-builder.ts`) ──────────────────
 //
 // Removes redundant or stale read_file results from the message history before
 // sending to the model. A read result is dropped when it is no longer
@@ -40,14 +31,17 @@ const COMPACT_TOKEN_GATE = COMPACTION_THRESHOLD * DEFAULT_TOKEN_BUDGET;
 // intact, so the chain of reasoning is preserved, and the most-recent
 // authoritative read is preserved verbatim.
 //
-// Compaction is gated on a token budget: under COMPACT_TOKEN_GATE the messages
-// are returned unchanged to avoid needless work on short sessions.
+// ── Pourquoi ce n'est PLUS gaté sur un budget ─────────────────────────────────
+// Avant, on ne compactait qu'au-delà de 80 % du budget : un vieux read_file
+// périmé restait donc dans le contexte pendant toute la phase « confortable »,
+// et chaque octet conservé était repayé en entrée à CHAQUE tour suivant (coût
+// quadratique, cf. Cline). Le remplacement d'une lecture périmée par un
+// marqueur d'une ligne est O(n), déterministe, sans appel LLM, et strictement
+// bénéfique : on l'exécute donc à CHAQUE tour. C'est exactement le comportement
+// de Cline (« stale-read rewriting »), qui n'attend pas la pression mémoire.
 
 export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
   if (messages.length < 2) return messages;
-
-  // Token-budget gate — short sessions are returned untouched.
-  if (estimateTokens(messages) <= COMPACT_TOKEN_GATE) return messages;
 
   // Last message is the current user turn — never touch it.
   const history = messages.slice(0, -1);
@@ -81,6 +75,20 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
 
   if (reads.length === 0) return messages; // no file reads at all
 
+  // Fenêtre de préservation : on ne remplace JAMAIS un read des derniers
+  // ~20 000 tokens (porté de Cline `DEFAULT_PRESERVE_RECENT_TOKENS`). Le fil
+  // immédiat doit rester verbatim — le résumer forcerait le modèle à redemander
+  // le fichier, ce qui coûte un aller-retour entier.
+  // Index du premier message de la fenêtre récente (parcours depuis la fin).
+  let preserveFromIndex = 0;
+  {
+    let acc = 0;
+    for (let i = history.length - 1; i >= 0; i--) {
+      acc += estimateTokens([history[i]]);
+      if (acc > PRESERVE_RECENT_TOKENS) { preserveFromIndex = i + 1; break; }
+    }
+  }
+
   // Pass 2: determine which read call IDs are stale.
   //
   //   - Superseded: a later read of the same path exists (higher index).
@@ -97,6 +105,9 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
   const callIdToPath = new Map<string, string>();
   for (const r of reads) {
     callIdToPath.set(r.callId, r.path);
+
+    // Jamais toucher un read dans la fenêtre récente.
+    if (r.index >= preserveFromIndex) continue;
 
     const lastReadIdx = lastReadIndexPerPath.get(r.path)!;
     const isSuperseded = r.index < lastReadIdx;

@@ -130,6 +130,49 @@ pub enum ProxyEvent {
     Error   { message: String },
 }
 
+/// Client HTTP partagé par TOUTES les requêtes du proxy de streaming.
+///
+/// Justification TTFT : `reqwest::Client` maintient un pool de connexions
+/// (keep-alive) et donc le handshake TCP + TLS n'est payé QU'UNE fois par hôte.
+/// Le construire par requête — comme avant — refaisait ce handshake à chaque
+/// tour (TLS ≈ plusieurs centaines de ms) et, pire, entre chaque étape d'un même
+/// tour d'agent. Un client `OnceLock` réutilise la connexion tant que le pool
+/// n'a pas purgé son entrée.
+///
+/// Réglages et leur impact :
+/// - `pool_idle_timeout(600s)` : le défaut reqwest est 90s, le défaut hyper 15s.
+///   Le vrai risque venait de l'entrée idle purgée entre deux tours espacés. On
+///   garde la connexion 10 min, largement au-delà d'une pause utilisateur
+///   normale, sans fuite de sockets (le pool reste borné par `pool_max_idle_per_host`).
+/// - `pool_max_idle_per_host(8)` : borne explicite (au lieu de `usize::MAX`) —
+///   une poignée d'entrées idle par hôte suffit pour notre charge et empêche
+///   un hôte compromis de faire gonfler le pool.
+/// - `tcp_nodelay(true)` : désactive Nagle. Indispensable en SSE : avec Nagle, un
+///   petit `text-delta` peut être retenu pour être coalescé avec le suivant,
+///   ce qui ajoute directement au TTFT et au débit perçu du stream.
+/// - `tcp_keepalive(60s)` : détecte une connexion morte (NAT, veille) et évite
+///   qu'elle soit réutilisée pour un tour qui pendrait.
+///
+/// Le flag `ring` n'est pas touché : on reste sur la config TLS par défaut de
+/// reqwest, seule la couche transport est réglée.
+static AI_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn ai_http_client() -> &'static reqwest::Client {
+    AI_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .pool_idle_timeout(std::time::Duration::from_secs(600))
+            .pool_max_idle_per_host(8)
+            .tcp_nodelay(true)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()
+            // Un échec de construction ici est un bug de config TLS, pas une
+            // erreur utilisateur : on le remonte explicitement plutôt que de
+            // masquer le problème.
+            .expect("failed to build shared AI HTTP client")
+    })
+}
+
 #[tauri::command]
 pub async fn ai_stream_proxy(
     url: String,
@@ -145,10 +188,10 @@ pub async fn ai_stream_proxy(
         return Err(format!("host not allowed: {host}"));
     }
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Client partagé : la connexion est réutilisée d'un tour à l'autre (voir
+    // `ai_http_client`). On tombe sur une connexion déjà ouverte quand le pool
+    // n'a pas encore purgé, ce qui retire le handshake TLS du chemin TTFT.
+    let client = ai_http_client();
 
     let method_val = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -193,10 +236,10 @@ pub async fn fetch_text(url: String) -> Result<String, String> {
     if !PROXY_ALLOW_HOSTS.iter().any(|&allowed| host == allowed) {
         return Err(format!("host not allowed: {host}"));
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Client partagé : même pool/keep-alive que le proxy de streaming, ce qui
+    // évite un handshake TLS à chaque fetch ponctuel (ex. récupération de
+    // modèles, doc). `ai_stream_proxy` l'utilise déjà.
+    let client = ai_http_client();
     let resp = client
         .get(&url)
         .header("User-Agent", "origin-ide/1.0")

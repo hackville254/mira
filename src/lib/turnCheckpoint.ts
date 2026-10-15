@@ -73,3 +73,52 @@ export async function summaryTurnCheckpoint(turnId: string): Promise<TurnFileDel
 export async function fileBeforeTurnCheckpoint(turnId: string, path: string): Promise<string> {
   return invoke<string>("checkpoint_file_before", { turnId, path });
 }
+
+// ── Revert multi-tours (annulation d'un « run » complet) ──────────────────────
+//
+// Un run d'agent comporte PLUSIEURS tours (boucle d'outils), chacun avec son
+// propre checkpoint. Reverter un message utilisateur = annuler TOUS les tours
+// générés depuis, d'où des commandes travaillant sur une liste de `turn_ids`.
+
+/** Action qui sera appliquée à un chemin lors d'un revert. */
+export type RevertAction = "delete" | "restore";
+
+/** Entrée du plan de revert : un chemin + l'action prévue. */
+export interface RevertPlanEntry {
+  /** Chemin absolu du fichier concerné. */
+  path: string;
+  /** `delete` = créé pendant le run (sera supprimé) ; `restore` = modifié. */
+  action: RevertAction;
+  /** Nombre de tours du run ayant touché ce chemin (≥ 1). */
+  turns: number;
+}
+
+/**
+ * Prévisualisation d'un revert : liste, sans RIEN modifier, les fichiers qui
+ * seront supprimés (créés pendant le run) ou restaurés (modifiés). C'est le
+ * contrat montré à l'utilisateur avant confirmation.
+ */
+export async function previewRevertTurns(
+  turnIds: string[],
+  workspaceRoot?: string | null,
+): Promise<RevertPlanEntry[]> {
+  return invoke<RevertPlanEntry[]>("checkpoint_revert_preview", {
+    turnIds,
+    workspaceRoot: workspaceRoot ?? null,
+  });
+}
+
+/**
+ * Annule un run complet : restaure les fichiers modifiés, supprime ceux créés,
+ * élague les dossiers laissés vides, puis purge les checkpoints consommés.
+ * Renvoie le plan réellement appliqué.
+ */
+export async function revertTurns(
+  turnIds: string[],
+  workspaceRoot?: string | null,
+): Promise<RevertPlanEntry[]> {
+  return invoke<RevertPlanEntry[]>("checkpoint_undo_many", {
+    turnIds,
+    workspaceRoot: workspaceRoot ?? null,
+  });
+}

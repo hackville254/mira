@@ -59,8 +59,8 @@ describe("budgetLevel", () => {
     expect(budgetLevel([userMsg("hello")])).toBe("ok");
   });
 
-  it("compact au-delà de 80 %", () => {
-    // On vise ~ (0.80 × budget) chars après déduction du surcoût système.
+  it("compact au-delà du seuil de compaction", () => {
+    // On vise ~ (seuil × budget) chars après déduction du surcoût système.
     const chars = Math.ceil((COMPACTION_THRESHOLD * DEFAULT_TOKEN_BUDGET - SYSTEM_OVERHEAD_TOKENS + 100) * CHARS_PER_TOKEN);
     expect(budgetLevel([userMsg("a".repeat(chars))])).toBe("compact");
   });
@@ -84,20 +84,22 @@ describe("shouldPreCompact / projectedUsage", () => {
     expect(projectedUsage(msgs, margin)).toBeCloseTo(base + margin / DEFAULT_TOKEN_BUDGET, 6);
   });
 
-  it("ne précompacte pas sous 80 % même avec marge", () => {
+  it("ne précompacte pas sous le seuil même avec marge", () => {
     const chars = charsForUsage(0.5);
     expect(shouldPreCompact([userMsg("a".repeat(chars))], 1_000)).toBe(false);
   });
 
-  it("précompacte dès que l'usage projeté franchit 80 %", () => {
-    // Historique à 79 % : sans marge on resterait « ok », avec marge on franchit.
-    const chars = charsForUsage(0.79);
+  it("précompacte dès que l'usage projeté franchit le seuil", () => {
+    // Historique juste sous le seuil : sans marge on resterait « ok », avec marge on franchit.
+    const chars = charsForUsage(COMPACTION_THRESHOLD - 0.01);
     const msgs = [userMsg("a".repeat(chars))];
     expect(shouldPreCompact(msgs, 5_000)).toBe(true);
   });
 
-  it("le seuil est bien celui de la compaction (80 %)", () => {
-    expect(COMPACTION_THRESHOLD).toBe(0.8);
+  it("le seuil de compaction est tardif (90 %), aligné sur Cline", () => {
+    // Compacter tôt paierait une compaction inutile et casserait le cache de
+    // préfixe fournisseur ; on ne le fait qu'à 90 % (cf. Cline 0.9).
+    expect(COMPACTION_THRESHOLD).toBe(0.9);
   });
 });
 

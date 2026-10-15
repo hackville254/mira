@@ -42,6 +42,29 @@ export function clearTodos(sessionId: string): void {
   emit(sessionId);
 }
 
+/**
+ * Clôture un tour : marque `done` tout item encore `pending`/`in_progress`.
+ *
+ * Filet de sécurité déterministe : le prompt demande au modèle de cocher chaque
+ * tâche au fur et à mesure, mais un run peut se terminer avec des items restés
+ * ouverts (le modèle a oublié la mise à jour finale). Comme le tour est terminé,
+ * laisser des items « en cours » induirait l'utilisateur en erreur. On ne touche
+ * jamais aux items `cancelled` (abandon volontaire de l'agent).
+ */
+export function finalizeTodos(sessionId: string): void {
+  const todos = store.get(sessionId);
+  if (!todos || todos.length === 0) return;
+  let changed = false;
+  const next = todos.map(t => {
+    if (t.status === "pending" || t.status === "in_progress") {
+      changed = true;
+      return { ...t, status: "done" as const };
+    }
+    return t;
+  });
+  if (changed) setTodos(sessionId, next);
+}
+
 function subscribe(sessionId: string, cb: () => void): () => void {
   let subs = listeners.get(sessionId);
   if (!subs) { subs = new Set(); listeners.set(sessionId, subs); }

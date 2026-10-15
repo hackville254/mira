@@ -91,6 +91,17 @@ export default function SubAgentCard({ child }: { child: SubAgentChild }) {
             }}>
               {child.report}
             </pre>
+          ) : running && child.stream ? (
+            // Suivi EN DIRECT : ce que le sous-agent est en train d'écrire, borné et
+            // replié. Le rapport final le remplacera une fois le run terminé.
+            <pre style={{
+              margin: 0, padding: "8px 10px", borderRadius: "6px", fontSize: "11px", lineHeight: 1.55,
+              fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+              background: "var(--origin-bg-active)", border: "1px dashed var(--origin-border-default)",
+              color: "var(--origin-fg-muted)", maxHeight: 240, overflowY: "auto",
+            }}>
+              {streamTail(child.stream)}
+            </pre>
           ) : (
             <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)" }}>
               {running ? "Exploring…" : "No report."}
@@ -103,6 +114,12 @@ export default function SubAgentCard({ child }: { child: SubAgentChild }) {
       )}
     </div>
   );
+}
+
+/** Derniers caractères du flux live (la fin est la plus informative). */
+function streamTail(stream: string): string {
+  const MAX = 1_200;
+  return stream.length > MAX ? "…" + stream.slice(-MAX) : stream;
 }
 
 /** Résumé « Read 3 files · Searched 2 times » des outils du sous-agent. */

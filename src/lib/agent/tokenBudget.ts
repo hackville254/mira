@@ -7,9 +7,16 @@ import type { ModelMessage } from "ai";
 //   - SYSTEM_OVERHEAD_TOKENS   : surcoût fixe du prompt système + définitions d'outils
 //   - IMAGE_TOKEN_COST         : coût forfaitaire par image inline (le base64 brut
 //                                fausse l'estimation ×100)
-//   - COMPACTION_THRESHOLD     : 80 % — déclenche une compaction (ici sémantique)
+//   - COMPACTION_THRESHOLD     : 90 % — déclenche une compaction (ici sémantique).
+//                                Porté de Cline (`COMPACTION_TRIGGER_RATIO = 0.9`) :
+//                                compacter tôt fait payer une compaction inutile ET
+//                                casse le cache de préfixe fournisseur (chaque
+//                                réécriture invalide le cache depuis le bloc réécrit).
 //   - CRITICAL_THRESHOLD       : 95 % — troncature d'urgence pour ne pas dépasser
 //   - EMERGENCY_TOOL_RESULT_MAX_CHARS : taille max d'un tool result après troncature
+//   - PRESERVE_RECENT_TOKENS   : ~20 000 tokens récents jamais compactés (Cline
+//                                `DEFAULT_PRESERVE_RECENT_TOKENS`), pour garder le
+//                                fil immédiat sans le résumer.
 //
 // NOTE : ces valeurs sont des heuristiques d'estimation, pas un comptage exact de
 // tokens. Elles servent uniquement à décider QUAND compacter, jamais à tronquer
@@ -18,9 +25,10 @@ import type { ModelMessage } from "ai";
 export const CHARS_PER_TOKEN = 4;
 export const SYSTEM_OVERHEAD_TOKENS = 18_000;
 export const IMAGE_TOKEN_COST = 1_600;
-export const COMPACTION_THRESHOLD = 0.80;
+export const COMPACTION_THRESHOLD = 0.90;
 export const CRITICAL_THRESHOLD = 0.95;
 export const EMERGENCY_TOOL_RESULT_MAX_CHARS = 4_000;
+export const PRESERVE_RECENT_TOKENS = 20_000;
 export const DEFAULT_TOKEN_BUDGET = 200_000;
 
 type AnyPart = { type: string; [k: string]: unknown };
@@ -100,6 +108,36 @@ export function shouldPreCompact(
   budget = DEFAULT_TOKEN_BUDGET,
 ): boolean {
   return projectedUsage(messages, marginTokens, budget) >= COMPACTION_THRESHOLD;
+}
+
+/**
+ * Bloc « état du contexte » injecté dans le prompt système du root (mode IA).
+ *
+ * Objectif : rendre la délégation AUTO-ÉVIDENTE. Un modèle qui ne connaît pas
+ * son budget ne ressent aucune pression et garde tout pour lui. En lui donnant
+ * son budget réel, sa consommation courante et le fait qu'un sous-agent
+ * n'entre PAS dans son contexte, la décision de déléguer devient un calcul que
+ * le modèle fait lui-même — aucune règle chiffrée n'est imposée ici.
+ *
+ * Renvoie une chaîne vide si le budget n'est pas réaliste (< moitié du budget
+ * de référence), pour ne jamais mentir sur une capacité de contexte.
+ */
+export function contextStatusPrompt(messages: ModelMessage[], budget = DEFAULT_TOKEN_BUDGET): string {
+  if (budget < DEFAULT_TOKEN_BUDGET / 2) return "";
+  const used = Math.round(estimateTokensWithOverhead(messages, budget));
+  const pct = Math.min(100, Math.round((used / budget) * 100));
+  const level = budgetLevel(messages, budget);
+  const pressure =
+    level === "critical"
+      ? "critically full - delegate anything broad and compact before your next deep dive"
+      : level === "compact"
+        ? "getting full - prefer delegating broad investigations instead of filling it further"
+        : "comfortable";
+  return (
+    `Your context budget: ~${budget.toLocaleString()} tokens, currently ~${used.toLocaleString()} used (${pct}%, ${pressure}).\n` +
+    `A sub-agent's exploration never counts against this budget - only its bounded report does. ` +
+    `Use that: keep your context for reasoning and edits, and push broad read-only investigation to sub-agents.`
+  );
 }
 
 // ── Troncature d'urgence ───────────────────────────────────────────────────────

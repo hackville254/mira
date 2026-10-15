@@ -310,11 +310,13 @@ export function createTools(opts: {
 
     todo_write: tool({
       description:
-        "Replace the persistent task list for this session. Use for any " +
-        "non-trivial multi-step task: keep exactly one item `in_progress` and " +
-        "flip items to `done` as you finish them (never batch completions — mark " +
-        "each one the moment it is actually finished). Always pass the FULL list — " +
-        "it overwrites the previous one. Auto-executes (no approval).",
+        "Replace the persistent task list for this session. Use it for a task that " +
+        "will take several steps: keep exactly one item `in_progress` and flip items " +
+        "to `done` as you finish them (never batch completions — mark each one the " +
+        "moment it is actually finished). Skip it for a quick single-step request. " +
+        "Always pass the FULL list — it overwrites the previous one. The user already " +
+        "sees this list in the UI, so do not also repeat it in your reply. " +
+        "Auto-executes (no approval).",
       inputSchema: z.object({
         todos: z.array(
           z.object({

@@ -287,6 +287,200 @@ pub fn checkpoint_summary(app: tauri::AppHandle, turn_id: String) -> Result<Vec<
     Ok(out)
 }
 
+// ── Revert multi-tours (annulation d'un « run » complet) ─────────────────────
+//
+// Un run d'agent comporte PLUSIEURS tours (boucle d'outils). Reverter un run
+// consiste donc à annuler une LISTE de turn_ids, et non un seul. On fusionne les
+// entrées de tous ces tours en un **plan de revert** : chaque chemin est classé
+// « à supprimer » (créé pendant le run, inexistant avant) ou « à restaurer »
+// (modifié pendant le run). Un même chemin touché par plusieurs tours est
+// dédupliqué : le PREMIER snapshot (le tour le plus ancien) gagne, car c'est
+// l'état d'origine réel.
+//
+// Le plan est calculé par `collect_revert_plan` — partagé par la prévisualisation
+// (dry-run, aucune écriture) et par l'exécution, garantissant que ce que
+// l'utilisateur voit est EXACTEMENT ce qui sera appliqué.
+
+/// Action prévue pour un chemin lors d'un revert.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum RevertAction {
+    /// Le fichier n'existait pas avant le run → il sera supprimé.
+    Delete,
+    /// Le fichier existait avant le run → il sera restauré.
+    Restore,
+}
+
+/// Entrée du plan de revert : un chemin + l'action prévue.
+#[derive(Serialize, Clone)]
+pub struct RevertPlanEntry {
+    /// Chemin absolu du fichier concerné.
+    pub path: String,
+    /// Action qui sera appliquée lors du revert.
+    pub action: RevertAction,
+    /// Nombre de tours du run ayant touché ce chemin (≥ 1).
+    pub turns: usize,
+}
+
+/// Applique la garde workspace à un chemin si une racine est fournie.
+fn guard(workspace_root: Option<&str>, path: &str) -> Result<(), String> {
+    if let Some(root) = workspace_root {
+        super::fs::assert_in_workspace_public(path, root)?;
+    }
+    Ok(())
+}
+
+/// Construit le plan de revert pour une liste de turn_ids : fusionne les entrées,
+/// déduplique (le premier snapshot gagne), et renvoie pour chaque chemin l'action
+/// prévue. Aucune écriture disque — utilisable en prévisualisation.
+fn collect_revert_plan(
+    root: &Path,
+    turn_ids: &[String],
+    workspace_root: Option<&str>,
+) -> Result<Vec<RevertPlanEntry>, String> {
+    // Index par chemin : conserve l'état d'origine (premier tour qui l'a vu) et
+    // le compte de tours qui l'ont touché.
+    let mut order: Vec<String> = Vec::new();
+    let mut actions: HashMap<String, (RevertAction, usize)> = HashMap::new();
+
+    for turn_id in turn_ids {
+        assert_safe_turn_id(turn_id)?;
+        let manifest = load_manifest(root, turn_id);
+        for entry in &manifest.entries {
+            guard(workspace_root, &entry.path)?;
+            let action = if entry.existed { RevertAction::Restore } else { RevertAction::Delete };
+            match actions.get_mut(&entry.path) {
+                None => {
+                    order.push(entry.path.clone());
+                    actions.insert(entry.path.clone(), (action, 1));
+                }
+                Some(slot) => {
+                    slot.1 += 1;
+                    // Le premier snapshot gagne : s'il disait « créé » (Delete),
+                    // c'est l'état d'origine réel, on ne le dégrade pas en Restore.
+                }
+            }
+        }
+    }
+
+    Ok(order
+        .into_iter()
+        .map(|path| {
+            let (action, turns) = actions.remove(&path).expect("path indexed");
+            RevertPlanEntry { path, action, turns }
+        })
+        .collect())
+}
+
+/// Remonte les dossiers parents créés par le run et les supprime s'ils sont
+/// vides. Ne remonte jamais au-dessus de `workspace_root` (ou de la racine de
+/// tout chemin fourni à défaut) et n'essaie jamais de supprimer un dossier non
+/// vide : on ne touche qu'aux dossiers que le run a laissés vides.
+fn prune_empty_dirs(path: &str, workspace_root: Option<&str>) {
+    let Some(root) = workspace_root else { return };
+    let norm_root = root.replace('\\', "/");
+    let mut current = Path::new(path).parent().map(Path::to_path_buf);
+    // On remonte en supprimant les dossiers vides, en s'arrêtant au workspace.
+    while let Some(dir) = current {
+        let dir_str = dir.to_string_lossy().replace('\\', "/");
+        // Stop : on ne supprime jamais le workspace lui-même ni au-dessus.
+        if dir_str == norm_root || !dir_str.starts_with(&norm_root) {
+            break;
+        }
+        if dir.is_dir() {
+            match std::fs::read_dir(&dir) {
+                Ok(mut it) => {
+                    if it.next().is_some() {
+                        break; // dossier non vide → on s'arrête
+                    }
+                }
+                Err(_) => break,
+            }
+            if std::fs::remove_dir(&dir).is_err() {
+                break;
+            }
+        } else {
+            break;
+        }
+        current = dir.parent().map(Path::to_path_buf);
+    }
+}
+
+/// Prévisualisation d'un revert de run : renvoie, sans RIEN écrire, la liste des
+/// fichiers qui seront supprimés (créés pendant le run) ou restaurés (modifiés).
+/// C'est le contrat affiché à l'utilisateur avant confirmation.
+#[tauri::command]
+pub fn checkpoint_revert_preview(
+    app: tauri::AppHandle,
+    turn_ids: Vec<String>,
+    workspace_root: Option<String>,
+) -> Result<Vec<RevertPlanEntry>, String> {
+    let root = checkpoints_root(&app)?;
+    collect_revert_plan(&root, &turn_ids, workspace_root.as_deref())
+}
+
+/// Annule un run complet (plusieurs tours) : restaure les fichiers modifiés,
+/// supprime ceux créés, puis élague les dossiers laissés vides. Purge tous les
+/// checkpoints consommés. Renvoie le plan réellement appliqué.
+#[tauri::command]
+pub fn checkpoint_undo_many(
+    app: tauri::AppHandle,
+    turn_ids: Vec<String>,
+    workspace_root: Option<String>,
+) -> Result<Vec<RevertPlanEntry>, String> {
+    let root = checkpoints_root(&app)?;
+    let ws = workspace_root.as_deref();
+    let plan = collect_revert_plan(&root, &turn_ids, ws)?;
+
+    // On applique en s'appuyant sur le PREMIER tour ayant vu chaque chemin (le
+    // snapshot d'origine y est stocké, cf. `collect_revert_plan`).
+    for entry in &plan {
+        let target = Path::new(&entry.path);
+        // Retrouve le tour d'origine de ce chemin (premier manifeste qui le cite).
+        let mut origin: Option<&String> = None;
+        for turn_id in &turn_ids {
+            let manifest = load_manifest(&root, turn_id);
+            if manifest.entries.iter().any(|e| e.path == entry.path) {
+                origin = Some(turn_id);
+                break;
+            }
+        }
+        let Some(origin) = origin else { continue };
+        let manifest = load_manifest(&root, origin);
+        let Some(orig_entry) = manifest.entries.iter().find(|e| e.path == entry.path) else { continue };
+
+        match entry.action {
+            RevertAction::Delete => {
+                if target.is_file() {
+                    std::fs::remove_file(target).map_err(|e| e.to_string())?;
+                }
+                // Nettoie les dossiers que le run a créés et laissés vides.
+                prune_empty_dirs(&entry.path, ws);
+            }
+            RevertAction::Restore => {
+                let backup_name = orig_entry.backup.as_ref().ok_or("missing backup name")?;
+                let backup = root.join(origin).join(backup_name);
+                if !backup.is_file() {
+                    return Err(format!("backup missing for {} — aborting revert", entry.path));
+                }
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                std::fs::copy(&backup, target).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    // Purge tous les checkpoints consommés (best-effort : le revert a réussi).
+    for turn_id in &turn_ids {
+        if assert_safe_turn_id(turn_id).is_ok() {
+            let _ = std::fs::remove_dir_all(root.join(turn_id));
+        }
+    }
+
+    Ok(plan)
+}
+
 /// Contenu d'origine (avant le tour) d'un fichier snapshoté, pour afficher un
 /// diff en lecture seule. Renvoie une chaîne vide si le fichier a été créé
 /// pendant le tour (il n'avait pas d'état antérieur).
@@ -344,5 +538,99 @@ mod tests {
         assert_eq!(diff_counts("x\ny\n", "x\ny\n"), (0, 0));
         // Ajout depuis un fichier vide.
         assert_eq!(diff_counts("", "a\nb\n"), (2, 0));
+    }
+
+    /// Crée un tour sur disque avec un manifeste donné et renvoie son id.
+    fn write_turn(root: &Path, turn_id: &str, entries: Vec<SnapshotEntry>) {
+        // Aligne le manifeste sur le disque (le dossier du tour est créé).
+        save_manifest(root, turn_id, &CheckpointManifest { entries }).unwrap();
+    }
+
+    fn entry(path: &str, existed: bool) -> SnapshotEntry {
+        SnapshotEntry { path: path.to_string(), existed, backup: None }
+    }
+
+    #[test]
+    fn revert_plan_classifies_created_vs_modified() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("plan")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_turn(&dir, "t1", vec![entry("/ws/a.ts", true), entry("/ws/new.ts", false)]);
+
+        let plan = collect_revert_plan(&dir, &[String::from("t1")], None).unwrap();
+        let map: std::collections::HashMap<_, _> =
+            plan.iter().map(|e| (e.path.clone(), e.action.clone())).collect();
+        assert_eq!(map["/ws/a.ts"], RevertAction::Restore);
+        assert_eq!(map["/ws/new.ts"], RevertAction::Delete);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revert_plan_dedupes_and_keeps_first_snapshot() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("dedup")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // t1 voit le fichier nouvellement créé ; t2 le voit comme existant.
+        // L'état d'origine (t1) doit gagner : action = Delete.
+        write_turn(&dir, "t1", vec![entry("/ws/f.ts", false)]);
+        write_turn(&dir, "t2", vec![entry("/ws/f.ts", true)]);
+
+        let plan = collect_revert_plan(
+            &dir,
+            &[String::from("t1"), String::from("t2")],
+            None,
+        )
+        .unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].action, RevertAction::Delete);
+        assert_eq!(plan[0].turns, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revert_plan_rejects_unsafe_turn_id() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("bad")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let res = collect_revert_plan(&dir, &[String::from("../etc")], None);
+        assert!(res.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_removes_only_empty_dirs_within_workspace() {
+        let ws = std::env::temp_dir().join(format!("ws_test_{}", path_hash("prune")));
+        let _ = std::fs::remove_dir_all(&ws);
+        // Structure : ws/a/b/c.txt (c.txt supprimé → a/b doivent partir).
+        let nested = ws.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("c.txt");
+        std::fs::write(&file, "x").unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        std::fs::remove_file(&file).unwrap();
+        prune_empty_dirs(&file.to_string_lossy(), Some(&ws_str));
+
+        assert!(!nested.exists(), "les dossiers vides créés doivent être supprimés");
+        assert!(ws.exists(), "le workspace lui-même ne doit jamais être supprimé");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn prune_keeps_non_empty_dirs() {
+        let ws = std::env::temp_dir().join(format!("ws_test_{}", path_hash("keep")));
+        let _ = std::fs::remove_dir_all(&ws);
+        let nested = ws.join("a");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("gone.txt");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::write(nested.join("keep.txt"), "y").unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        std::fs::remove_file(&file).unwrap();
+        prune_empty_dirs(&file.to_string_lossy(), Some(&ws_str));
+
+        assert!(nested.exists(), "un dossier non vide ne doit pas être supprimé");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

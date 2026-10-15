@@ -22,6 +22,7 @@ const KEY_PROVIDER: &str = "ORVYX_AI_PROVIDER";
 const KEY_MODEL: &str = "ORVYX_AI_MODEL";
 const KEY_API_KEY: &str = "ORVYX_AI_API_KEY";
 const KEY_BASE_URL: &str = "ORVYX_AI_BASE_URL";
+const KEY_ALLOWED_MODELS: &str = "ORVYX_ALLOWED_MODELS";
 
 /// Configuration AI de dev, telle que lue depuis l'environnement.
 #[derive(serde::Serialize)]
@@ -30,6 +31,10 @@ pub struct DevAiConfig {
     pub model: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    /// Liste ordonnée de modèles autorisés (cascade en cas de rate-limit).
+    /// Chaîne brute séparée par des virgules ; le front la découpe et la
+    /// déduplique. `None` si non définie.
+    pub allowed_models: Option<String>,
     /// Vrai si au moins une des clés reconnues est présente.
     pub configured: bool,
 }
@@ -156,6 +161,16 @@ pub fn default_base_url() -> Option<String> {
     get(KEY_BASE_URL)
 }
 
+/// Liste ordonnée de modèles autorisés définie dans le `.env`, s'il y en a une.
+///
+/// Chaîne brute (`a,b,c`) : le front la découpe et la déduplique via
+/// `parseAllowedModels`. On ne valide pas les identifiants ici (côté Rust on ne
+/// connaît pas le catalogue de modèles) — la validation d'usage est faite côté
+/// front, qui ne bascule que vers un modèle réellement constructible.
+pub fn default_allowed_models() -> Option<String> {
+    get(KEY_ALLOWED_MODELS)
+}
+
 /// Renvoie la config AI de dev complète. Exposée au front pour préremplir les
 /// champs quand ni le keychain ni le localStorage n'ont de valeur.
 #[tauri::command]
@@ -163,6 +178,7 @@ pub fn dev_ai_config() -> DevAiConfig {
     let provider = default_provider();
     let model = default_model();
     let base_url = default_base_url();
+    let allowed_models = default_allowed_models();
     // La clé n'est renvoyée que si elle correspond au provider configuré.
     let api_key = provider.as_deref().and_then(api_key_for);
     DevAiConfig {
@@ -171,6 +187,7 @@ pub fn dev_ai_config() -> DevAiConfig {
         model,
         api_key,
         base_url,
+        allowed_models,
     }
 }
 

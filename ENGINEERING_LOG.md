@@ -5,6 +5,562 @@
 
 ---
 
+### [2026-10-15T22:40] | Routage ADAPTATIF de la cascade — circuit breaker 429 + tri par vivacité (TTFT)
+
+- **Contexte :**
+  `buildModelChain(primary, allowed)` ordonnait la cascade de façon **statique** : modèle UI en tête, puis `ORVYX_ALLOWED_MODELS`. Or les mesures montrent que le 1ᵉʳ de la liste autorisée (`deepseek-v4.1-flash`) a un **débit très faible** (~234 s pour 89 chunks) et que `glm-5.3-flash` / `deepseek-v4-flash` renvoient `429 Model busy`. Résultat : chaque tour recommençait par un modèle **saturé ou lent**, gaspillait un aller-retour, et la cascade n'« apprenait » rien d'un tour à l'autre.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/modelHealth.ts`** (NOUVEAU) : registre de santé PAR MODÈLE, en mémoire (aucune persistance, aucun réseau) :
+    - `noteRateLimit(id)` → cooldown `RATE_LIMIT_COOLDOWN_MS = 60_000` (jamais raccourci) ;
+    - `noteTtft(id, ms)` → moyenne glissante bornée à `TTFT_SAMPLES = 5` ; TTFT ≤ 0 / non fini ignoré ;
+    - `ttftScore(id)` → moyenne observée ou `UNKNOWN_TTFT_MS = 4_000` (neutre) ;
+    - `rankModelChain(chain, health, now)` — logique PURE, horloge injectable : sains avant ceux en cooldown, puis TTFT croissant, tri **stable** ; `primary` remonte en tête **s'il est sain** (on ne contredit pas un choix UI explicite), sinon il est rétrogradé comme les autres.
+  - **`src/lib/agent/run.ts`** : import `modelHealth` ; `noteTtft(currentModelId(), ttft)` au premier-chunk ; `noteRateLimit(currentModelId())` quand `classifyFailure` retourne `rate-limited`.
+  - **`src/components/ai/AiPanel.tsx`** : `chainIds = rankModelChain(buildModelChain(modelId, allowedIds))`.
+  - **`src/lib/agent/__tests__/modelHealth.test.ts`** (NOUVEAU) : 12 tests — moyenne glissante bornée, cooldown non raccourci, stable, non-mutation, et contrat d'intégration « 429 enregistré ⇒ modèle dépriorisé au tour suivant ».
+
+- **Décisions techniques :**
+  - Mémoire **en process** (singleton) et non persistée : la fenêtre de pertinence d'un `429` (60 s) et d'un TTFT est de l'ordre de la session ; persister introduirait un état à invalider sans bénéfice.
+  - `primary` **prioritaire seulement s'il est sain** : on respecte le choix de l'utilisateur, mais on refuse de tenter en premier un modèle qu'on SAIT saturé (gaspillage d'un aller-retour systématique).
+  - Logique pure + horloge injectable : testable sans `fake timers` ni réseau.
+
+- **Impacts & Dépendances :**
+  - Aucune signature publique modifiée ; `runAgent` inchangé côté appelant. Le comportement observable : les tours suivants évitent les modèles en cooldown et démarrent par le plus réactif observé.
+  - Dépend de `classifyFailure` (marqueur `rate-limited`) et de `currentModelId()`.
+
+- **Validation :** `tsc --noEmit` 0 erreur ; `eslint` 0 erreur sur les 4 fichiers ; `vitest` **456/456** (36 fichiers).
+
+- **Prochaines étapes :**
+  - Mesurer un vrai run UI multi-tours (`~/.origin/logs/origin.log`, ligne `ai/panel timing model=… ttft=… tok/s=… fallbacks=…`) pour chiffrer l'apport du routage.
+  - i18n des chaînes EN hardcodées (messages d'abandon + statut sous-agents).
+
+---
+
+### [2026-10-15T22:25] | Garde d'INACTIVITÉ du flux — fin des tours figés à vie (symptôme « 10 min bloqué »)
+
+- **Contexte :**
+  Symptôme terrain (capture + logs) : un prompt simple (« crée le jeu bomberman en 3 fichiers ») affiche *« I'll start by checking the workspace… »* puis deux `list_directory`, et **plus rien pendant 10 minutes**. Logs : `call-start msgs=2` → `first-chunk après 1896 ms (type=text-delta)` → **aucune ligne ensuite** (ni `stream-end`, ni `timing`). Le TTFT est bon (1896 ms) : le problème n'est PAS le démarrage mais le flux qui **ne se ferme jamais**. Autre run observé : `stream-end chunks=28 après 60540 ms` — un step de 60 s.
+
+- **Cause racine :**
+  Le garde existant `firstChunkMs` (45 s) est **annulé dès le premier chunk de contenu**. Après cela, AUCUN garde ne surveille l'activité : si le provider émet un delta puis laisse le socket ouvert sans le fermer (cas réel observé), la boucle `for await` attend indéfiniment. De plus, même une fois coupé, l'abort interne ne levait pas → la cascade ne s'appliquait jamais (corrigé à l'entrée précédente, généralisé ici à `stalled`).
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/run.ts`** :
+    - Constante `DEFAULT_STALL_TIMEOUT_MS = 90_000` + option `stallTimeoutMs` (0 = désactivé).
+    - Flag `stalled` (distinct de `firstChunkTimedOut` et `ttftTooSlow`), remis à `false` à chaque tentative.
+    - `armStall()` : timer réarmé sur le **progrès réel** (`text-delta`, `reasoning-delta`, `tool-call`, `tool-input-start`, `tool-result`, `finish-step`) — PAS sur les parts d'échafaudage ni les heartbeats. Un flux qui n'émet que des pings est donc coupé, pas bercé.
+    - Bascule premier-chunk → inactivité au premier contenu (`armStall()` dans le bloc `isContent`).
+    - `stalled` inclus dans le `throw` final (message `"Model stream stalled mid-response (inactivity timeout)"`) **et** dans le bloc de reprise qui recrée le `AbortController` — sans quoi la tentative suivante hériterait d'un signal déjà avorté et sortirait sans rien produire.
+    - Nettoyage du `stallTimer` dans le `finally`.
+  - **`src/lib/agent/__tests__/retry.test.ts`** : nouveau test verrouillant le contrat silencieux run↔retry — les 3 messages d'abandon interne (`stalled` / `TTFT` / `no output`) DOIVENT être classés `transient`. Si quelqu'un reformule un message, le test casse (sinon un tour figé repartirait en échec permanent silencieux).
+
+- **Mesures (banc `model-compare`, réseau réel, 2 passes) :**
+  - `deepseek-v4-flash-0731` : TTFT médian **1373 ms** (le plus rapide).
+  - `deepseek-v4.1-flash` : TTFT médian **2213 ms**.
+  - `glm-5.3-flash` : **HTTP 429 « Model busy, retry later »** (saturé, inutilisable).
+  - `deepseek-v4-flash` : **HTTP 429 « Model busy »** (saturé).
+  - ⇒ Deux des quatre modèles autorisés sont actuellement saturés, et le plus lent mène la cascade car il est en tête de `ORVYX_ALLOWED_MODELS`.
+
+- **Décisions Techniques :**
+  - **Garde d'inactivité, pas un timeout global** : un tour multi-étapes avec outils est légitimement long (plusieurs allers-retours). On ne borne donc PAS la durée totale — on borne le **silence entre deux progrès**. Un modèle qui réfléchit 30 s entre deux tokens reste valide ; un socket mort est coupé.
+  - **Seuil large (90 s)** : au-dessus d'un silence « normal » (raisonnement, long appel d'outil), pour ne jamais couper un tour valide.
+  - **Réarmement sur progrès, pas sur tout chunk** : ferme la porte au flux qui n'émet que de l'échafaudage/heartbeats.
+  - **Réutilisation du chemin de classification existant** plutôt qu'un statut dédié : zéro duplication, cascade et reprise acquises gratuitement.
+
+- **Impacts & Dépendances :**
+  - `run.ts` : nouveau comportement sur un flux muet APRÈS le premier chunk — coupé à 90 s puis repris/basculé au lieu de rester figé. Aucun changement sur les flux sains.
+  - Défaut appliqué à tous les appels (l'UI ne passe pas `stallTimeoutMs`) ; sous-agents inclus.
+  - Tests : **444/444**, tsc 0 erreur, eslint 0 erreur.
+
+- **Prochaines étapes :**
+  - **Circuit breaker de modèle** : un modèle qui renvoie 429 doit être dépriorisé temporairement (cooldown), sinon chaque tour recommence par un modèle saturé et gaspille un aller-retour. Mesuré : 429 constants sur `glm-5.3-flash` et `deepseek-v4-flash`.
+  - Réordonner/recommander la cascade selon la santé observée plutôt qu'un ordre statique.
+
+---
+
+### [2026-10-15T22:05] | Performance du harness : ports Cline + correction de la garde TTFT (débloque réellement la cascade)
+
+- **Contexte :**
+  « améliore la vitesse de génération et de travail… le problème n'est pas que le modèle, il faut aussi voir le harness ». Diagnostic confirmé par banc : le TTFT des prompts système réels (729–1201 ms) est **inférieur au plancher réseau** (1435 ms) → **la taille du prompt n'est PAS le facteur limitant**. Les vraies causes : historique entier re-payé à chaque tour (coût quadratique), résultats d'outils géants conservés, prompt non optimisé cache. Référence : Cline SDK (`output-limits.ts`, `message-builder.ts`, `act.ts`).
+
+- **Modifications effectuées (ports Cline) :**
+  - **NOUVEAU `src/lib/agent/outputLimits.ts`** : `truncateMiddle` (garde tête+queue, élide le milieu, notice placée DANS les zones conservées) + `clampToolResult` (chaîne → troncature ; objet → ne tronque que les champs texte longs, structure intacte). Plafonds : read/grep/glob/bash 48 K car., résultat d'outil 8 K car.
+  - **`run.ts`** : `result: clampToolResult(...)` sur `case "tool-result"` → point d'étranglement unique de TOUS les résultats d'outils ; `maxOutputTokens: resolveMaxOutputTokens(...)` (fraction 0.3 de la fenêtre, réserve 1024, plancher 2000) ; cache préfixe généralisé (`markCacheable` : `anthropic.cacheControl` + `openai.promptCacheKey`) sur le dernier message.
+  - **`compactHistory.ts`** : stale-read rewriting **à chaque tour** (suppression du gate 80 %) + fenêtre de préservation des 20 K derniers tokens (`preserveFromIndex`).
+  - **`tokenBudget.ts`** : `COMPACTION_THRESHOLD = 0.90` (au lieu de 0.80, aligné Cline) + `PRESERVE_RECENT_TOKENS = 20_000`.
+  - **`prompts.ts`** : bloc `BATCHING_RULES` (émettre tous les appels indépendants en UNE réponse → N latences → 1).
+  - **`AiPanel.tsx`** : `cacheSystem: true` sur les 5 sites d'appel (plus seulement Anthropic).
+
+- **Correction critique de la garde TTFT (vrai bug, pas un réglage) :**
+  - **Cause 1** : `firstChunkLogged` passait à `true` sur **n'importe quel** `part.type`. Or le SDK `ai@6` émet des parts d'échafaudage (`start`, `start-step`, `text-start`, `reasoning-start`…) **avant tout contenu**, quasi instantanément → le TTFT était mesuré à ~2 ms, le timer anti-flux-muet annulé, et la garde `shouldFallbackOnSlowTtft` **ne se déclenchait jamais**. Fix : ne compter comme premier signe de vie que les parts de **contenu réel** (`text-delta`, `reasoning-delta`, `tool-call`, `tool-input-start`).
+  - **Cause 2** : après l'abort interne (`ttftTooSlow`), le `break` sortait du `for await` **sans lever** ; `attemptRun` se terminait normalement → la boucle voyait `cancelled` → **aucune cascade**. Fix : lever une erreur transiente après le `finally` quand `ttftTooSlow || firstChunkTimedOut`.
+
+- **Mesures (banc `cascade-probe`, réseau réel) :**
+  - Avant : `deepseek-v4-flash` TTFT **10 432 ms** → a répondu, **pas de bascule** malgré budget 4 s (garde cassée).
+  - Après : `deepseek-v4-flash` premier contenu à **12 456 ms** → bascule détectée → `deepseek-v4.1-flash` TTFT **1 772 ms**, statut `completed`, `fallbacks=1`.
+  - Banc `ttft-probe` (2 passes) : agent/max 867 ms, agent/norm 729 ms, plan/max 735 ms, ask/max 957 ms, agent/max+code 1201 ms — **tous < plancher réseau** (1435 ms) → le prompt n'explique pas la lenteur ; c'est bien le **modèle + le harness**.
+
+- **Décisions Techniques :**
+  - **Mesure avant croyance** : le banc a montré que réduire le prompt système n'aiderait pas ; le levier réel est la **borne des sorties d'outils** (gain quadratique) et la **cascade sur TTFT** (gain de latence perçue).
+  - **`isContent` explicite** plutôt que « premier part » : robuste aux changements de framing du SDK, et évite les faux TTFT.
+  - **Lever après `finally`** plutôt que de retourner un statut : réutilise le chemin de classification/cascade existant (aucune logique dupliquée).
+
+- **Impacts & Dépendances :**
+  - `isContent` change uniquement quand le timer anti-flux-muet est annulé et quand la garde TTFT évalue : **comportement voulu**, mais tout flux ne produisant QUE des parts d'échafaudage (anormal) serait désormais coupé par le garde-flux-muet à `firstChunkMs`.
+  - `clampToolResult` peut élider la queue d'un résultat volumineux : la notice indique comment récupérer (relecture ciblée) — les outils gardent leurs bornes d'entrée.
+  - Tests : **432/432**, tsc 0 erreur, eslint 0 erreur.
+
+- **Prochaines étapes :**
+  - Vérifier en usage UI réel que `origin-ai-model` (localStorage) suit bien `ORVYX_ALLOWED_MODELS` (le modèle UI peut rester figé).
+  - Instrumenter un vrai run UI multi-tours pour confirmer l'effet du cache préfixe sur le TTFT au 2ᵉ tour.
+
+---
+
+### [2026-10-15T22:12] | Banc multi-tours : cache préfixe PROUVÉ (-53 % de TTFT au 2ᵉ tour) + tests de la borne d'outils
+
+- **Contexte :**
+  Le banc `ttft-probe` mesure des appels ISOLÉS : il ne peut PAS montrer l'effet du cache préfixe (le préfixe doit être réémis à l'identique d'un tour à l'autre). Il fallait un banc jouant N tours successifs sur la MÊME histoire persistée, comme l'app.
+
+- **Modifications effectuées :**
+  - **NOUVEAU `scripts/turn-probe.ts`** : joue 3 tours successifs via le VRAI `runAgent` sur un historique persistant (tour 1 froid, tour 2 = préfixe identique → cache attendu, tour 3 = historique gonflé par un faux résultat d'outil de 120 K car.). Lit l'usage réel (`finish`) : `inputTokens`, `cacheReadTokens`, TTFT, total.
+  - **NOUVEAU `src/lib/agent/__tests__/outputLimits.test.ts`** : 11 tests déterministes de `truncateMiddle` / `clampToolResult` (borne jamais dépassée, tête+queue conservées, notice dans une zone conservée, structure d'objet préservée, champs longs seuls élidés, tableau sérialisé borné).
+
+- **Mesures (banc `turn-probe`, réseau réel, `glm-5.3-flash`) :**
+  - **Cache préfixe PROUVÉ** : tour 1 TTFT **2109 ms** → tour 2 TTFT **1000 ms** (**−1109 ms, −53 %**), `cacheRead 768 tok`. Le provider sert bien le préfixe depuis son cache grâce à `cacheSystem: true` généralisé.
+  - **Clamp** : au tour 3, l'entrée brute injectée (33 064 tok) n'est pas bornée — **c'est attendu** : le clamp agit sur les résultats ÉMIS par le SDK pendant un run, jamais sur un historique déjà constitué (on ne tronque pas a posteriori une réponse déjà en contexte). La borne réelle est couverte par les 11 tests unitaires.
+  - Observation provider : au tour 3, un premier appel a « muet » 45 s (garde anti-flux-muet), puis la reprise a répondu en 5,1 s — le garde a bien joué son rôle (aucun tour figé).
+
+- **Décisions Techniques :**
+  - **Mesurer le cache là où il se voit** : un banc multi-tours, pas un banc d'appels isolés. Le cache est un effet de PRÉFIXE stable, pas d'un prompt court.
+  - **Ne pas tronquer l'historique déjà présent** : le clamp est une porte à l'ENTRÉE des résultats (au moment de l'émission), pas un filtre rétroactif — sinon on détruirait du contexte déjà payé et exploité par le modèle.
+  - **Tests déterministes pour la borne** : le réseau ne peut pas prouver le clamp (les résultats SDK sont émis côté provider) ; l'unitaire le prouve à coût nul et de façon reproductible.
+
+- **Impacts & Dépendances :**
+  - `scripts/turn-probe.ts` est un banc HORS vitest (réseau + `.env`) : il ne tourne jamais en CI. `outputLimits.test.ts` intégré à la suite : **35 fichiers, 443 tests, tous verts**. tsc 0 erreur, eslint 0 erreur.
+  - Aucune modification de code de production dans cette entrée : uniquement instrumentation et tests.
+
+- **Prochaines étapes :**
+  - Confirmer en UI que `cacheSystem: true` est bien propagé sur les 5 sites (fait) et suivre `cacheReadTokens` dans les logs d'un vrai run pour valider le gain in situ.
+  - Étudier une passe de compaction DÉCLENCHÉE quand l'historique porte encore de gros résultats d'outils hérités (les résultats émis avant ce correctif ne sont pas clippés).
+
+---
+
+
+### [2026-10-15T21:35] | Logger central persistant + borne de timeout d'outil (fin des blocages silencieux)
+
+- **Contexte :**
+  « gros problème on ne voit même pas les logs pour savoir où arranger, où ça casse ». Deux causes distinctes :
+  1. **Logs invisibles** : `console.info` du front n'apparaît que dans la console DevTools, jamais en usage normal. Aucun canal exploitable.
+  2. **Blocage réel** : capture d'écran montrant un run figé sur « Write file » sans fin ni erreur. Cause identifiée : `runAgent` reçoit `toolTimeoutMs = 0` par défaut (pas de limite) et AiPanel ne le passait pas → un `write_file` bloqué suspend le tour **à vie**, en silence.
+
+- **Modifications effectuées :**
+  - **NOUVEAU `src-tauri/src/log.rs`** : commande `origin_log(level, target, message)`. Écrit sur **stderr** (visible dans `tauri dev`) + **fichier append** `~/.origin/logs/origin.log` (utile en release sans terminal). Rotation simple à 5 Mio (`.log` → `.log.1`). **Redaction** défensive (`oryx_`, `sk-`, `Bearer `, `api_key=`) : un secret ne peut pas finir sur disque. Best-effort : toute erreur d'I/O est avalée (un log ne casse jamais une fonctionnalité). 5 tests.
+  - **NOUVEAU `src/lib/logger.ts`** : API front `log.debug/info/warn/error/flush`. **Buffer + flush par lots** (150 ms ou 50 lignes) → ne sature pas l'IPC d'un long run ; réplique console en dev ; best-effort (hors contexte Tauri, aucune erreur).
+  - **`run.ts`** : traces à chaque étape clé : `call-start` (modèle, nb messages, retry), `timing` (ttft/total/gen/tok-s/fallbacks/finishReason), `retry` (attempt, kind, retryAfter, produced, model, erreur tronquée), `cascade` (bascule X→Y, épuisement), `échec définitif` (avec `log.flush()`).
+  - **`AiPanel.tsx`** : `case "error"` → `log.error` + `flush` (LE point où un tour casse) ; `case "timing"` → logger central ; **`toolTimeoutMs: TOOL_TIMEOUT_MS` (120 s)** ajouté aux 4 appels `runAgent` + constante module.
+  - **Cascade héritée par les sous-agents** : `spawnRuntime` / `subagent` / `runPass` propagent `modelChain`/`modelIds` (un 429 côté sous-agent bascule au lieu de tuer la passe).
+
+- **Décisions Techniques :**
+  - **Log file + stderr, pas seulement console** : en release il n'y a aucun terminal — le fichier est le seul canal post-mortem.
+  - **Flush par lots** : un log par token saturerait l'IPC ; le batching garde la latence négligeable.
+  - **`log.flush()` sur les erreurs fatales** : garantit que la trace est écrite avant que le tour ne s'arrête.
+  - **120 s de timeout outil** : large pour de l'I/O local, mais transforme un blocage muet en erreur visible que le modèle peut traiter.
+  - **Redaction côté Rust (pas front)** : la dernière ligne de défense est au plus près du disque.
+
+- **Impacts & Dépendances :**
+  - `origin_log` est une commande **additive** (aucun consommateur existant cassé). `modelChain`/`modelIds` sur `subagent`/`spawnRuntime` sont **optionnels** → no-op si absents.
+  - **Validation** : `tsc --noEmit` exit 0 ; ESLint silencieux ; **vitest 426/426** ; **cargo test 100/100** (dont 5 nouveaux sur `log.rs`).
+  - Le log est écrit dans `~/.origin/logs/origin.log` — **hors du repo**, jamais committé.
+
+- **Prochaines étapes :**
+  - Observer en réel : lancer `npm run dev`, envoyer un prompt, lire le terminal (lignes `[epoch][info][agent/run] …`).
+  - Réévaluer le timeout outil si un outil légitime (gros patch, LSP) dépasse 120 s.
+
+---
+
+### [2026-10-15T21:20] | Cascade de modèles + instrumentation TTFT (anti rate-limit)
+
+- **Contexte :**
+  Demande : « mesure le TTFT réel et le temps pour une tâche simple vs compliquée — c'est super lent, je pense que c'est trop surchargé ». Bancs réels (`scripts/ttft-probe.ts`, `scripts/model-compare.ts`) : le prompt système n'est PAS la cause (526 tok → TTFT 13 460 ms sur `deepseek-v4-flash`). Le vrai problème : `deepseek-v4-flash` renvoie souvent **`429 Model busy` sans header `Retry-After`**, et le retry existant (`retryDelayMs("rate-limited", n, null) === null`) **n'insiste jamais** → le tour échoue. Comparateur : `deepseek-v4-flash-0731` TTFT **1 129 ms** vs `deepseek-v4-flash` **10 142 ms** (9× plus rapide, sans 429).
+
+- **Modifications effectuées :**
+  - **NOUVEAU `src/lib/agent/modelCascade.ts`** (logique pure, testable en node) : `parseAllowedModels` (découpe/dédup ordonnée de `ORVYX_ALLOWED_MODELS`), `buildModelChain` (primary toujours en tête, filets ensuite), `nextModelIndex` (avance stricte, jamais de retour), `shouldFallback` (rate-limit/transient oui, permanent non, jamais après contenu produit).
+  - **`run.ts`** : option `modelChain`/`modelIds` ; bascule **immédiate sans backoff** vers le modèle suivant dans la boucle de retry quand `shouldFallback` est vrai ; event `timing` (ttftMs, totalMs, genMs, outputChars, tokPerSec, model, fallbacks) émis juste avant `finish`.
+  - **`AiPanel.tsx`** : construction de la chaîne dans `handleSend` (via `resolveAllowedModels` + `parseAllowedModels` + `buildModelChain`), passée aux **4** appels `runAgent` (plan phase 1/2, ask, agent/IA) ; un id non constructible est ignoré silencieusement ; `case "timing"` → `console.info("[origin][timing] …")`.
+  - **`secrets.ts`** : champ `allowedModels` dans `DevAiConfig` + `resolveAllowedModels()` (priorité localStorage > `.env`).
+  - **`ai_env.rs`** : clé `ORVYX_ALLOWED_MODELS` + `allowed_models` exposée par `dev_ai_config`.
+  - **`providers.ts`** : ajout des modèles de la cascade + flash rapides (`deepseek-v4-flash-0731`, `deepseek-v4.1-flash`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `glm-5.3-flash`).
+  - **`.env`** : `ORVYX_AI_MODEL=deepseek-v4-flash-0731` (plus rapide mesuré) + `ORVYX_ALLOWED_MODELS=deepseek-v4.1-flash,glm-5.3-flash,deepseek-v4-flash-0731,deepseek-v4-flash`.
+  - **NOUVEAU `modelCascade.test.ts`** (17 tests).
+
+- **Décisions Techniques :**
+  - **Bascule sans backoff** : attendre sur un modèle déjà saturé ne fait que dégrader le TTFT ; un autre modèle flash répond immédiatement.
+  - **Jamais de bascule après du contenu produit** : rejouer un tour partiellement écrit dupliquerait des éditions de fichiers. La cascade ne s'active qu'avant le premier signal (token/raisonnement/outil).
+  - **Jamais sur `permanent`** : une clé invalide ou une requête malformée ne se corrige pas en changeant de modèle ; masquer l'erreur réelle serait nuisible.
+  - **`primary` toujours en tête** : le choix UI de l'utilisateur prime ; la liste blanche n'est qu'un filet.
+
+- **Impacts & Dépendances :**
+  - `timing` est un event `AgentEvent` **additif** : aucun consommateur existant n'est cassé ; le log est discret (console).
+  - La cascade est **no-op** si `ORVYX_ALLOWED_MODELS` est absent (chaîne = modèle unique) → zéro régression.
+  - **Validation** : `tsc --noEmit` exit 0 ; ESLint silencieux sur les 6 fichiers touchés ; **vitest 426/426 (34 fichiers)** ; `cargo test ai_env` 7/7.
+
+- **Prochaines étapes :**
+  - La répartition de charge des modèles orvyx est **variable dans le temps** : ré-évaluer périodiquement le classement TTFT (`npx tsx scripts/model-compare.ts`) et réordonner `ORVYX_ALLOWED_MODELS` si besoin.
+  - Branchage ultérieur possible : exposer une UI de réglage de la cascade (aujourd'hui pilotée par `.env` + localStorage).
+
+---
+
+- **Contexte :**
+  Demande : « tout ce qui est pilotable par l'input doit marcher proprement — le plan, les skills, ctrl+z / ctrl+y — teste tout dans le terminal ». Audit de tout ce qui part de `ChatBox` avant d'écrire les tests : plusieurs fonctions étaient **module-privées** de `ChatBox.tsx` (non testables en environnement `node`) et trois défauts d'input ont été trouvés.
+
+- **Défauts trouvés (input) :**
+  1. **`plan` absent du menu d'agent.** `AGENTS` ne contenait que `ask` et `agent` alors que `handleSend` accepte `mode: "plan"` → le plan mode était **inatteignable par l'UI** (seule la commande palette y menait).
+  2. **Mode non persisté.** `useState<Mode>("agent")` : le mode choisi était perdu à chaque reload.
+  3. **Slash-command = décor mort.** Le menu « / for commands & skills » et « Skills » avait `onClick={onClose}` : taper `/plan` n'avait **aucun effet**, aucun parsing du `/`.
+  4. **`parsePlan` cassait sur un ordre d'attributs différent.** La regex exigeait `file` AVANT `action` : un `<step action="edit" file="…">` (ordre non garanti par le modèle) renvoyait `null` → **plan-card jamais affichée, approbation impossible** (échec silencieux en production). Un `<step …/>` non fermé « avalait » aussi le step suivant.
+
+- **Modifications effectuées :**
+  - **NOUVEAU `src/lib/inputCommands.ts`** : logique *pure* extraite du composant — `AGENTS` (3 modes, `plan` inclus), `isMode`, `agentLabel`, `readStoredMode`/`writeStoredMode` (clé `origin-ai-mode`), `parseSlashCommand`, `filterSlashCommands`, `getSlashQuery`, catalogue `SLASH_COMMANDS`.
+  - **`ChatBox.tsx`** : `AGENTS` dérivés du module (mapping icône `AgentIcon`→lucide) ; mode initialisé via `readStoredMode()` ; `handleModeSelect` persiste ; `handleSend` parse les slash-commands (`/plan …` bascule le mode et envoie le reste ; `/plan` seul bascule sans envoyer).
+  - **`planTypes.ts`** : `parsePlan` accepte les attributs dans **n'importe quel ordre** (capture indépendante de `file` et `action`) ; regex durcie pour ne pas confondre `<step …/>` avec un ouvrant ni avaler le step suivant.
+  - **NOUVEAUX tests** : `inputCommands.test.ts` (23), `commandsRegistry.test.ts` (12), `keybindings.test.ts` (18), `planTypes.test.ts` (+7 → 17).
+
+- **Décisions Techniques :**
+  - **Extraire la logique d'input dans un module pur** plutôt que de tester le composant : vitest tourne en `environment: "node"` (pas de DOM) ; la logique testable (parsing, catalogue, persistance) n'a pas besoin de React. Les fonctions purement DOM (`parseContent`, `getMentionQuery`) restent privées et sont validées côté UI par l'utilisateur.
+  - **Ne pas inventer le comportement des « Skills »** : l'audit montre qu'il n'existe **aucun runtime de skills** dans le code (seuls les réglages clavier sont branchés sous l'onglet « Skills & Commands »). Documenté comme décor à part, non câblé, plutôt que de fabriquer une feature non demandée.
+  - **Anti-régression sur `parsePlan`** : les cas limites (ordre inversé, attributs manquants, self-closing, bloc non fermé) sont désormais assertés.
+
+- **Impacts & Dépendances :**
+  - `ChatBox` importe `inputCommands` ; `Mode` y est importé (plus de type local dupliqué). Toute évolution du catalogue d'agents/slash se fait dans le module, pas dans le composant.
+  - `parsePlan` est partagé par `sessionStore.ts` et `AiPanel.tsx` : tous deux bénéficient de l'acceptation d'ordre libre — aucun changement d'API.
+  - **Validation** : `tsc --noEmit` exit 0, ESLint silencieux sur les 7 fichiers touchés, **vitest 409/409 (33 fichiers)**.
+
+- **Prochaines étapes :**
+  - **Non câblé (signalé, hors périmètre de ce lot)** : le menu « / commands & skills » et l'entrée « Skills » de l'AttachMenu sont toujours `onClick={onClose}`. Le parsing slash existe désormais côté `handleSend`, mais l'autocomplétion visuelle du `/` dans l'éditeur reste à brancher (dropdown dédié type mention `@`).
+  - Tests UI manuels (l'utilisateur) : basculer Agent/Plan/Chat, taper `/plan …`, vérifier la persistance du mode au reload, Ctrl+Z / Ctrl+Y dans l'éditeur.
+
+---
+
+
+- **Contexte :**
+  Après le dump, besoin de NOMBRES pour piloter les décisions d'édition plutôt que des impressions. Ajout d'un instrument de mesure (`prompts.metrics.test.ts`) qui calcule, par preset : taille (car. + ~tokens), nombre de sections/puces, puces par section, **redites inter-sections** (lignes normées présentes dans plusieurs sections) et **couverture des concepts** (outils, édition, todos, question, style, délégation).
+
+- **Anomalies détectées par la mesure (factuelles, non subjectives) :**
+  1. **`ask/max` et `ask/normal` étaient IDENTIQUES au caractère près** (1375 = 1375). Depuis le retrait d'`EDIT_RULES` en ASK, le paramètre `isMax` n'avait plus AUCUN effet sur ce mode : on exposait deux presets rigoureusement identiques.
+  2. **Le mode ASK ne disait rien sur COMMENT répondre** (couverture `ask = 0`, `todos = 0`). C'est pourtant le mode des questions : il ne cadrait que le traitement des fichiers, pas la réponse elle-même.
+
+- **Modifications effectuées :**
+  - **NOUVEAU bloc `ASK_ANSWER_RULES`** dans `prompts.ts` : citer le code par chemin + ligne, distinguer le vérifié de l'inféré, expliquer le pourquoi, ne pas inventer. Injecté en mode ASK après `CONCISION`.
+  - **`buildSystemPrompt` mode ASK** : `isMax` fait désormais varier le niveau de détail (`EDIT_RULES_FULL` en max uniquement). Les deux presets ASK redeviennent distincts.
+  - **NOUVEAU `src/lib/agent/__tests__/prompts.metrics.test.ts`** (6 tests) : rapport de métriques + invariants objectifs (0 redite, `max >= normal`, budget < 6000 car., couverture par mode, délégation seulement en agent/max).
+  - **`prompts.test.ts`** : test ASK réaligné + test « `isMax` a un effet réel » (les deux presets ASK diffèrent).
+
+- **Décisions Techniques :**
+  - **Instrument de mesure séparé du dump** : le dump sert à LIRE, les métriques à DÉCIDER. Les invariants assertés sont uniquement objectifs et non arbitraires ; aucun seuil « magique » là où il n'y a pas de fait (le budget 6000 car. est un garde-fou de prompt système, pas une vérité).
+  - **Faire varier `isMax` en ASK par le niveau de détail** plutôt que par un texte différent : cohérent avec l'agent (full/lite) et évite d'inventer deux comportements pour un même mode.
+  - **Anti-biais** : on ne compare pas les tailles entre modes (un mode n'est pas « mieux » parce que plus long) ; on vérifie seulement la monotonie interne max ≥ normal.
+
+- **Impacts & Dépendances :**
+  - Contenu des presets ASK modifié (nouvelle section « Answering », variante full/lite). Le test qui assertait l'absence de mécanique d'édition est réécrit : c'était une hypothèse devenue fausse après mesure.
+  - Métriques après correction : agent/max 3824 car. (7 sect.), agent/normal 2102 (6), ask/max 2288 (5), ask/normal 1734 (4), plan/max 1678 (4), plan/normal 1356 (4). **0 redite inter-sections** sur les 6 presets.
+
+- **Prochaines étapes :**
+  - Rejouer `prompts.metrics.test.ts` après toute évolution de prompt : les redites et la couverture sont des signaux de dérive.
+  - Surveiller `plan/normal` (1.5 puces/section, preset le plus maigre) si l'on veut l'enrichir — non bloquant.
+
+### [2026-10-15T23:45] | Banc de lecture des prompts + réordonnancement (principes avant outils)
+
+- **Contexte :**
+  Les prompts venaient d'être centralisés, mais leur CONTENU n'avait jamais été relu ligne à ligne. Besoin d'un instrument pour imprimer chaque preset dans le terminal, repérer les défauts, itérer. La lecture a révélé 4 problèmes réels.
+
+- **Défauts trouvés à la lecture (et corrigés) :**
+  1. **Redites identité / outils / édition.** L'identité disait « investigate the code, then make the changes », `Available tools` répétait « Use them autonomously to complete the task », `Editing` répétait la mécanique. Chaque énoncé est désormais porté par UN seul bloc (économie de tokens du prompt système, donc TTFT).
+  2. **Ordre sous-optimal.** `Editing` (détail d'outil) passait AVANT `Asking the user` et `Progress tracking` (principes). Réordonné façon Cline : principes comportementaux → détails d'outil.
+  3. **`ask/max` trompeur.** Le mode ASK recevait `EDIT_RULES_FULL` (search/replace unique, contexte de 3-5 lignes) : c'est un détail d'implémentation de l'outil Agent, inutile pour un mode qui répond aux questions. ASK ne garde que le cycle de revue (`ASK_MODE_FILES_NOTE`).
+  4. **PLAN pas assez verrouillé.** L'identité PLAN disait seulement « WITHOUT writing any code yet » ; elle affirme maintenant « You are READ-ONLY: you never write, edit, or run anything that changes the workspace ».
+
+- **Modifications effectuées :**
+  - **NOUVEAU `src/lib/agent/__tests__/prompts.dump.test.ts`** : instrument de revue (10 tests). Imprime les 6 presets complets + un prompt personnalisé habillé, encadrés et annotés (nombre de caractères, de sections), puis un RAPPORT d'ordre des sections par mode et un rapport d'uniformité du style. Assertions volontairement légères (structure), le contenu étant fait pour être LU.
+  - **`src/lib/agent/prompts.ts`** : ordre du composeur revu (`identity → CONCISION → TODO_RULES → ASK_USER_RULES → [DEL] → toolsBlock → EDIT_RULES`), `toolsBlock` réduit à la seule liste factuelle, `EDIT_RULES_FULL/LITE` condensés (suppression de la mention d'implémentation « fuzzy 66%+ »), identité PLAN verrouillée « READ-ONLY ».
+  - **`src/lib/agent/__tests__/prompts.test.ts`** : test PLAN réaligné sur « READ-ONLY » + 2 invariants ajoutés (ordre principes < outils ; ASK sans mécanique `edit`).
+
+- **Décisions Techniques :**
+  - **Instrument de dump plutôt que snapshot figé** : un snapshot verrouille le texte et empêche de le critiquer ; ici on veut LIRE et itérer. Les invariants forts restent dans `prompts.test.ts`.
+  - **`isDump = true` constant plutôt que `process.env`** : évite une dépendance à `@types/node` et la friction de lancement — l'instrument doit toujours parler.
+  - **Un énoncé, un bloc** : principe appliqué à la fois pour la lisibilité (le modèle hiérarchise mieux) et pour le coût (prompt plus court = pré-remplissage plus rapide).
+
+- **Impacts & Dépendances :**
+  - Les 6 presets changent de CONTENU (ordre + libellés) : tout consommateur qui assertait un texte littéral doit s'aligner — c'est le cas du test, corrigé.
+  - `DEFAULT_*` restent cohérents (délèguent au composeur).
+  - TTFT : le prompt système est légèrement plus court (blocs dédupliqués), effet marginal mais dans le bon sens.
+
+- **Prochaines étapes :**
+  - Lancer `npx vitest run src/lib/agent/__tests__/prompts.dump.test.ts` avant chaque évolution de prompt pour relire le rendu réel.
+  - Envisager un mode « dump compact » (sans le corps, seulement titres + tailles) pour survoler les 6 presets d'un écran.
+
+### [2026-10-15T23:15] | Chantier TTFT + prompts : module central unique et latence du premier token
+
+- **Contexte :**
+  Deux problèmes distincts traités dans un même chantier structuré :
+  1. **Prompt système épars et dupliqué.** Les presets (`full`/`lite`) vivaient dans `ai.ts` avec du texte recopié (bloc « Editing rules » présent plusieurs fois, `DELEGATION_GUIDANCE` concaténée à la main dans deux constantes). Toute évolution risquait de diverger entre modes (IDE vs IA), donc de casser l'uniformité exigée.
+  2. **TTFT trop lent.** Le clic utilisateur payait une série d'`await` SÉQUENTIELS avant le premier token : IPC keychain (clé API), 2 insertions DB, puis lecture des fichiers mentionnés en boucle série.
+
+- **Modifications effectuées :**
+  - **NOUVEAU `src/lib/agent/prompts.ts`** : module central des prompts.
+    - Blocs nommés à responsabilité unique : `identity(mode)`, `CONCISION`, `EDIT_RULES_FULL/LITE`, `ASK_USER_RULES`, `TODO_RULES`, `STYLE_GUARDRAIL`, `DELEGATION_GUIDANCE`.
+    - Composeur déclaratif `composeSystemPrompt({ blocks, style, extra })` qui filtre les blocs vides (aucun séparateur orphelin) et place le style en avant-dernière position, `extra` (ORIGIN.md) en dernier.
+    - Presets par mode via `buildSystemPrompt(mode, isMax, workspaceNote)` : plus aucune duplication, une seule source de vérité.
+    - Structure en sections titrées (`## Editing`, `## Progress tracking`…) inspirée de Cline/jcode : un modèle suit mieux une consigne organisée.
+  - **NOUVEAU `src/lib/agent/toolPresentation.ts`** : `FULL_TOOLS_LIST`, `READ_ONLY_TOOLS_LIST`, `ASK_MODE_FILES_NOTE` — les noms d'outils cités dans le prompt sont centralisés (anti-dérive : renommer un outil casse le test d'invariant).
+  - **`src/lib/ai.ts`** réduit à des **re-exports** du module central (compat des imports existants).
+  - **`src/components/ai/AiPanel.tsx`** recâblé : `withOriginMd` = `composeSystemPrompt({ blocks:[base], style: STYLE_GUARDRAIL, extra: originMd })` ; sélection agent/ask/plan via `buildSystemPrompt` ; phase 2 idem. Les trois modes partagent donc EXACTEMENT le même habillage (style + ORIGIN.md).
+  - **TTFT — cache clé API (`src/lib/secrets.ts`)** : `Map<providerId, string|null>` en mémoire, invalidée par save/delete. Le keychain n'est plus sondé à chaque tour (le clic ne paie plus l'IPC keychain).
+  - **TTFT — `handleSend` (`AiPanel.tsx`)** : UI optimiste émise AVANT tout `await` (bulle user + bulle assistant « streaming »), `loadApiKey` et lecture des fichiers mentionnés lancés EN PARALLÈLE (`apiKeyPromise` / `mentionedFilesPromise`), `knownError` calculé sans `await` bloquant, inserts DB user + assistant parallélisés via `Promise.all`.
+  - **TTFT — connexion HTTP durable (`src-tauri/src/ai.rs`)** : `reqwest::Client` partagé en `OnceLock` (au lieu d'être reconstruit par requête) avec `pool_idle_timeout(600s)`, `pool_max_idle_per_host(8)`, `tcp_nodelay(true)` (désactive Nagle, critique en SSE) et `tcp_keepalive(60s)`. `fetch_text` réutilise le même client.
+  - **NOUVEAU `src/lib/agent/__tests__/prompts.test.ts`** : 19 tests (composeur, invariants par mode, uniformité du style, compat, anti-dérive des outils).
+
+- **Décisions Techniques :**
+  - **Un module central unique plutôt que patcher les constantes existantes** : élimine la classe entière de bugs par duplication et garantit l'uniformité IDE/IA demandée. Les presets sont obtenus par composition de blocs, pas par copie de texte.
+  - **Style injecté PAR le composeur en avant-dernière position** : le garde-fou (pas d'emojis/tirets longs) prime sur un prompt personnalisé de l'utilisateur, sans l'écraser.
+  - **`tcp_nodelay(true)` est central au TTFT SSE** : Nagle retenait les petits `text-delta` pour les coalescer, ce qui ajoutait directement au délai perçu. Idem `pool_idle_timeout` long : le vrai coût venait du handshake TLS refait après quelques secondes d'inactivité, pas du débit.
+  - **UI optimiste sans attendre `runSeq`** : le feedback visuel ne doit jamais dépendre du réseau. La garde `runSeqRef` continue d'ignorer les events périmés, donc aucune régression de cohérence.
+  - **Client partagé `OnceLock` plutôt qu'un `State` Tauri** : le client est global, sans état mutable lié à la session ; `OnceLock` évite d'alourdir la gestion d'état et reste thread-safe.
+
+- **Impacts & Dépendances :**
+  - `DEFAULT_SYSTEM_PROMPT` & co. restent exportés (délèguent au composeur) : aucun import externe cassé.
+  - `ai.rs` : plus de `reqwest::Client` local dans `ai_stream_proxy` / `fetch_text` ; le pool est désormais partagé entre TOUTES les requêtes du proxy. Effet de bord positif : les étapes multiples d'un même tour d'agent réutilisent la même connexion.
+  - Le comportement anti-SSRF (`PROXY_ALLOW_HOSTS`) est inchangé : l'allowlist est vérifiée avant toute utilisation du client.
+  - Verrouillage par tests : les invariants de prompt (délégation seulement en agent-max, plan en lecture seule, etc.) ne peuvent plus régresser silencieusement.
+
+- **Prochaines étapes :**
+  - Mesurer le TTFT après ce lot (comparer avant/après sur un tour simple et un tour avec 3 fichiers mentionnés) ; le prochain levier serait le prompt caching étendu au-delà d'Anthropic.
+  - Lot 2 (équipes d'agents) toujours en attente, non démarré.
+  - Test manuel : mode IDE et mode IA doivent présenter un prompt uniforme (mêmes sections, même garde-fou de style).
+
+### [2026-10-15T19:20] | Revue de fichiers « live » : Keep all / Undo all visibles pendant le run (pattern Trae)
+
+- **Contexte :**
+  La barre de revue « N files changed / Keep all / Undo all » n'apparaissait **qu'à la fin** du run (émise dans la branche `finish`), et — une fois repliée — **cachait** les deux boutons. Résultat : l'utilisateur ne voyait pas « Keep all » / « Undo all » pendant que l'agent travaillait, contrairement à Trae où ces actions sont accessibles en permanence.
+
+- **Analyse (causes racines) :**
+  1. `checkpointBanner` n'était posé que dans le handler `finish` → aucune visibilité pendant le run.
+  2. Les boutons « Keep all » / « Undo all » vivaient **dans le bloc `expanded`** de `TurnReviewCard` → invisibles tant que la carte était repliée (`defaultExpanded` faux pour la vue dockée).
+
+- **Modifications effectuées :**
+  - **`src/components/ai/AiPanel.tsx`** :
+    - `checkpointBanner` renommé **`reviewBanner`** (le nom ne présuppose plus « fin de tour »).
+    - Nouvelle fonction `refreshReview(turnId, immediate?)` : interroge `summaryTurnCheckpoint(turnId)` (résumé Rust des deltas) et alimente `reviewBanner`. **Debounced à 120 ms** pour ne pas déclencher un aller-retour Rust par outil. Garde anti-obsolescence : un résumé dont le `turnId` ne correspond plus au tour actif est ignoré.
+    - Alimentée **en continu** : appelée au `tool-result` de chaque outil d'écriture (`write_file` / `edit` / `multi_edit`) → la bannière apparaît dès la **première** écriture et se met à jour au fil du run.
+    - Au `finish`, `refreshReview(turnId, true)` pour un état final exact.
+    - Au `handleStop`, `refreshReview(turnId, true)` **après** l'abort : la bannière **reste affichée** avec Undo/Keep sur le travail interrompu.
+    - `handleKeepAll` : pendant un run, **masque la revue sans purger le checkpoint** (sinon les écritures suivantes du même tour ne seraient plus annulables). Hors run, purge comme avant.
+    - `handleUndoAll` / `handleOpenCheckpointDiff` : lisent désormais `reviewBanner`.
+  - **`src/components/ai/TurnReviewCard.tsx`** : le pied d'actions (« N files to review » + « Undo all » / « Keep all ») est **sorti du bloc `expanded`** → il est **toujours visible, même replié**. Seule la liste détaillée des fichiers reste repliable. C'est le comportement de la barre de revue de Trae.
+  - **Vue dockée** : `TurnReviewCard` rendu avec `defaultExpanded` → la liste part dépliée au-dessus de l'input.
+
+- **Décisions Techniques :**
+  - **Réutiliser `summaryTurnCheckpoint` (source Rust) plutôt que calculer les deltas côté front** : les snapshots sont déjà la source de vérité des checkpoints ; deviner les `+N/-N` depuis les arguments d'outil serait fragile (multi_edit, patchs partiels).
+  - **Debounce sur `refreshReview`** : un run peut enchaîner plusieurs écritures ; on veut un coût Rust borné sans perdre la réactivité visuelle.
+  - **Pas de purge du checkpoint par « Keep all » en cours de run** : préserve l'invariant « tout ce qui a été écrit dans ce tour reste annulable » jusqu'à la fin réelle du tour.
+  - **Bannière conservée après Stop** : un tour interrompu a bien écrit des fichiers ; l'utilisateur doit pouvoir les annuler.
+
+- **Impacts & Dépendances :**
+  - Aucun changement côté Rust : `checkpoint_summary` existait déjà.
+  - `reviewBanner` remplace `checkpointBanner` (renommage interne, aucun impact API).
+  - Le masquage de la liste détaillée reste inchangé : seul le pied d'actions devient permanent.
+
+- **Prochaines étapes :**
+  - Test manuel : lancer une tâche qui écrit plusieurs fichiers → la bannière doit apparaître dès le 1er fichier, se mettre à jour à chaque écriture, et les boutons Keep all / Undo all doivent être cliquables **sans déplier** la carte, y compris pendant le run et après un Stop.
+
+### [2026-10-15T19:05] | Stabilisation du run : stop réel, todo silencieuse, TTFT réduit (alignement Cline Focus Chain)
+
+- **Contexte :**
+  Trois symptômes signalés par l'utilisateur sur le mode agent :
+  1. **TTFT très lent** — le premier token de réponse arrivait après un long silence.
+  2. **La todo list n'est pas bonne** et l'agent *écrit* `todo_write` **dans le chat** (visible comme un tool-call `{"ok":true,"count":1}`), ce qui n'est pas pro.
+  3. **Après un Stop, le run continue** — des events continuaient à muter le fil.
+
+- **Analyse (causes racines) :**
+  - **TTFT** : le prompt système imposait *« ALWAYS start any task that requires more than one tool call by calling todo_write FIRST »*. Ce « FIRST » obligatoire ajoutait **un aller-retour modèle complet** (génération du JSON de todo + exécution + **second** appel pour le vrai contenu) avant que l'utilisateur ne voie le moindre token. C'est exactement ce que Cline évite : dans son **Focus Chain**, la todo est un **état d'UI** (checklist markdown affichée dans l'en-tête de tâche, compteur « 3/8 »), pas un tool-call mis en avant ni une étape imposée à chaque tour.
+  - **Bruit dans le fil** : `todo_write` / `todo_read` étaient rendus comme n'importe quel tool-call (accordéon + résultat JSON).
+  - **Stop inefficace** : `handleEvent` n'avait **aucune garde d'annulation**. `runAgent.cancel()` fait bien `controller.abort()`, mais un outil déjà « en vol » au moment du stop pouvait encore résoudre et émettre un `tool-result` via le flux, qui continuait alors à `setMessages`.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/AiPanel.tsx`** :
+    - Nouvelle ref `runSeqRef` (numéro de génération). Incrémentée **au début de `handleSend`** (avant l'abort du run précédent) et **dans `handleStop`**. `handleEvent` capture son `runSeq` et **ignore tout event** dont le numéro ne correspond plus au courant. Un run annulé/remplacé ne peut plus toucher le fil.
+  - **`src/components/ai/ToolCallCard.tsx`** : `todo_write` et `todo_read` sont **entièrement masqués** du fil (retour `null` en tête du composant). La checklist reste visible via la `PinnedTodoList` épinglée (pattern Focus Chain).
+  - **`src/lib/ai.ts`** (`DEFAULT_SYSTEM_PROMPT` et `_LITE`) : la consigne devient **conditionnelle** (« For a task that will take several steps ») au lieu d'un « FIRST » obligatoire ; ajout « skip for a quick single-step request » et **« do not restate the list in your reply — the user already sees it »**. Objectif : supprimer le round-trip imposé (TTFT) et la redondance texte/UI.
+  - **`src/lib/agent/tools.ts`** : description de `todo_write` alignée (usage pour tâche multi-étapes, jamais de répétition dans la réponse).
+  - **`src/lib/agent/run.ts`** : nouvelle enveloppe `emit(event)` qui **n'émet plus aucun event après l'abort** (défense en profondeur, en plus de la garde côté AiPanel).
+
+- **Décisions Techniques :**
+  - **Garde de génération (`runSeq`) plutôt qu'un flag booléen** : un compteur couvre à la fois le *stop* et le *remplacement de run* (nouvel envoi pendant un run précédent), sans risque de course sur un booléen remis à zéro.
+  - **Todo masquée, pas supprimée** : on garde l'outil (l'agent s'en sert pour raisonner) et l'état réactif (l'UI l'affiche), on retire seulement le bruit visuel — exactement la séparation « état d'UI vs tool-call » de Cline.
+  - **Prompt conditionnel** : on ne force plus un tool-call de plan pour une tâche en une étape (coût TTFT inutile). La discipline « une seule tâche in_progress, cocher immédiatement » est conservée pour les vraies tâches multi-étapes.
+
+- **Impacts & Dépendances :**
+  - `runSeqRef` est local à AiPanel : aucun changement d'API publique. `handleEvent` reste synchrone.
+  - `emit` dans `runAgent` remplace `onEvent` **uniquement dans le flux** ; les events de retry/erreur de la boucle externe conservent leur comportement (la boucle vérifie déjà `aborted`).
+  - Le masquage UI ne change **pas** le message persisté : `buildModelHistory` continue d'inclure les `todo_write`/`tool-result` (le modèle garde sa mémoire de la checklist).
+
+- **Prochaines étapes :**
+  - Test manuel : (1) envoyer une demande simple → vérifier que le TTFT est court (pas de round-trip todo) ; (2) demander une tâche multi-étapes → vérifier la checklist épinglée qui progresse sans `todo_write` visible dans le fil ; (3) Stop en plein run → vérifier que le fil ne bouge plus.
+
+### [2026-10-15T19:00] | Questions de l'agent dockées au-dessus de l'input (style Trae)
+
+- **Contexte :**
+  Demande utilisateur : *« pour les questions ça doit être au-dessus de l'input proprement, où l'utilisateur choisit parmi trois choix, et il y a "Other" à la fin comme sur Trae »*. Le `ask_user` existait mais sa carte s'affichait **dans le fil** : quand l'agent mettait le run en pause sur une question, l'utilisateur — qui regarde l'input — pouvait la manquer, surtout si elle était remontée par le scroll. L'objectif est de reproduire le pattern « Ask User » des agents modernes : options cliquables + échappatoire « Other » (réponse libre), au plus près de l'endroit où l'utilisateur agit.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/QuestionPrompt.tsx`** (nouveau) : composant docké. Question courte, options numérotées cliquables (2–4), puis une entrée **« Other… »** toujours en dernier qui ouvre un champ de saisie libre (Entrée = envoyer, Échap = annuler). Une fois une option choisie, les autres se désélectionnent visuellement (état figé le temps que le run reprenne).
+  - **`src/components/ai/AiPanel.tsx`** :
+    - Nouvel état `pendingQuestion: { id, question, options, answer }`. Alimenté dans le handler `approval-required` **uniquement** pour `action.type === "ask_user"` ; la réponse invoque `event.reject(answer)` (chemin qui transmet la réponse au tool) puis purge l'état.
+    - Nettoyage de `pendingQuestion` dans `approval-resolved` (si résolu par un autre chemin) et dans `handleStop` (une question sans run vivant n'a plus de sens).
+    - Rendu `<QuestionPrompt>` **au-dessus de l'input**, dans les deux vues concernées : conversation active et écran « new chat ».
+  - **`src/components/ai/ToolCallCard.tsx`** : pour une question **active**, la carte interactive dans le fil est **remplacée** par une simple ligne « Asked a question » (traçabilité, sans doublon). Une question **déjà répondue** conserve la carte figée question + réponse (historique lisible).
+  - **`src/lib/agent/run.ts`** : le type de l'event `approval-required` exposait `reject: () => void` alors que le tool `ask_user` appelle `reject(answer)`. Corrigé en `reject: (answer?: string) => void` — le contrat réel (transmettre la réponse) est désormais typé, plus de cast.
+
+- **Décisions Techniques :**
+  - **Un seul point de saisie** : la question est rendue près de l'input et retirée du fil (remplacée par un marqueur) ⇒ pas d'ambiguïté sur « où répondre », pas de double rendu interactif du même tool call.
+  - **`Other` toujours présent** : même quand l'agent propose des options, l'utilisateur n'est jamais enfermé. Correspond au pattern documenté par les toolkits « Ask User » (Odin AI : *« clickable suggestion chips plus a Custom free-text field at the bottom »*).
+  - Le composant est **présentationnel** ; toute la logique de résolution (reject → resolve du tool → reprise du run) reste dans AiPanel, au même titre que les autres approbations.
+
+- **Impacts & Dépendances :**
+  - `AgentEvent["approval-required"].reject` gagne un paramètre optionnel : compatible avec tous les appelants existants (edit / write_file / bash passent `() => resolve(...)`, ce qui reste valide).
+  - La carte `AskUserCard` reste utilisée pour l'état **répondu** dans le fil ; elle n'est plus le point de saisie.
+  - Une question ne peut être posée qu'une à la fois (`ask_user` met le run en pause) ⇒ un unique `pendingQuestion` suffit, pas de file.
+
+- **Prochaines étapes :**
+  - Test manuel : provoquer un `ask_user` (intention ambiguë) → vérifier que la question apparaît juste au-dessus de l'input, que « Other… » ouvre bien la saisie libre, et qu'après réponse le run reprend et que le fil montre la question répondue.
+
+### [2026-10-15T18:50] | Revert multi-tours + confirmation pro (liste des fichiers avant action)
+
+- **Contexte :**
+  Signalement utilisateur : *« l'icône revert ne marche pas, ça ne supprime pas tous les fichiers et dossiers créés »*. Deux défauts distincts : (1) **seul le dernier tour était annulé** — chaque `beginTurn` purgeait le checkpoint précédent (`discardTurnCheckpoint(prev)`), donc un run couvrant plusieurs envois laissait sur disque tout ce qui avait été créé avant le dernier message ; (2) **aucune visibilité** sur ce qu'un revert allait détruire : action destructive déclenchée sans confirmation.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/checkpoint.rs`** : nouvelles primitives multi-tours.
+    - `RevertAction { Delete, Restore }` + `RevertPlanEntry { path, action, turns }`.
+    - `collect_revert_plan(root, turn_ids, workspace_root)` : **fusionne les manifestes** de tous les tours, déduplique par chemin (**le premier snapshot gagne** → un chemin vu « créé » reste `Delete` même touché plus tard), compte les `turns` ayant touché chaque chemin. **Aucune écriture** (dry-run).
+    - `prune_empty_dirs(path, workspace_root)` : remonte les parents, ne supprime que les dossiers **vides**, s'arrête à la racine du workspace (jamais supprimée).
+    - Commandes `checkpoint_revert_preview` (dry-run) et `checkpoint_undo_many` (applique le plan : `Delete` → suppression + élagage ; `Restore` → copie du backup d'origine, puis purge des checkpoints consommés).
+  - **`src-tauri/src/lib.rs`** : enregistrement des deux commandes.
+  - **`src/lib/turnCheckpoint.ts`** : façade `previewRevertTurns()` / `revertTurns()` + types `RevertAction`, `RevertPlanEntry`.
+  - **`src/components/ai/AiPanel.tsx`** :
+    - `beginTurn(userIndex)` **ne purge plus** l'ancien checkpoint ; il associe chaque `turnId` à l'**index du message utilisateur** déclencheur (`turnIdsByUserIndexRef: Map<number, string[]>`).
+    - `collectTurnIdsFrom(userIndex)` rassemble tous les tours générés depuis un message.
+    - `handleRevertUserMessage` : `previewRevertTurns` → si le plan est vide, simple troncature ; sinon ouverture du dialogue de confirmation.
+    - `handleConfirmRevert` : `revertTurns` (tous les tours) → purge de l'état local → toast → troncature du fil.
+    - `handleUndoAll` (bannière) réécrit pour cibler **tous les tours du dernier run** via le **même** dialogue de confirmation.
+  - **`src/components/ai/RevertConfirmDialog.tsx`** (nouveau) : dialogue présentant le plan groupé en « Will be deleted » (fichiers créés, en rouge) et « Will be restored » (fichiers modifiés), compteurs, liste bornée avec « + N more », rappel du risque, boutons Cancel / Revert.
+
+- **Décisions Techniques :**
+  - **Un plan, deux usages** : la prévisualisation et l'exécution partagent `collect_revert_plan` → garantie « ce que voit l'utilisateur = ce qui sera appliqué », sans divergence possible entre l'aperçu et l'action.
+  - **Le premier snapshot gagne** : si un chemin a été créé puis remodifié dans un tour ultérieur du même run, le classer `Delete` est le seul comportement correct (sinon on restaure un fichier qui n'aurait jamais dû exister).
+  - **Élagage prudent** : seuls les dossiers **vides** sont supprimés, et jamais la racine du workspace. Pas de `remove_dir_all`.
+  - Dialogue rendu au niveau racine (`fixed`, z-index 60) plutôt qu'inline, pour rester au-dessus de tout le panneau.
+
+- **Impacts & Dépendances :**
+  - `undoTurnCheckpoint` reste exporté (compat) mais **n'est plus utilisé** par AiPanel ⇒ point d'attention : un futur nettoyage pourra le retirer si aucun autre appelant n'apparaît.
+  - `checkpointBanner` ne stocke qu'un `turnId` : la bannière n'affiche que le résumé du **dernier** tour, mais son « Undo all » agit désormais sur **tout le run**. C'est volontaire (le run est l'unité de revert).
+
+- **Prochaines étapes :**
+  - Test manuel : run créant un dossier + plusieurs fichiers sur plusieurs envois → Revert depuis le message d'origine → vérifier que fichiers **et** dossiers créés disparaissent, que les fichiers modifiés reviennent à leur état initial, et que le dialogue liste bien les deux catégories avant action.
+
+### [2026-10-15T22:40] | Orchestration intelligente — la délégation devient une évidence, pas une règle
+
+- **Contexte :**
+  Le câblage du suivi était correct et les tests verts, mais **rien ne se déclenchait en usage réel** : le root n'appelait presque jamais `spawn_agent`. Deux causes racines : (1) le prompt de délégation était timide (« never as a mandatory first step »), (2) le root **ignorait son propre budget de contexte**, donc ne ressentait aucune pression à déléguer. Le suivi « existait » mais restait invisible faute de déclenchement. Contrainte utilisateur : *« je veux un truc d'intelligent pas un truc codé à la main »* → interdiction de seuil hardcodé.
+
+- **Modifications effectuées :**
+  - **`src/lib/ai.ts`** : `DELEGATION_GUIDANCE` recadré en **principe d'économie de contexte** (asymétrie : le transcript d'un sous-agent n'entre jamais dans le contexte du root, seul le rapport borné). La décision devient un jugement de coût relatif, pas un compteur.
+  - **`src/lib/agent/tokenBudget.ts`** : nouvelle fonction `contextStatusPrompt(messages, budget)` → produit un bloc « état du contexte réel » (budget, tokens consommés, %, niveau de pression : *comfortable / getting full / critically full*) avec pour chaque niveau un conseil orienté délégation.
+  - **`src/components/ai/AiPanel.tsx`** : en branche mode IA, ce bloc est injecté dans le **prompt système du root** (`rootSystemPrompt`). Le modèle connaît sa contrainte et **en déduit** la délégation. Ajout d'une ref `spawnedThisTurnRef` : comptée au `subagent-start`, remise à zéro au début du tour.
+  - **`src/lib/aiTypes.ts`** + **`src/components/ai/StatusNotice.tsx`** : `MessagePart["status"].kind` étendu à `"orchestration"` ; `StatusNotice` affiche une ligne repliable « Orchestration » (icône `Network`), libellés factorisés.
+  - **`src/components/ai/AiPanel.tsx` (`case "finish"`)** : si `spawnedThisTurnRef.current > 0`, une part `status/orchestration` est **ajoutée au corps final** (donc persistée) : « N sous-agents ont travaillé pour ce tour. » Aucune ligne si le root a tout fait seul — journal, pas injonction.
+
+- **Décisions Techniques :**
+  - Traiter la cause **cognitive** (le modèle ne *savait pas* qu'il devait économiser) plutôt que d'imposer un seuil. Un seuil « > X fichiers → délègue » serait faux sur les petits comme sur les gros dépôts ; la conscience du budget se généralise.
+  - Trace **conditionnelle** : on ne journalise que les tours **avec** délégation, pour rester discret et ne pas transformer un choix légitime (faire soi-même) en avertissement.
+
+- **Impacts & Dépendances :**
+  - `MessagePart` gagne une valeur de `kind` → tout consommateur de parts `status` doit tolérer `"orchestration"` (`StatusNotice` mis à jour ; `MessageBubble` passe simplement le `kind`).
+  - Le bloc contexte est **borné** et n'est injecté **qu'avec** l'outil `spawn_agent` disponible → aucun surcoût en mode IDE mono-agent.
+
+- **Prochaines étapes :**
+  - Validation visuelle en mode IA (carte qui progresse, texte live, onglet Agents, ligne d'orchestration en fin de tour).
+  - **Lot 2 = équipes d'agents** (non démarré).
+
+### [2026-10-15T20:22] | Correctif — suivi des sous-agents cassé (spawnId, tokens fuyants)
+
+- **Contexte :**
+  En test réel, les sous-agents « ne se coordonnaient pas » et le **suivi était absents** : cartes bloquées, aucune progression, et le fil du root se faisait polluer. Quatre défauts distincts, tous sur le chemin du suivi.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/spawnRuntime.ts`** : le `spawnId` est désormais **généré par l'hôte** (une seule fois) et transmis à `runSubAgent`. Il était auparavant émis à `""` par l'hôte, tandis que `runSubAgent` en générait un second, distinct → **deux entrées** dans le store et une carte fantôme jamais clôturée.
+  - **`src/lib/agent/subagent.ts`** : `spawnId` reçu en option (plus généré ici) ; **suppression** de l'émission `subagent-start` (réservée à l'hôte). Ajout d'un `subagent-step` routé à chaque tour (avec total **cumulé** via `baseIterations`) → progression visible. Les events enfants sont routés avec le `spawnId` fourni.
+  - **`src/components/ai/AiPanel.tsx`** : les branches `token` et `reasoning` **routent** désormais par `event.spawnId` — sans ça, les tokens d'un sous-agent s'ajoutaient au message du **root**, cassant la garantie « le root ne reçoit que le rapport borné ». Ajout de `appendChildStream` (flux live borné à 8 000 chars, on garde la fin).
+  - **`src/lib/aiTypes.ts`** : `SubAgentChild.stream?: string` (texte live du sous-agent).
+  - **`src/components/ai/SubAgentCard.tsx`** : pendant le run, la carte affiche le `stream` live (encadré pointillé, 240 px) ; le rapport final le remplace. `streamTail()` borne l'affichage.
+  - **`src/lib/agent/__tests__/subagentEvents.test.ts`** (nouveau) : 4 tests verrouillant le contrat (`runSubAgent` n'émet jamais `subagent-start`, route avec le spawnId fourni, émet `subagent-step`, clôt par `subagent-end`).
+
+- **Décisions Techniques :**
+  Le `spawnId` a **un seul propriétaire : l'hôte.** Le moteur du sous-agent ne fait que router avec l'id reçu. Cette séparation supprime toute possibilité de divergence d'identifiant entre la carte (UI) et le flux d'events. Les tokens du sous-agent ne sont **jamais** injectés dans le fil du root (conformité au design Cline : seul le rapport borné remonte).
+
+- **Impacts & Dépendances :**
+  `spawnRuntime.ts`, `subagent.ts`, `AiPanel.tsx`, `aiTypes.ts`, `SubAgentCard.tsx`. Le store (`swarmStore.ts`) reste inchangé. **Breaking interne** : `runSubAgent` exige désormais `spawnId` (seul appelant : `spawnRuntime.ts`).
+
+- **Prochaines étapes :**
+  Valider visuellement en mode IA : carte qui progresse (steps), texte live pendant le run, rapport à la fin, onglet Agents cohérent. Lot 2 (équipes) toujours non démarré.
+
+---
+
+### [2026-10-15T20:35] | Revue de fichiers type Trae (barre repliable + liste détaillée)
+
+- **Contexte :**
+  La `TurnCheckpointCard` affichait en permanence la liste complète des fichiers modifiés, ce qui alourdissait le fil. Trae/Cursor affichent un **bloc compact repliable** (« N files changed · +N -N ») qui déplie la liste, plus une occurrence **juste au-dessus de l'input**.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/TurnReviewCard.tsx`** (nouveau, remplace `TurnCheckpointCard.tsx` supprimé) : barre de statut **repliable** (pastille icône + « N file(s) changed » + `chevrons-up-down` + delta cumulé `+N -N` + chevron rotatif). Repliée par défaut ; déplie la liste détaillée (une ligne par fichier : créer/modifier, nom, chemin, `+N -N`, chevron) et le pied « N files to review » + « Undo all » / « Keep all ». Prop `docked` (marges nulles, rendu au-dessus de l'input) et `defaultExpanded`.
+  - **`sumDelta(files)`** exporté : delta cumulé, testable sans monter le composant.
+  - **`src/components/ai/AiPanel.tsx`** : le bloc est rendu **aux deux endroits** (exigence utilisateur) — une fois dans le fil, une fois **juste au-dessus de l'input** (`docked`), placé après `PinnedTodoList`. Import mis à jour.
+  - **`src/components/ai/__tests__/TurnReviewCard.test.ts`** (nouveau) : 3 tests de `sumDelta` (somme, liste vide, fichier créé).
+
+- **Décisions Techniques :**
+  Un **seul** composant paramétré par `docked`/`defaultExpanded` plutôt que deux blocs dupliqués : une seule source de vérité pour le rendu et les actions. Delta cumulé calculé côté front (`sumDelta`) à partir du résumé Rust déjà chargé, aucune lecture disque supplémentaire. La carte du fil démarre **repliée** pour ne pas noyer la conversation ; celle au-dessus de l'input reste repliée aussi et se déplie au clic.
+
+- **Impacts & Dépendances :**
+  `AiPanel.tsx` (import + emplacement), suppression de `TurnCheckpointCard.tsx`. Réutilise `TurnFileDelta` et les handlers `handleUndoAll`/`handleKeepAll`/`handleOpenCheckpointDiff` existants — aucun changement du protocole checkpoint Rust.
+
+- **Prochaines étapes :**
+  Vérifier visuellement le rendu replié/déplié dans les deux thèmes ; éventuellement mémoriser l'état déplié par tour (aujourd'hui réinitialisé à chaque tour).
+
+---
+
+### [2026-10-15T20:05] | File d'attente de messages (message queue) pendant un tour
+
+- **Contexte :**
+  Jusqu'ici, écrire pendant qu'un tour streamait **annulait** implicitement le comportement attendu : l'utilisateur ne pouvait pas préparer son message suivant. Trae/Cursor permettent de saisir un message pendant le run ; celui-ci est **mis en attente** et **envoyé automatiquement** dès la fin du tour, avec un bandeau visible et des actions éditer/retirer.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/messageQueue.ts`** (nouveau) : logique **pure** (sans React) `enqueueMessage` / `dequeueMessage` / `hasQueued`. Modèle de file = **un seul message en attente** (un nouvel envoi écrase le précédent), comme Trae.
+  - **`src/lib/aiTypes.ts`** : ajout du type `QueuedMessage` (`text`, `modelId`, `providerId`, `fileMentions`, `editorContext`, `mode`).
+  - **`src/components/ai/ChatBox.tsx`** : props `queued`, `onQueue`, `onRemoveQueued`, `onEditQueued`. Dans `handleSend`, si `isStreaming` et `onQueue` renvoie `true`, le message est **mis en file** au lieu d'être envoyé. Rendu d'un **bandeau « Waiting to send... »** au-dessus de l'input (ligne 1 = texte + `Pencil`/`Trash2`, ligne 2 = statut).
+  - **`src/components/ai/AiPanel.tsx`** : état `queuedMessage` ; refs `handleSendRef`, `queuedMessageRef`, `dequeuingRef`, `flushQueueRef` (pattern « ref mirroring » pour éviter les closures obsolètes dans les handlers stables). `handleQueue` / `flushQueue` / `handleRemoveQueued` / `handleEditQueued`. Dépilage appelé dans `case "finish"`, `case "error"` et `handleStop`.
+  - **`src/lib/agent/__tests__/messageQueue.test.ts`** (nouveau) : 5 tests (mise en file, écrasement, dépilage, file vide, `hasQueued`).
+
+- **Décisions Techniques :**
+  File **mono-message** : empiler plusieurs envois contradictoires pendant un run est source de confusion et de coût tokens inutile ; écraser le précédent est le comportement le plus prévisible. `flushQueue` est déclenché **après** la retombée de `streaming` (via `setTimeout(0)` + garde `dequeuingRef`) pour que `isStreaming` soit recalculé avant le nouvel envoi et éviter un **double envoi** quand plusieurs signaux de fin se chevauchent (`finish` + `flush` tardif, `stop` + `error`). `handleStop` enchaîne explicitement : l'utilisateur a saisi son message en connaissance de cause.
+
+- **Impacts & Dépendances :**
+  `ChatBox.tsx` (props + bandeau), `AiPanel.tsx` (état/refs/handlers + 2 rendus de `ChatBox`), `aiTypes.ts`, `messageQueue.ts`. Aucune modification du protocole de stream. Les deux rendus de `ChatBox` (IDE + plein écran) reçoivent les mêmes props de file.
+
+- **Prochaines étapes :**
+  Vérifier visuellement le rendu du bandeau dans les deux thèmes ; envisager (non demandé) une file **multi-messages** si le besoin remonte.
+
+---
+
 ### [2026-10-15T19:05] | Orchestration Lot 1 — sous-agents spécialisés pilotés par les données
 
 - **Contexte :**
@@ -32,6 +588,33 @@
 
 - **Prochaines étapes :**
   Lot 2 (équipes d'agents : liste de tâches partagée + messagerie inter-agents) — **à valider explicitement avant démarrage**, coût tokens supérieur. Vérifier visuellement le rendu des cartes par rôle dans les deux thèmes.
+
+---
+
+### [2026-10-15T19:35] | Style prose (tirets longs) + todo list obligatoire et coche automatique
+
+- **Contexte :**
+  Trois demandes : (1) l'agent produisait des tirets longs `—`/`–` dans ses réponses, jugés non désirés ; (2) l'agent ne créait pas systématiquement de todo list, contrairement à Trae ; (3) la checklist devait se cocher seule au fil du run, proprement.
+
+- **Modifications effectuées :**
+  - **`src/lib/ai.ts`** :
+    - `STYLE_GUARDRAIL` interdit désormais explicitement les tirets em/en (`— –`) au même titre que les emojis (réponses, items de todo, commits, fichiers générés).
+    - `DEFAULT_SYSTEM_PROMPT` : l'obligation devient « ALWAYS start any task that requires more than one tool call by calling todo_write FIRST », avec consigne de cocher **dans le tool call suivant** chaque étape terminée (jamais en lot).
+    - `DEFAULT_SYSTEM_PROMPT_LITE` : durcissement symétrique.
+  - **`src/lib/textStyle.ts`** : `stripDecorativeEmojis` renommé `sanitizeProse` ; normalise `— – ―` en `-` (avec gestion des espaces adjacents) et supprime les espaces de fin de ligne, le tout **hors** blocs de code et code inline. Filet de sécurité côté rendu.
+  - **`src/components/ai/MarkdownMessage.tsx`** : appel `sanitizeProse`.
+  - **`src/lib/agent/todoStore.ts`** : nouvelle fonction `finalizeTodos(sessionId)` — marque `done` les items restés `pending`/`in_progress`, sans jamais toucher aux `cancelled`.
+  - **`src/components/ai/AiPanel.tsx`** : `finalizeTodos` appelé à la clôture du tour (event `finish`, après passage de `streaming` à `false`).
+  - **Tests ajoutés** : `src/lib/__tests__/textStyle.test.ts` et `src/lib/agent/__tests__/todoStore.test.ts`.
+
+- **Décisions Techniques :**
+  Double barrière, comme pour les emojis : **prévention** (prompt durci) + **filet** (nettoyage au rendu), car un modèle peut toujours dériver. La coche automatique est un **filet déterministe**, pas un pilotage du modèle : elle s'exécute uniquement à la fin réelle du tour (`finish`), donc jamais pendant une attente d'approbation (tool bloquant → pas de `finish`). Ce choix évite d'afficher une checklist « terminée » alors que l'agent est suspendu. La fonction préserve les `cancelled` pour ne pas transformer un abandon volontaire en succès.
+
+- **Impacts & Dépendances :**
+  `ai.ts` (prompts), `textStyle.ts` + `MarkdownMessage.tsx` (rendu), `todoStore.ts` + `AiPanel.tsx` (cycle de vie des todos). Le renommage `sanitizeProse` est un breaking change interne, sans consommateur externe (2 sites mis à jour).
+
+- **Prochaines étapes :**
+  Surveiller la qualité des todo lists générées (items trop granulaires ou redondants) ; éventuellement fusionner les petites étapes pour éviter une liste à rallonge.
 
 ---
 

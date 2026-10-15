@@ -37,6 +37,9 @@ export function wrapSpawnAgent(
   tools: ToolSet,
   opts: {
     model: LanguageModel;
+    /** Cascade de modèles héritée du root (bascule 429 côté sous-agent). */
+    modelChain?: LanguageModel[];
+    modelIds?: string[];
     folderPath: string;
     cacheSystem?: boolean;
     /** Résumé borné du fil fourni au sous-agent (contexte « ce sur quoi on travaille »). */
@@ -66,6 +69,12 @@ export function wrapSpawnAgent(
     const role = resolveRole(input.role);
     const contextNotes = (input.context_notes ?? "").toString().trim();
 
+    // Le `spawnId` appartient à l'HÔTE : il est généré ICI, une seule fois, et
+    // sert à la fois (a) à enregistrer la carte dans l'UI et (b) à router les
+    // events du sous-agent. Le générer à deux endroits provoquait deux entrées
+    // (spawnId "" + vrai id) et une carte bloquée « Working » pour toujours.
+    const spawnId = `sub-${crypto.randomUUID()}`;
+
     // Le contexte projet est dérivé une fois par tour (cache) : il n'est PAS
     // recalculé à chaque sous-agent, et reste borné (coût en tokens prévisible).
     let contextBlock: string;
@@ -76,14 +85,18 @@ export function wrapSpawnAgent(
       contextBlock = "";
     }
 
-    // On prévient l'UI AVANT le lancement pour que la carte apparaisse immédiatement.
+    // On prévient l'UI AVANT le lancement pour que la carte apparaisse immédiatement,
+    // avec le MÊME `spawnId` que celui qui routera tous les events suivants.
     opts.callbacks.onEvent({
-      type: "subagent-start", spawnId: "", role: role.label, task, toolCallId,
+      type: "subagent-start", spawnId, role: role.label, task, toolCallId,
     });
 
     const result = await runSubAgent({
       model:        opts.model,
+      modelChain:   opts.modelChain,
+      modelIds:     opts.modelIds,
       folderPath:   opts.folderPath,
+      spawnId,
       role:         role.id,
       task,
       contextNotes: contextNotes || undefined,

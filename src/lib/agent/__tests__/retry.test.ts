@@ -25,6 +25,17 @@ describe("classifyFailure", () => {
     expect(classifyFailure("request timed out", null)).toBe("transient");
   });
 
+  // Contrat silencieux entre `run.ts` (qui LEVE ces messages à l'abandon d'une
+  // tentative) et `retry.ts` (qui doit les classer « transient » pour déclencher
+  // la cascade/reprise plutôt qu'un échec définitif). Si un message est reformulé
+  // côté run.ts, ce test casse — c'est voulu : sinon un tour figé repartirait en
+  // échec permanent silencieux.
+  it("classe les abandons internes du harness en transitoires", () => {
+    expect(classifyFailure("Model stream stalled mid-response (inactivity timeout)", null)).toBe("transient");
+    expect(classifyFailure("Model first token timed out (TTFT above budget)", null)).toBe("transient");
+    expect(classifyFailure("Model stream produced no output (timeout)", null)).toBe("transient");
+  });
+
   it("ne confond pas un identifiant de requête avec un code HTTP", () => {
     // `req_15030` contient 5030, pas 503 ; et aucun marqueur ne matche.
     expect(containsCode("req_15030", "503")).toBe(false);
