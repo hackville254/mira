@@ -45,3 +45,31 @@ export async function discardTurnCheckpoint(turnId: string): Promise<void> {
 export async function countTurnCheckpoint(turnId: string): Promise<number> {
   return invoke<number>("checkpoint_count", { turnId });
 }
+
+/** Delta de lignes d'un fichier modifié pendant le tour. */
+export interface TurnFileDelta {
+  /** Chemin absolu du fichier. */
+  path: string;
+  /** Lignes ajoutées (`+N`). */
+  added: number;
+  /** Lignes supprimées (`-N`). */
+  removed: number;
+  /** `true` si le fichier a été créé pendant le tour. */
+  created: boolean;
+}
+
+/**
+ * Résumé des fichiers modifiés du tour : chemins + deltas `+N/-N`, pour la
+ * liste cliquable de la bannière de checkpoint.
+ */
+export async function summaryTurnCheckpoint(turnId: string): Promise<TurnFileDelta[]> {
+  return invoke<TurnFileDelta[]>("checkpoint_summary", { turnId });
+}
+
+/**
+ * Contenu d'origine d'un fichier avant le tour (pour afficher un diff en lecture
+ * seule). Chaîne vide si le fichier a été créé pendant le tour.
+ */
+export async function fileBeforeTurnCheckpoint(turnId: string, path: string): Promise<string> {
+  return invoke<string>("checkpoint_file_before", { turnId, path });
+}

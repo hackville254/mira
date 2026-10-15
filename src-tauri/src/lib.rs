@@ -222,6 +222,8 @@ pub fn run() {
             checkpoint::checkpoint_undo,
             checkpoint::checkpoint_discard,
             checkpoint::checkpoint_count,
+            checkpoint::checkpoint_summary,
+            checkpoint::checkpoint_file_before,
             ai_env::dev_ai_config,
             lsp::lsp_start,
             lsp::lsp_request,

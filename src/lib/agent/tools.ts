@@ -387,6 +387,25 @@ export function createReadOnlyTools(opts: { folderPath: string }) {
   };
 }
 
+/** Noms d'outils read-only qu'un sous-agent peut se voir accorder. */
+export type ReadOnlyToolName = "read_file" | "list_directory" | "grep" | "glob" | "todo_read";
+
+/**
+ * Sous-ensemble read-only restreint à une ALLOWLIST explicite. Sert aux rôles de
+ * sous-agents : le rôle ne reçoit QUE les outils listés — jamais un outil
+ * d'écriture, jamais `spawn_agent` (profondeur 1 garantie par construction).
+ */
+export function createReadOnlyToolset(
+  opts: { folderPath: string; allow: readonly ReadOnlyToolName[] },
+) {
+  const all = createReadOnlyTools({ folderPath: opts.folderPath });
+  const out: Partial<Record<ReadOnlyToolName, (typeof all)[ReadOnlyToolName]>> = {};
+  for (const name of opts.allow) {
+    out[name] = all[name];
+  }
+  return out;
+}
+
 // ── Ask mode tools (edit-only, no disk write — diff view handles write-back) ──
 
 // Resolve a (possibly short) AI-provided path to { fullPath, content }.

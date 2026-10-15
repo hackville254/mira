@@ -1,6 +1,7 @@
 import { Bot, Check, AlertTriangle } from "lucide-react";
 import { useSubAgents, type SubAgentSnapshot } from "../../lib/agent/swarmStore";
 import type { SubAgentStatus } from "../../lib/agent/run";
+import { renderRoleIcon } from "./roleIcon";
 
 // ── Onglet « Agents » (mode IA) ────────────────────────────────────────────────
 //
@@ -93,6 +94,7 @@ function Row({ agent }: { agent: SubAgentSnapshot }) {
         ) : (
           <AlertTriangle size={11} style={{ color, flexShrink: 0 }} />
         )}
+        {renderRoleIcon(agent.role, { size: 12, style: { color: "var(--origin-fg-muted)", flexShrink: 0 } })}
         <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--origin-fg-default)" }}>{agent.role}</span>
         <span style={{ marginLeft: "auto", fontSize: "10px", color }}>{statusLabel(agent.status)}</span>
       </div>

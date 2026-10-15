@@ -25,6 +25,7 @@
 //! - Un `turn_id` est validé (alphanumérique + `-`/`_`) avant tout accès disque.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Entrée du manifeste : un fichier tel qu'il était AVANT le tour.
@@ -207,6 +208,109 @@ pub fn checkpoint_count(app: tauri::AppHandle, turn_id: String) -> Result<usize,
     Ok(load_manifest(&root, &turn_id).entries.len())
 }
 
+/// Résumé d'un fichier modifié pendant le tour, pour la bannière
+/// « N files to review » (une ligne par fichier avec son delta).
+#[derive(Serialize, Clone)]
+pub struct FileDelta {
+    /// Chemin (absolu) tel que consigné dans le manifeste.
+    pub path: String,
+    /// Lignes ajoutées (approximation par différence d'ensembles).
+    pub added: usize,
+    /// Lignes supprimées (approximation par différence d'ensembles).
+    pub removed: usize,
+    /// `true` si le fichier a été créé pendant le tour.
+    pub created: bool,
+}
+
+/// Compte les lignes d'un contenu (une ligne vide finale n'est pas comptée).
+fn line_counts(text: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for line in text.lines() {
+        *counts.entry(line.to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Delta de lignes entre l'état d'origine (backup) et l'état courant.
+/// Approche par multi-ensembles : robuste et linéaire, suffisante pour un
+/// indicateur visuel `+N/-N`. (Un LCS exact serait plus précis sur les
+/// déplacements, mais coûteux et sans intérêt ici.)
+fn diff_counts(before: &str, after: &str) -> (usize, usize) {
+    let b = line_counts(before);
+    let a = line_counts(after);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut keys: std::collections::HashSet<&String> = std::collections::HashSet::new();
+    keys.extend(a.keys());
+    keys.extend(b.keys());
+    for k in keys {
+        let ca = a.get(k).copied().unwrap_or(0);
+        let cb = b.get(k).copied().unwrap_or(0);
+        if ca > cb {
+            added += ca - cb;
+        } else {
+            removed += cb - ca;
+        }
+    }
+    (added, removed)
+}
+
+/// Résumé des fichiers modifiés d'un tour : chemins + deltas `+N/-N`.
+/// Sert à peupler la liste cliquable de la bannière de checkpoint.
+#[tauri::command]
+pub fn checkpoint_summary(app: tauri::AppHandle, turn_id: String) -> Result<Vec<FileDelta>, String> {
+    assert_safe_turn_id(&turn_id)?;
+    let root = checkpoints_root(&app)?;
+    let manifest = load_manifest(&root, &turn_id);
+    let mut out = Vec::with_capacity(manifest.entries.len());
+
+    for entry in &manifest.entries {
+        let after = std::fs::read_to_string(&entry.path).unwrap_or_default();
+        let (added, removed) = if entry.existed {
+            let before = entry
+                .backup
+                .as_ref()
+                .and_then(|name| std::fs::read_to_string(root.join(&turn_id).join(name)).ok())
+                .unwrap_or_default();
+            diff_counts(&before, &after)
+        } else {
+            // Fichier créé : toutes ses lignes sont des ajouts.
+            (after.lines().count(), 0)
+        };
+        out.push(FileDelta {
+            path: entry.path.clone(),
+            added,
+            removed,
+            created: !entry.existed,
+        });
+    }
+    Ok(out)
+}
+
+/// Contenu d'origine (avant le tour) d'un fichier snapshoté, pour afficher un
+/// diff en lecture seule. Renvoie une chaîne vide si le fichier a été créé
+/// pendant le tour (il n'avait pas d'état antérieur).
+#[tauri::command]
+pub fn checkpoint_file_before(
+    app: tauri::AppHandle,
+    turn_id: String,
+    path: String,
+) -> Result<String, String> {
+    assert_safe_turn_id(&turn_id)?;
+    let root = checkpoints_root(&app)?;
+    let manifest = load_manifest(&root, &turn_id);
+    let entry = manifest
+        .entries
+        .iter()
+        .find(|e| e.path == path)
+        .ok_or("file not part of this checkpoint")?;
+    if !entry.existed {
+        return Ok(String::new());
+    }
+    let name = entry.backup.as_ref().ok_or("missing backup name")?;
+    std::fs::read_to_string(root.join(&turn_id).join(name)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +332,17 @@ mod tests {
         assert!(assert_safe_turn_id("a/b").is_err());
         assert!(assert_safe_turn_id("").is_err());
         assert!(assert_safe_turn_id(&"x".repeat(200)).is_err());
+    }
+
+    #[test]
+    fn diff_counts_reports_added_and_removed_lines() {
+        // Une ligne remplacée → 1 ajout, 1 suppression.
+        assert_eq!(diff_counts("a\nb\nc\n", "a\nB\nc\n"), (1, 1));
+        // Deux lignes ajoutées, aucune suppression.
+        assert_eq!(diff_counts("a\n", "a\nb\nc\n"), (2, 0));
+        // Contenu identique → aucun delta.
+        assert_eq!(diff_counts("x\ny\n", "x\ny\n"), (0, 0));
+        // Ajout depuis un fichier vide.
+        assert_eq!(diff_counts("", "a\nb\n"), (2, 0));
     }
 }

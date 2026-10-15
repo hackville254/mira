@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Check, Bot, AlertTriangle } from "lucide-react";
+import { ChevronDown, ChevronRight, Check, AlertTriangle } from "lucide-react";
 import type { SubAgentChild } from "../../lib/aiTypes";
 import { toolVerb } from "../../lib/toolGroups";
+import { renderRoleIcon } from "./roleIcon";
 
 // ── Carte de sous-agent (style Trae) ───────────────────────────────────────────
 //
@@ -55,7 +56,7 @@ export default function SubAgentCard({ child }: { child: SubAgentChild }) {
           <Check size={11} style={{ color: "var(--origin-semantic-success)", flexShrink: 0 }} />
         )}
 
-        <Bot size={12} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
+        {renderRoleIcon(child.role, { size: 12, style: { flexShrink: 0, color: "var(--origin-fg-muted)" } })}
         <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--origin-fg-default)", flexShrink: 0 }}>
           {child.role}
         </span>

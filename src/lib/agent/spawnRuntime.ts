@@ -2,22 +2,25 @@ import type { LanguageModel, ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { AgentEvent } from "./run";
-import { runSubAgent, DEFAULT_SUBAGENT_ROLE } from "./subagent";
+import { runSubAgent } from "./subagent";
+import { roleIds, resolveRole, rolesCatalogPrompt } from "./subagentRoles";
+import { buildContextBlock, getProjectContext } from "./projectContext";
 
 // ── Hôte du tool `spawn_agent` (orchestration, mode IA uniquement) ─────────────
 //
 // Contrat calqué sur Cline : l'outil n'est JAMAIS exposé au modèle tel quel. On
 // remplace son `execute` côté hôte par un intercepteur qui :
-//   1. abandonne le tool-call du root (résultat vide) ;
-//   2. lance un sous-agent read-only EN MARGE du stream du root ;
-//   3. renvoie au root le SEUL rapport borné (jamais le transcript complet).
+//   1. résout le RÔLE demandé (l'entrée du modèle n'est jamais fiable) ;
+//   2. assemble le contexte projet borné + les notes du root ;
+//   3. lance un sous-agent read-only EN MARGE du stream du root ;
+//   4. renvoie au root le SEUL rapport borné (jamais le transcript complet).
 //
-// Le schéma reproduit `{ systemPrompt, task }` de Cline. `systemPrompt` est
-// IGNORÉ (un modèle ne doit pas pouvoir réécrire les règles de son sous-agent) —
-// il est accepté uniquement pour la compatibilité du contrat.
+// Le schéma suit Claude Code / Cline : `{ role, task, context_notes }`. Le prompt
+// système du sous-agent N'EST PAS fourni par le modèle — il vient du catalogue de
+// rôles (`subagentRoles.ts`), ce qui empêche toute réécriture des règles.
 //
-// Anti-récursion : les outils du sous-agent sont dérivés côté hôte
-// (`createReadOnlyTools`) et ne contiennent jamais `spawn_agent`. Profondeur = 1.
+// Anti-récursion : les outils du sous-agent sont dérivés côté hôte à partir de
+// l'allowlist du rôle et ne contiennent jamais `spawn_agent`. Profondeur = 1.
 
 export interface SpawnCallbacks {
   /** Émission vers l'UI — les events du sous-agent portent déjà leur `spawnId`. */
@@ -36,6 +39,10 @@ export function wrapSpawnAgent(
     model: LanguageModel;
     folderPath: string;
     cacheSystem?: boolean;
+    /** Résumé borné du fil fourni au sous-agent (contexte « ce sur quoi on travaille »). */
+    threadSummary?: string;
+    /** Todos en cours du tour, transmis au sous-agent comme contexte. */
+    todos?: string[];
     callbacks: SpawnCallbacks;
   },
 ): ToolSet {
@@ -46,7 +53,7 @@ export function wrapSpawnAgent(
   if (typeof def.execute !== "function") return tools;
 
   const hostExecute = async (rawInput: unknown, execOpts: unknown): Promise<unknown> => {
-    const input = (rawInput ?? {}) as { task?: string };
+    const input = (rawInput ?? {}) as { role?: string; task?: string; context_notes?: string };
     const task = (input.task ?? "").toString().trim();
     const toolCallId = (execOpts as { toolCallId?: string } | undefined)?.toolCallId;
 
@@ -54,17 +61,33 @@ export function wrapSpawnAgent(
       return { error: "spawn_agent requires a non-empty `task` string." };
     }
 
-    const role = DEFAULT_SUBAGENT_ROLE;
+    // Le rôle est résolu côté hôte : une valeur inconnue retombe sur le défaut,
+    // jamais une erreur (le modèle ne peut pas casser l'orchestration).
+    const role = resolveRole(input.role);
+    const contextNotes = (input.context_notes ?? "").toString().trim();
+
+    // Le contexte projet est dérivé une fois par tour (cache) : il n'est PAS
+    // recalculé à chaque sous-agent, et reste borné (coût en tokens prévisible).
+    let contextBlock: string;
+    try {
+      const ctx = await getProjectContext(opts.folderPath || ".");
+      contextBlock = buildContextBlock(ctx, { threadSummary: opts.threadSummary, todos: opts.todos });
+    } catch {
+      contextBlock = "";
+    }
+
     // On prévient l'UI AVANT le lancement pour que la carte apparaisse immédiatement.
     opts.callbacks.onEvent({
-      type: "subagent-start", spawnId: "", role, task, toolCallId,
+      type: "subagent-start", spawnId: "", role: role.label, task, toolCallId,
     });
 
     const result = await runSubAgent({
       model:        opts.model,
       folderPath:   opts.folderPath,
-      role,
+      role:         role.id,
       task,
+      contextNotes: contextNotes || undefined,
+      contextBlock: contextBlock || undefined,
       cacheSystem:  opts.cacheSystem,
       onEvent:      opts.callbacks.onEvent,
     });
@@ -93,14 +116,19 @@ export function wrapSpawnAgent(
  */
 export const spawnAgentTool = tool({
   description:
-    "Delegate a read-only exploration to a sub-agent and get back a single condensed report. " +
-    "Use it for broad codebase investigations (finding where X is defined, how Y flows, which files " +
-    "implement Z) so your own context stays focused on the actual task. " +
-    "The sub-agent is read-only: it cannot edit files or run commands. " +
-    "Provide the full investigation task in `task`; put any framing instructions in `systemPrompt`.",
+    "Delegate a read-only investigation to a specialized sub-agent and get back a single condensed " +
+    "report. Use it when an investigation would otherwise flood your own context — broad searches, " +
+    "understanding a flow, reviewing a change, mapping test coverage, or docs impact. Pick the `role` " +
+    "that matches the investigation. The sub-agent is read-only (it cannot edit files or run commands) " +
+    "and returns only a bounded report.\n\n" +
+    rolesCatalogPrompt(),
   inputSchema: z.object({
-    systemPrompt: z.string().describe("Optional framing/system instruction for the sub-agent."),
-    task:         z.string().describe("The concrete exploration task the sub-agent must accomplish."),
+    role: z.enum(roleIds())
+      .describe("Which specialized sub-agent to use."),
+    task: z.string()
+      .describe("The concrete investigation task the sub-agent must accomplish. Be specific."),
+    context_notes: z.string().optional()
+      .describe("Optional extra context the sub-agent should know (constraints, what you already found)."),
   }),
   execute: async () => ({ error: "spawn_agent must be wrapped by wrapSpawnAgent before use." }),
 });

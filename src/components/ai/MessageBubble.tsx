@@ -7,11 +7,12 @@ import SubAgentCard from "./SubAgentCard";
 import PlanCard from "./PlanCard";
 import StatusNotice from "./StatusNotice";
 import ReasoningBlock from "./ReasoningBlock";
-import MessageActionsBar, { type FeedbackVote } from "./MessageActionsBar";
+import MessageActionsBar, { UserMessageActions, type FeedbackVote } from "./MessageActionsBar";
 import { buildToolRenderers } from "../../lib/toolGroups";
 import type { DisplayMessage } from "../../lib/aiTypes";
 import type { EditorContext } from "../editor/Editor";
 import { resolveTargetPath } from "../../lib/resolveTargetPath";
+import logoCode from "../../assets/logo-code.svg";
 
 function contextLabel(ctx: EditorContext): string {
   if (ctx.startLine === ctx.endLine) return `L${ctx.startLine}`;
@@ -29,6 +30,8 @@ export default function MessageBubble({
   onPlanReject,
   onRegenerate,
   onEditUserMessage,
+  onDeleteUserMessage,
+  onRevertUserMessage,
   onInsert,
   onOpenFile,
   canRegenerate = false,
@@ -50,6 +53,10 @@ export default function MessageBubble({
   onRegenerate?: () => void;
   /** Place le texte de ce message utilisateur dans l'éditeur (envoi manuel). */
   onEditUserMessage?: () => void;
+  /** Supprime ce message utilisateur (et tout ce qui suit). */
+  onDeleteUserMessage?: () => void;
+  /** Revert : annule tout ce qui a été généré pendant ce run. */
+  onRevertUserMessage?: () => void;
   /** Insère le texte du message dans l'éditeur actif. */
   onInsert?: () => void;
   /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin). */
@@ -98,10 +105,10 @@ export default function MessageBubble({
     onApplyCode(code, resolved ?? undefined, message.editorContext ?? undefined);
   };
 
-  // La barre d'actions apparaît au survol, message terminé. Elle reste visible
-  // tant que le survol est actif (comme Cursor), pour éviter qu'elle disparaisse
-  // pendant qu'on vise un bouton.
-  const showActions = hovered && !message.streaming && !isEmpty;
+  // La barre d'actions de l'Agent est visible EN PERMANENCE (comme Cursor/Trae) :
+  // l'utilisateur n'a pas à survoler pour la découvrir. Seul le message
+  // utilisateur garde ses actions au survol (voir plus bas).
+  const showActions = !message.streaming && !isEmpty && !isUser;
   const canRegen = !isUser && !!onRegenerate && canRegenerate;
 
   return (
@@ -110,17 +117,48 @@ export default function MessageBubble({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: "flex", alignItems: "center", marginBottom: "5px", gap: "4px", minHeight: "18px" }}>
-        <span style={{ fontSize: "10px", fontWeight: 600, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.07em" }}>
-          {isUser ? "You" : "Assistant"}
-        </span>
-      </div>
+      {/* Le message utilisateur est en HAUT, aligné à droite, dans une bulle
+          grise sans étiquette. La réponse de l'agent est en BAS, sans bulle,
+          précédée du libellé « Agent ». */}
+      {!isUser && (
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "5px", gap: "4px", minHeight: "18px" }}>
+          <img src={logoCode} alt="" style={{ width: 14, height: 14, flexShrink: 0 }} />
+          <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--origin-fg-default)" }}>Agent</span>
+        </div>
+      )}
 
       {isEmpty && message.streaming ? (
         <span style={{ display: "inline-block", width: "2px", height: "13px", backgroundColor: "var(--origin-fg-muted)", verticalAlign: "text-bottom", animation: "blink 1s step-end infinite" }} />
       ) : isUser ? (
-        <div style={{ fontSize: "13px", color: "var(--origin-fg-default)", lineHeight: "1.65", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {message.content}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          {/* La réserve de hauteur (`paddingTop`) fait partie de la zone de
+              survol : les actions restent atteignables et cliquables, sans
+              jamais recouvrir le texte de la bulle. */}
+          <div
+            style={{ position: "relative", maxWidth: "85%", paddingTop: "26px" }}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            {/* Actions utilisateur : AU-DESSUS de la bulle, alignées à droite, au
+                survol uniquement — jamais superposées au texte. */}
+            {hovered && !message.streaming && (
+              <div style={{ position: "absolute", top: "0", right: "0", zIndex: 2, height: "26px", display: "flex", alignItems: "center" }}>
+                <UserMessageActions
+                  onEdit={onEditUserMessage}
+                  onDelete={onDeleteUserMessage}
+                  onRevert={onRevertUserMessage}
+                />
+              </div>
+            )}
+            <div style={{
+              fontSize: "13px", color: "var(--origin-fg-default)", lineHeight: "1.65",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+              padding: "8px 12px", borderRadius: "12px",
+              backgroundColor: "var(--origin-bg-active)",
+            }}>
+              {message.content}
+            </div>
+          </div>
         </div>
       ) : parts && parts.length > 0 ? (
         <>
@@ -216,7 +254,6 @@ export default function MessageBubble({
           rawText={message.content}
           isUser={isUser}
           onRegenerate={canRegen ? onRegenerate : undefined}
-          onEdit={isUser ? onEditUserMessage : undefined}
           onInsert={onInsert}
           vote={vote}
           onVote={onVote}

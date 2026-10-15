@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, Check, CornerUpRight, RefreshCw, ThumbsUp, ThumbsDown, Pencil } from "lucide-react";
+import { Copy, Check, CornerUpRight, RefreshCw, ThumbsUp, ThumbsDown, Pencil, Trash2, Undo2 } from "lucide-react";
 import ContextUsageBar from "./ContextUsageBar";
 
 // ── Barre d'actions d'un message ─────────────────────────────────────────────
@@ -155,6 +155,49 @@ export default function MessageActionsBar({
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
           <ContextUsageBar used={contextUsed} budget={contextBudget} />
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Actions du message utilisateur ───────────────────────────────────────────
+//
+// Un message de l'utilisateur n'expose que trois actions, affichées EN HAUT À
+// DROITE du texte (au survol) : éditer, supprimer, revert (annuler tout ce qui a
+// été généré pendant ce run). Volontairement séparé de `MessageActionsBar` pour
+// ne pas mêler les deux jeux d'actions (aucun vote ni anneau côté utilisateur).
+
+export interface UserMessageActionsProps {
+  /** Replace le texte dans l'éditeur pour renvoi. */
+  onEdit?: () => void;
+  /** Supprime ce message (et tout ce qui suit). */
+  onDelete?: () => void;
+  /** Annule tout ce qui a été généré pendant ce run (revert des fichiers + historique). */
+  onRevert?: () => void;
+}
+
+export function UserMessageActions({ onEdit, onDelete, onRevert }: UserMessageActionsProps) {
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: "1px" }}>
+      {onEdit && (
+        <button onClick={onEdit} title="Éditer et renvoyer" style={actionBtnStyle()} {...actionHover}>
+          <Pencil {...ICON} />
+        </button>
+      )}
+      {onDelete && (
+        <button onClick={onDelete} title="Supprimer ce message" style={actionBtnStyle()} {...actionHover}>
+          <Trash2 {...ICON} />
+        </button>
+      )}
+      {onRevert && (
+        <button
+          onClick={onRevert}
+          title="Revenir en arrière : annuler tout ce qui a été généré pendant ce run"
+          style={actionBtnStyle()}
+          {...actionHover}
+        >
+          <Undo2 {...ICON} />
+        </button>
       )}
     </div>
   );

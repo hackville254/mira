@@ -5,6 +5,99 @@
 
 ---
 
+### [2026-10-15T19:05] | Orchestration Lot 1 — sous-agents spécialisés pilotés par les données
+
+- **Contexte :**
+  Les sous-agents livrés précédemment étaient **figés** : un seul rôle codé en dur (« Search Agent »), un schéma `{ systemPrompt, task }` qui permettait au modèle de **réécrire ses propres règles**, aucun contexte projet, et aucune consigne de délégation dans le prompt du root. Objectif validé : un système qui **s'orchestre proprement selon le projet et la tâche**, sans rien hardcoder. Découpage accepté : **Lot 1 = sous-agents spécialisés**, Lot 2 = équipes (reporté).
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/subagentRoles.ts`** (nouveau) : **catalogue déclaratif** des rôles. `ROLES` = entrées `{ id, label, icon, description, systemPrompt, tools (allowlist), budget }` ; 5 rôles (`explore`, `analyze`, `review`, `test`, `docs`). Exports `listRoles()`, `roleIds()`, `resolveRole()`, `rolesCatalogPrompt()`. Ajouter un rôle = ajouter une entrée, **aucun autre fichier à toucher**.
+  - **`src/lib/agent/projectContext.ts`** (nouveau) : contexte projet **dérivé** (stack + arbo profondeur 2 + fichiers clés), **strictement borné** à `MAX_CONTEXT_CHARS = 2_400`, mis en cache et invalidé par tour (`resetProjectContext`). Jamais bloquant.
+  - **`src/lib/agent/tools.ts`** : `createReadOnlyToolset({ folderPath, allow })` — l'allowlist d'un rôle est **appliquée** (le rôle ne peut pas dépasser ses outils).
+  - **`src/lib/agent/subagent.ts`** (réécrit) : `runSubAgent` **paramétré par rôle** ; budget lu dans le rôle ; **relance bornée** (`MAX_REPORT_ATTEMPTS = 2`) si le rapport est inexploitable ; tokens de retry non retransmis au fil.
+  - **`src/lib/agent/spawnRuntime.ts`** (réécrit) : schéma **`{ role, task, context_notes }`**. Le modèle **ne fournit plus de `systemPrompt`** (anti-réécriture des règles). L'hôte résout le rôle, assemble le bloc de contexte et n'expose au root que le **rapport borné**.
+  - **`src/lib/ai.ts`** : `DELEGATION_GUIDANCE` + catalogue de rôles injectés dans les prompts système du root (`DEFAULT_SYSTEM_PROMPT`, `_LITE`).
+  - **`src/components/ai/roleIcon.tsx`** (nouveau) : `renderRoleIcon(label, props)` résout l'icône lucide du rôle (table locale, pas d'`import *`). Consommé par `SubAgentCard` et `AgentPanel` pour afficher le **rôle réel** (label + icône).
+  - **`src/lib/agent/__tests__/subagentRoles.test.ts`** (nouveau) : 11 tests (forme du catalogue, allowlist read-only, résolution d'entrée hostile, borne de contexte).
+
+- **Décisions Techniques :**
+  Spécialisation portée par des **données** (catalogue) et non par le modèle : le root choisit un `role`, l'hôte décide prompt/outils/budget. Le contexte est injecté **côté hôte** (jamais fourni par le modèle) pour éviter l'injection de faux contexte. Les rôles restent **read-only** par construction (allowlist ⊂ outils read-only). UI en **rendu** (`renderRoleIcon`) et non en composant résolu pendant le render — sinon `react-hooks/static-components`.
+
+- **Impacts & Dépendances :**
+  `subagent.ts`, `spawnRuntime.ts`, `ai.ts`, `tools.ts`, `AiPanel.tsx`, `SubAgentCard.tsx`, `AgentPanel.tsx`. Suppression des constantes figées (`SUBAGENT_MAX_STEPS`, `DEFAULT_SUBAGENT_ROLE`, `SUBAGENT_SYSTEM_PROMPT`). Le mode IDE reste **inchangé** (aucun `spawn_agent` exposé).
+
+- **Corrections trouvées par les tests (sécurité) :**
+  - **Prototype pollution / contournement de rôle** : `resolveRole` utilisait `rawId in ROLES`, qui matche `"__proto__"` et `"constructor"` via la chaîne de prototypes → renvoyait un objet **non-rôle** (budget/outils/prompt absents). Corrigé avec `Object.hasOwn`. Un modèle hostile ne peut plus sortir du catalogue.
+  - **Dépassement de borne** : `buildContextBlock` dépassait `MAX_CONTEXT_CHARS` de 1 caractère (ellipsis non compté). Corrigé pour une borne **dure**.
+
+- **Prochaines étapes :**
+  Lot 2 (équipes d'agents : liste de tâches partagée + messagerie inter-agents) — **à valider explicitement avant démarrage**, coût tokens supérieur. Vérifier visuellement le rendu des cartes par rôle dans les deux thèmes.
+
+---
+
+### [2026-10-15T19:20] | Chat agent — barre d'actions Agent permanente + fix chevauchement
+
+- **Contexte :**
+  Retour visuel : (1) la barre d'actions de l'Agent ne devait **pas** être conditionnée au survol — elle doit rester **visible en permanence** pour être découvrable ; (2) les actions du message utilisateur **chevauchaient le texte** de la bulle.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/MessageBubble.tsx`** :
+    - `showActions` passe de `hovered && !streaming && !isEmpty && !isUser` à `!streaming && !isEmpty && !isUser` : la barre Agent est affichée en permanence dès que le message est terminé, quel que soit le survol.
+    - Les actions utilisateur sont repositionnées **au-dessus** de la bulle (`bottom: calc(100% + 4px)`) au lieu de `top: -8px` à l'intérieur — plus de recouvrement du texte.
+
+- **Décisions Techniques :**
+  Asymétrie assumée entre les deux rôles : les actions **Agent** (fond du message, riches : copier/insérer/régénérer/vote + anneau) sont permanentes pour rester découvrables, tandis que les actions **utilisateur** (destructives : éditer/supprimer/revert) restent **au survol** pour ne pas alourdir visuellement la colonne droite. Le `hovered` sur le message utilisateur est conservé, mais n'affecte plus l'Agent.
+
+- **Impacts & Dépendances :**
+  `MessageBubble.tsx` uniquement. Le `setHovered` reste utilisé par le bloc utilisateur.
+
+- **Prochaines étapes :**
+  Vérifier la densité visuelle lorsque beaucoup de messages Agent sont affichés (barres permanentes visibles simultanément) ; envisager un décalage de la barre dans le flux (reserve de hauteur) si l'espacement paraît irrégulier.
+
+---
+
+### [2026-10-15T19:05] | Chat agent — actions par message au survol (user vs assistant)
+
+- **Contexte :**
+  Les actions de message étaient **fixes** (toujours visibles) et identiques pour les deux rôles. Décision produit : les actions doivent apparaître **au survol** et **différer selon le rôle** — un message utilisateur n'a que **trois** actions (éditer, supprimer, revert), placées **en haut à droite, à côté du texte** ; un message assistant conserve la barre complète (copier, insérer, régénérer, 👍, 👎) et l'anneau de contexte, sous le message.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/MessageActionsBar.tsx`** : nouvel export `UserMessageActions` (3 icônes : `Pencil`, `Trash2`, `Undo2`) réutilisant `actionBtnStyle`/`actionHover`/`ICON`. Séparation volontaire des deux jeux d'actions pour ne jamais mêler vote/anneau (assistant) aux actions utilisateur. Import lucide étendu (`Trash2`, `Undo2`).
+  - **`src/components/ai/MessageBubble.tsx`** : `showActions` restreint à l'assistant (`&& !isUser`) ; la prop `onEdit` est retirée de la barre assistant. Le rendu utilisateur enveloppe la bulle dans un conteneur `position: relative` qui pilote son propre survol et affiche `UserMessageActions` **en haut à droite** (`position: absolute; top: -8px; right: 0`) uniquement quand `hovered && !streaming`. Nouvelles props `onDeleteUserMessage` / `onRevertUserMessage`.
+  - **`src/components/ai/AiPanel.tsx`** : `handleDeleteUserMessage` (tronque l'historique depuis le message — `truncateFrom`) et `handleRevertUserMessage` (restaure d'abord les fichiers du checkpoint via `undoTurnCheckpoint`, puis tronque l'historique ; en cas d'échec de restauration on **ne tronque pas** et on remonte l'erreur). Câblage des deux props sur `MessageBubble`.
+
+- **Décisions Techniques :**
+  Le revert restaure les fichiers **avant** de tronquer l'historique : l'opération destructive (écriture disque) est faite en premier pour que, si elle échoue, l'utilisateur conserve le contexte visuel du checkpoint et peut réessayer — on évite un état où l'historique disparaît mais les fichiers restent modifiés. Le survol utilisateur est piloté par un conteneur dédié (et non par la racine du message) afin que l'action « au survol du texte » soit anatomiquement juste.
+
+- **Impacts & Dépendances :**
+  `MessageActionsBar.tsx`, `MessageBubble.tsx`, `AiPanel.tsx`. Aucun impact sur la persistance. `undoTurnCheckpoint`/`discardTurnCheckpoint` étaient déjà importés dans `AiPanel.tsx`.
+
+- **Prochaines étapes :**
+  Vérifier visuellement le placement des trois icônes sur les bulles courtes (risque de chevauchement du message précédent avec `top: -8px`) ; envisager une confirmation pour « supprimer ».
+
+---
+
+### [2026-10-15T18:55] | Chat agent — bulles alignées Trae + restoration du sous-agent
+
+- **Contexte :**
+  Aligner la zone de conversation sur le rendu Trae/Cursor : message **utilisateur en haut, aligné à droite, dans une bulle grise sans étiquette** ; réponse **Agent en bas, sans bulle**, introduite par un libellé « Agent » avec logo. Par ailleurs, `vite build` échouait (`DEFAULT_SUBAGENT_ROLE is not exported`) et `tsc` signalait `latestUserText` introuvable — deux artefacts d'un refactor précédent.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/MessageBubble.tsx`** : l'étiquette `You/Assistant` est supprimée au profit de deux rendus distincts — (1) user = conteneur `justifyContent: flex-end` + bulle `maxWidth: 85%`, `borderRadius: 12px`, fond `--origin-bg-active`, sans étiquette ; (2) assistant = en-tête `logoCode` (14 px) + libellé `Agent` (12 px, 600), puis le contenu rendu **sans cadre**. Import `logoCode` ajouté.
+  - **`src/components/ai/AiPanel.tsx`** : `latestUserText(messages)` (helper inexistant) remplacé par une dérivation locale du dernier message utilisateur, bornée à 1 500 caractères pour le résumé de fil transmis aux sous-agents.
+  - **`src/lib/agent/spawnRuntime.ts`** : correction `no-useless-assignment` (`let contextBlock = ""` → `let contextBlock: string`) — l'initialisation était écrasée dans tous les chemins.
+
+- **Décisions Techniques :**
+  Le libellé d'agent est rendu **dans la bulle** (et non dans le conteneur de liste) afin qu'il suive le message dans le scroll et lors des citations — cohérent avec le reste des métadonnées de message. La bulle utilisateur est plafonnée à 85 % de largeur pour conserver une gouttière à gauche, comme Trae, sans jamais coller au bord du panneau.
+
+- **Impacts & Dépendances :**
+  `MessageBubble.tsx` (rendu) et `AiPanel.tsx` (résumé de fil). Aucun impact sur `toolGroups.ts` ni sur les cartes d'outils. Les messages persistés restent inchangés : seul le rendu évolue.
+
+- **Prochaines étapes :**
+  Vérifier visuellement le rendu des messages longs et des citations dans la bulle utilisateur ; surveiller l'alignement sur écrans étroits (< 360 px).
+
+---
+
 ### [2026-10-15T18:40] | Orchestration — sous-agents read-only (mode IA uniquement)
 
 - **Contexte :**

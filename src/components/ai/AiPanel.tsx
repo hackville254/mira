@@ -8,7 +8,8 @@ import MessageBubble from "./MessageBubble";
 import TurnCheckpointCard from "./TurnCheckpointCard";
 import PinnedTodoList from "./PinnedTodoList";
 import {
-  beginTurnCheckpoint, touchTurnFile, undoTurnCheckpoint, discardTurnCheckpoint, countTurnCheckpoint,
+  beginTurnCheckpoint, touchTurnFile, undoTurnCheckpoint, discardTurnCheckpoint,
+  summaryTurnCheckpoint, fileBeforeTurnCheckpoint, type TurnFileDelta,
 } from "../../lib/turnCheckpoint";
 import MarkdownMessage from "./MarkdownMessage";
 import { PROVIDERS } from "./providers";
@@ -28,7 +29,9 @@ import { buildLanguageModel } from "../../lib/agent/providers";
 import { createTools, createReadOnlyTools, createAskTools } from "../../lib/agent/tools";
 import { runAgent, type AgentEvent } from "../../lib/agent/run";
 import { spawnAgentTool, wrapSpawnAgent } from "../../lib/agent/spawnRuntime";
+import { resetProjectContext } from "../../lib/agent/projectContext";
 import { startSubAgent, stepSubAgent, endSubAgent, clearSubAgents } from "../../lib/agent/swarmStore";
+import { getTodos } from "../../lib/agent/todoStore";
 import { decideApproval, loadPermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 import { shouldPreCompact, estimateTokensWithOverhead, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
 import { compactHistory } from "../../lib/agent/compactHistory";
@@ -460,9 +463,8 @@ export default function AiPanel({
 
   // Checkpoint du tour courant : id + fichiers capturés (pour la bannière Undo/Keep).
   const activeTurnIdRef            = useRef<string | null>(null);
-  const turnTouchedRef             = useRef<Set<string>>(new Set());
   const streamDirtyRef             = useRef<boolean>(false);
-  const [checkpointBanner, setCheckpointBanner] = useState<{ turnId: string; files: string[] } | null>(null);
+  const [checkpointBanner, setCheckpointBanner] = useState<{ turnId: string; files: TurnFileDelta[] } | null>(null);
 
   // Miroir réactif de `activeSessionIdRef` : le rendu (todo list épinglée) a
   // besoin de la session courante comme état, pas comme ref.
@@ -503,7 +505,6 @@ export default function AiPanel({
     setCheckpointBanner(null);
     const id = crypto.randomUUID();
     activeTurnIdRef.current = id;
-    turnTouchedRef.current = new Set();
     streamDirtyRef.current = false;
     void beginTurnCheckpoint(id).catch(() => {});
   }, []);
@@ -512,9 +513,7 @@ export default function AiPanel({
   const touchTurn = useCallback((path: string, ws: string) => {
     const id = activeTurnIdRef.current;
     if (!id) return;
-    void touchTurnFile(id, path, ws).then(() => {
-      turnTouchedRef.current.add(path);
-    }).catch(() => {});
+    void touchTurnFile(id, path, ws).catch(() => {});
   }, []);
 
   useEffect(() => { ensurePricing().catch(() => {}); }, []);
@@ -798,6 +797,9 @@ export default function AiPanel({
     // L'onglet Agents ne montre que les sous-agents du tour courant (les cartes
     // du chat, elles, restent persistées dans les parts des messages).
     clearSubAgents();
+    // Le contexte projet dérivé (stack/arbo/fichiers clés) est recalculé au début
+    // de chaque tour : jamais figé d'un tour à l'autre.
+    resetProjectContext();
 
     // ── Event handler ────────────────────────────────────────────────────────
     const handleEvent = (event: AgentEvent) => {
@@ -1086,15 +1088,13 @@ export default function AiPanel({
           if (streamDirtyRef.current) {
             const turnId = activeTurnIdRef.current;
             if (turnId) {
-              const captured = Array.from(new Set(turnTouchedRef.current));
-              const fctx = folderPathRef.current ?? "";
-              setCheckpointBanner({ turnId, files: captured });
-              void countTurnCheckpoint(turnId).then(n => {
-                if (n > 0) setCheckpointBanner({ turnId, files: captured.length ? captured : [`${n} file${n === 1 ? "" : "s"}`] });
+              // Résumé (chemins + deltas `+N/-N`) calculé côté Rust à partir des
+              // snapshots : le front n'a pas à lire les fichiers.
+              void summaryTurnCheckpoint(turnId).then(files => {
+                if (files.length > 0) setCheckpointBanner({ turnId, files });
               }).catch(() => {});
               // Prévenu par la bannière, l'agent n'a plus besoin du checkpoint :
               // on le conserve jusqu'à l'action utilisateur (Undo/Keep).
-              void fctx;
             }
             streamDirtyRef.current = false;
           }
@@ -1310,12 +1310,21 @@ export default function AiPanel({
       // Son `execute` est intercepté côté hôte : le root ne reçoit que le rapport
       // borné du sous-agent, le transcript complet reste hors de son contexte.
       const spawnCancels: Array<() => void> = [];
+      // Contexte transmis aux sous-agents : un résumé borné du dernier échange de
+      // l'utilisateur (« ce sur quoi on travaille ») + les todos en cours du tour.
+      const lastUser = [...messages].reverse().find(m => m.role === "user");
+      const threadSummary = (typeof lastUser?.content === "string" ? lastUser.content : "").slice(0, 1_500);
+      const todos = getTodos(activeSessionIdRef.current ?? "").map(
+        (t) => `[${t.status}] ${t.content}`,
+      );
       const fullTools = wrapSpawnAgent(
         { ...makeFullTools(), spawn_agent: spawnAgentTool },
         {
           model,
           folderPath: fp || ".",
           cacheSystem: providerId === "anthropic",
+          threadSummary,
+          todos,
           callbacks: {
             onEvent: handleEvent,
             onSpawn: (cancel) => { spawnCancels.push(cancel); },
@@ -1406,6 +1415,36 @@ export default function AiPanel({
     void truncateFrom(userIndex);
   }, [isStreaming, truncateFrom]);
 
+  // « Supprimer » (message utilisateur) : on retire le message et tout ce qui
+  // suit — l'utilisateur repart d'un historique propre, sans rejouer la demande.
+  const handleDeleteUserMessage = useCallback((userIndex: number) => {
+    if (isStreaming) return;
+    void truncateFrom(userIndex);
+  }, [isStreaming, truncateFrom]);
+
+  // « Revert » (message utilisateur) : on annule TOUT ce qui a été généré pendant
+  // ce run — les fichiers écrits (checkpoint du tour) ET les messages qui suivent
+  // ce message. On restaure d'abord les fichiers (action destructive) avant de
+  // tronquer l'historique, pour ne pas perdre de vue le checkpoint en cas d'échec.
+  const handleRevertUserMessage = useCallback(async (userIndex: number) => {
+    if (isStreaming) return;
+    const fp = folderPathRef.current ?? "";
+    const turnId = activeTurnIdRef.current;
+    if (turnId) {
+      try {
+        const restored = await undoTurnCheckpoint(turnId, fp || null);
+        showToast(`Reverted ${restored.length} file${restored.length === 1 ? "" : "s"}`, "success");
+      } catch (e) {
+        showToast(`Revert failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        return;
+      }
+      discardTurnCheckpoint(turnId).catch(() => {});
+      activeTurnIdRef.current = null;
+      setCheckpointBanner(null);
+    }
+    void truncateFrom(userIndex);
+  }, [isStreaming, showToast, truncateFrom]);
+
   // Toute action sur un message (copier, éditer, régénérer) vaut « Keep all » du
   // checkpoint courant : l'utilisateur ne reviendra plus en arrière sur ce tour,
   // et on évite ainsi de laisser une bannière Undo pointer sur un état obsolète.
@@ -1413,7 +1452,6 @@ export default function AiPanel({
     const prevTurn = activeTurnIdRef.current;
     if (prevTurn) {
       activeTurnIdRef.current = null;
-      turnTouchedRef.current = new Set();
       discardTurnCheckpoint(prevTurn).catch(() => {});
     }
     setCheckpointBanner(null);
@@ -1552,6 +1590,33 @@ export default function AiPanel({
       showToast(`Undo failed: ${e instanceof Error ? e.message : String(e)}`, "error");
     }
   }, [checkpointBanner, showToast]);
+
+  // Ouvre le diff relatif au tour : « avant » (backup du checkpoint) vs état
+  // courant. Réutilise l'onglet diff de l'IA en mode lecture seule (approve et
+  // reject sont des no-op — la bannière Undo/Keep reste la seule action).
+  const handleOpenCheckpointDiff = useCallback(async (file: TurnFileDelta) => {
+    const banner = checkpointBanner;
+    if (!banner || !onOpenDiffTab) return;
+    const fp = folderPathRef.current ?? "";
+    const isAbs = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(file.path);
+    const abs = isAbs || !fp
+      ? file.path
+      : `${fp.replace(/[\\/]$/, "")}/${file.path.replace(/^[\\/]+/, "")}`;
+    try {
+      const before = await fileBeforeTurnCheckpoint(banner.turnId, file.path);
+      const current = getFileContents?.()[abs] ?? "";
+      onOpenDiffTab({
+        approvalId: `cp-${banner.turnId}-${file.path}`,
+        filePath: abs,
+        originalContent: before,
+        proposedContent: current,
+        approve: () => {},
+        reject: () => {},
+      });
+    } catch (e) {
+      showToast(`Could not open diff: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }, [checkpointBanner, onOpenDiffTab, getFileContents, showToast]);
 
   const handleStartPin = useCallback((content: string) => {
     setPendingPin({ content, sessionId: activeSessionIdRef.current ?? undefined });
@@ -1755,6 +1820,8 @@ export default function AiPanel({
                       onPlanReject={handlePlanReject}
                       onRegenerate={() => handleRegenerate(i)}
                       onEditUserMessage={() => handleEditUserMessage(i)}
+                      onDeleteUserMessage={() => handleDeleteUserMessage(i)}
+                      onRevertUserMessage={() => handleRevertUserMessage(i)}
                       onInsert={() => handleInsertMessage(msg.content)}
                       onOpenFile={handleOpenFile}
                       canRegenerate={!isStreaming && i === messages.length - 1}
@@ -1809,10 +1876,10 @@ export default function AiPanel({
             {checkpointBanner && (
               <div style={{ padding: "0 14px" }}>
                 <TurnCheckpointCard
-                  fileCount={checkpointBanner.files.length}
                   files={checkpointBanner.files}
                   undo={handleUndoAll}
                   keep={handleKeepAll}
+                  onOpenDiff={onOpenDiffTab ? handleOpenCheckpointDiff : undefined}
                 />
               </div>
             )}
