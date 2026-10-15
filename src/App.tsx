@@ -19,7 +19,7 @@ import { setSetting, pushRecentProject } from "./lib/settings";
 import { useToast } from "./components/ui/Toast";
 import { streamText } from "ai";
 import { buildLanguageModel } from "./lib/agent/providers";
-import { loadApiKey } from "./lib/secrets";
+import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from "./lib/secrets";
 import type { AiCompletionFn } from "./lib/aiAutocomplete";
 import { getBranch } from "./lib/git";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
@@ -223,8 +223,8 @@ function App() {
   const getAiCompletion = useMemo<AiCompletionFn>(() => {
     return async function* (prefix, suffix, signal) {
       if (localStorage.getItem('origin-editor-ai-autocomplete') === 'false') return;
-      const providerId = localStorage.getItem('origin-ai-provider') ?? 'anthropic';
-      const modelId    = localStorage.getItem('origin-ai-model')    ?? 'claude-haiku-4-5-20251001';
+      const providerId = await resolveDefaultProvider('anthropic');
+      const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
       const apiKey = await loadApiKey(providerId);
       const LOCAL_IDS = ['ollama', 'lmstudio', 'vllm'];
       if (!apiKey && !LOCAL_IDS.includes(providerId)) return;
@@ -953,6 +953,7 @@ function App() {
                   getOpenTabPaths={() => tabs.map(t => t.path)}
                   getFileContents={() => fileContentsRef.current}
                   onOpenDiffTab={openAiDiffTab}
+                  onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
                 />
               )}
             </div>

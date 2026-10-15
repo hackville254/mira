@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local AI/dev config (contains secrets — never commit)
+.env
+.env.*
+!.env.example
+
 # pnpm local store/tmp (used to keep installs inside the workspace)
 .pnpm-store
 .pnpm-tmp

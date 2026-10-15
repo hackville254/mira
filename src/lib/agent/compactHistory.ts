@@ -1,4 +1,5 @@
 import type { ModelMessage } from "ai";
+import { estimateTokens, COMPACTION_THRESHOLD, DEFAULT_TOKEN_BUDGET } from "./tokenBudget";
 
 // ── Types mirroring what buildModelHistory emits ───────────────────────────────
 
@@ -15,16 +16,12 @@ type ToolResultPart = {
 
 // ── Token-budget gate ──────────────────────────────────────────────────────────
 //
-// Only compact once the conversation grows large enough to matter. Rough
-// estimate: 1 token ≈ 4 chars of serialized JSON. Gate at 40k tokens — well
-// below Claude's 200k and GPT-4's 128k windows, so short sessions are never
+// Only compact once the conversation grows large enough to matter. The estimate
+// (1 token ≈ 4 chars, cf. `tokenBudget.ts`) now gates on the same 80 % pressure
+// threshold jcode uses, against a 200k default budget: short sessions are never
 // touched and we avoid mangling history we don't need to.
 
-const COMPACT_TOKEN_GATE = 40_000;
-
-function estimateTokens(messages: ModelMessage[]): number {
-  return JSON.stringify(messages).length / 4;
-}
+const COMPACT_TOKEN_GATE = COMPACTION_THRESHOLD * DEFAULT_TOKEN_BUDGET;
 
 // ── compactHistory ─────────────────────────────────────────────────────────────
 //

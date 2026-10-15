@@ -19,6 +19,9 @@ import {
 import type { LspConfig, LspServerConfig } from "../../lib/lspConfig";
 import { probeLspServer, type LspProbeResult } from "../../lib/lspProbe";
 import { formatShortcut } from "../../lib/platform";
+import {
+  loadPermissionMode, savePermissionMode, PERMISSION_MODE_INFO, type PermissionMode,
+} from "../../lib/agent/permissions";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -192,6 +195,63 @@ function ComingSoonSection({ label }: { label: string }) {
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "40px 0", color: "var(--origin-fg-subtle)" }}>
       <span style={{ fontSize: "15px", fontWeight: 500, color: "var(--origin-fg-default)" }}>{label}</span>
       <span style={{ fontSize: "12px" }}>Coming soon</span>
+    </div>
+  );
+}
+
+// ── Permission Approval Section ────────────────────────────────────────────────
+//
+// Sélecteur du mode d'approbation des actions d'agent (pattern Trae/Cline) :
+// Manual (confirmer), Auto (règles déterministes), Full Access (aucune
+// confirmation, sauf la garde anti-catastrophe non désactivable).
+
+function PermissionSection() {
+  const [mode, setMode] = useState<PermissionMode>(() => loadPermissionMode());
+
+  function select(next: PermissionMode) {
+    savePermissionMode(next);
+    setMode(next);
+  }
+
+  const order: PermissionMode[] = ["manual", "auto", "full"];
+  const danger = mode === "full";
+
+  return (
+    <div style={{ paddingBottom: "24px" }}>
+      <SectionHeading>Agent Permissions</SectionHeading>
+      <SettingRow
+        title="Approval mode"
+        description="Choose how Agent actions (file writes, commands) are approved before they run."
+      >
+        <select
+          value={mode}
+          onChange={e => select(e.target.value as PermissionMode)}
+          style={selectStyle}
+        >
+          {order.map(m => (
+            <option key={m} value={m}>{PERMISSION_MODE_INFO[m].label}</option>
+          ))}
+        </select>
+      </SettingRow>
+
+      <div style={{
+        marginTop: "10px", padding: "10px 12px", borderRadius: "6px",
+        border: "1px solid var(--origin-border-default)",
+        background: danger ? "color-mix(in srgb, #d9822b 12%, transparent)" : "var(--origin-bg-active)",
+        fontSize: "12px", color: "var(--origin-fg-muted)", lineHeight: 1.55,
+      }}>
+        <div style={{ color: danger ? "#d9822b" : "var(--origin-fg-default)", fontWeight: 600, marginBottom: "3px" }}>
+          {PERMISSION_MODE_INFO[mode].label}
+        </div>
+        {PERMISSION_MODE_INFO[mode].desc}
+        {danger && (
+          <div style={{ marginTop: "6px" }}>
+            Full Access runs actions without confirmation. A minimal, non-disableable guard
+            still blocks commands that would destroy your machine (fork bomb, <code>rm -rf /</code>,
+            <code> mkfs</code>, raw disk writes).
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1556,12 +1616,13 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         <div style={{ flex: 1, overflowY: "auto", padding: "28px 40px" }}>
           <div style={{ maxWidth: 860, margin: "0 auto" }}>
             {section === "dev-env"     && <DevEnvironmentSection />}
+            {section === "permission"  && <PermissionSection />}
             {section === "models"      && <AIProvidersSection />}
             {section === "appearance"  && <AppearanceSection />}
             {section === "general"     && <GeneralSection />}
             {section === "skills"      && <KeybindingsSection />}
             {section === "languages"   && <LspSection />}
-            {!["dev-env", "models", "appearance", "general", "skills", "languages"].includes(section) && (
+            {!["dev-env", "permission", "models", "appearance", "general", "skills", "languages"].includes(section) && (
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>

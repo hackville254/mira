@@ -1,6 +1,6 @@
 import { generateText } from 'ai';
 import { buildLanguageModel } from './agent/providers';
-import { loadApiKey } from './secrets';
+import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from './secrets';
 import { gitDiff } from './git';
 
 const LOCAL_IDS = ['ollama', 'lmstudio', 'vllm'];
@@ -12,8 +12,8 @@ const LOCAL_IDS = ['ollama', 'lmstudio', 'vllm'];
  * puisse prévenir l'utilisateur plutôt que d'envoyer un diff au réseau.
  */
 export async function generateCommitMessage(repoPath: string): Promise<string | null> {
-  const providerId = localStorage.getItem('origin-ai-provider') ?? 'anthropic';
-  const modelId    = localStorage.getItem('origin-ai-model')    ?? 'claude-haiku-4-5-20251001';
+  const providerId = await resolveDefaultProvider('anthropic');
+  const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
   const apiKey = await loadApiKey(providerId);
   if (!apiKey && !LOCAL_IDS.includes(providerId)) return null;
 

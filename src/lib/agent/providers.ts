@@ -6,6 +6,7 @@ import type { LanguageModel } from "ai";
 import { tauriFetch } from "../tauri-fetch";
 
 const OPENAI_COMPAT_BASE: Record<string, string> = {
+  orvyx:      "https://api.orvyx-ai.com/v1",
   openrouter: "https://openrouter.ai/api/v1",
   deepseek:   "https://api.deepseek.com",
   mistral:    "https://api.mistral.ai/v1",

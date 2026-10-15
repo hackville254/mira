@@ -1,10 +1,15 @@
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
 import { Tooltip } from "../ui/Tooltip";
 import { useToast } from "../ui/Toast";
-import ChatBox from "./ChatBox";
+import ChatBox, { type ChatBoxHandle } from "./ChatBox";
 import MessageBubble from "./MessageBubble";
+import TurnCheckpointCard from "./TurnCheckpointCard";
+import PinnedTodoList from "./PinnedTodoList";
+import {
+  beginTurnCheckpoint, touchTurnFile, undoTurnCheckpoint, discardTurnCheckpoint, countTurnCheckpoint,
+} from "../../lib/turnCheckpoint";
 import MarkdownMessage from "./MarkdownMessage";
 import { PROVIDERS } from "./providers";
 import logoCode from "../../assets/logo-code.svg";
@@ -12,6 +17,7 @@ import {
   DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_LITE,
   DEFAULT_ASK_PROMPT,    DEFAULT_ASK_PROMPT_LITE,
   DEFAULT_PLAN_PROMPT,   DEFAULT_PLAN_PROMPT_LITE,
+  STYLE_GUARDRAIL,
   type UsageData,
 } from "../../lib/ai";
 import { ensurePricing, computeCost } from "../../lib/pricing";
@@ -21,6 +27,11 @@ import { readFile } from "../../lib/fs";
 import { buildLanguageModel } from "../../lib/agent/providers";
 import { createTools, createReadOnlyTools, createAskTools } from "../../lib/agent/tools";
 import { runAgent, type AgentEvent } from "../../lib/agent/run";
+import { spawnAgentTool, wrapSpawnAgent } from "../../lib/agent/spawnRuntime";
+import { startSubAgent, stepSubAgent, endSubAgent, clearSubAgents } from "../../lib/agent/swarmStore";
+import { decideApproval, loadPermissionMode, type PermissionMode } from "../../lib/agent/permissions";
+import { shouldPreCompact, estimateTokensWithOverhead, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
+import { compactHistory } from "../../lib/agent/compactHistory";
 import { parsePlan } from "../../lib/agent/planTypes";
 import type { ModelMessage } from "ai";
 import {
@@ -28,14 +39,15 @@ import {
   touchSession,
   insertMessage,
   updateMessageContent,
+  deleteMessagesByIds,
   deleteSession,
   type DbSession,
 } from "../../lib/db";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import {
-  type DisplayMessage, type MessagePart, type PinnedMessage,
-  appendText, updateTcInParts,
+  type DisplayMessage, type MessagePart, type PinnedMessage, type ToolCallDisplay, type SubAgentChild,
+  appendText, appendReasoning, updateTcInParts,
 } from "../../lib/aiTypes";
 import {
   activeSessionKey, lsForPath, lsPush, lsTouch, lsDelete,
@@ -289,6 +301,11 @@ const CTX_MAX     = 480;
 const CTX_DEFAULT = 200;
 const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "vllm"]);
 
+// Marge de tokens réservée au tour suivant (réponse modèle + tool results) pour
+// l'estimation d'usage projeté en fin de tour. ~16k tokens ≈ un tour d'agent
+// moyen. Sert uniquement à décider d'une pré-compaction réactive (cf. Trae).
+const NEXT_TURN_MARGIN_TOKENS = 16_000;
+
 // ── AiPanel ────────────────────────────────────────────────────────────────────
 
 export interface AiDiffTabInput {
@@ -309,6 +326,8 @@ interface AiPanelProps {
   getOpenTabPaths?: () => string[];
   getFileContents?: () => Record<string, string>;
   onOpenDiffTab?: (data: AiDiffTabInput) => void;
+  /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin dans le chat). */
+  onOpenFile?: (path: string, line?: number, col?: number) => void;
   /** When set (and changed), the panel loads the given session id. Driven by the Agent mode task rail. */
   openSessionId?: string | null;
   /** Incrementing counter that triggers a fresh chat (Agent mode "New Task"). */
@@ -359,7 +378,7 @@ function buildModelHistory(messages: DisplayMessage[]): ModelMessage[] {
 
 export default function AiPanel({
   getEditorContext, getActiveFilePath, forcedContext, onForcedContextConsumed,
-  onApplyCode, getOpenTabPaths, getFileContents, onOpenDiffTab,
+  onApplyCode, getOpenTabPaths, getFileContents, onOpenDiffTab, onOpenFile,
   openSessionId = null,
   newChatNonce = 0,
   onActiveSessionChange,
@@ -388,6 +407,8 @@ export default function AiPanel({
   });
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  // Un tour est en cours dès qu'un message assistant est encore marqué streaming.
+  const isStreaming = messages.length > 0 && !!messages[messages.length - 1].streaming;
   const [sessions, setSessions] = useState<DbSession[]>([]);
   const { showToast } = useToast();
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
@@ -405,6 +426,18 @@ export default function AiPanel({
   const messagesRef        = useRef<DisplayMessage[]>([]);
   const streamCleanupRef   = useRef<(() => void) | null>(null);
   const messagesEndRef     = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Vrai tant que l'utilisateur est « collé » en bas du fil. Mis à false dès qu'il
+  // remonte pour lire : on cesse alors de forcer le défilement (sinon le fil
+  // « arrache » la lecture pendant le streaming). Un bouton « Descendre » apparaît.
+  const stickToBottomRef   = useRef(true);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  // Références vers l'éditeur du ChatBox (clavier « éditer et renvoyer »).
+  const chatBoxRef         = useRef<ChatBoxHandle | null>(null);
+  // Ids DB des messages affichés, alignés par index avec `messages`. Alimentés au
+  // chargement d'une session ET au fil de la conversation (cf. handleSend), ce
+  // qui rend le glissement d'index fiable en usage courant.
+  const dbIdsRef           = useRef<(string | null)[]>([]);
 
   const folderPathRef              = useRef<string | null | undefined>(folderPath);
   const originMdRef                = useRef<string>("");
@@ -418,8 +451,71 @@ export default function AiPanel({
   const onApplyCodeRef             = useRef(onApplyCode);
   const onOpenDiffTabRef           = useRef(onOpenDiffTab);
   const currentModeRef             = useRef<"agent" | "plan">("agent");
+  // Modèle/provider du dernier envoi : « régénérer » rejoue avec la même cible
+  // sans dépendre d'un état local exposé par le ChatBox.
+  const activeModelIdRef           = useRef<string>("");
+  const activeProviderIdRef        = useRef<string>("");
   const phase1ContentRef           = useRef<string>("");
   const startPlanExecutionRef      = useRef<(() => Promise<void>) | null>(null);
+
+  // Checkpoint du tour courant : id + fichiers capturés (pour la bannière Undo/Keep).
+  const activeTurnIdRef            = useRef<string | null>(null);
+  const turnTouchedRef             = useRef<Set<string>>(new Set());
+  const streamDirtyRef             = useRef<boolean>(false);
+  const [checkpointBanner, setCheckpointBanner] = useState<{ turnId: string; files: string[] } | null>(null);
+
+  // Miroir réactif de `activeSessionIdRef` : le rendu (todo list épinglée) a
+  // besoin de la session courante comme état, pas comme ref.
+  const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
+  const setActiveSessionId = useCallback((id: string | null) => {
+    activeSessionIdRef.current = id;
+    setActiveSessionIdState(id);
+  }, []);
+
+  // Télémétrie du tour : nb de compactions / reprises automatiques, et dernier
+  // gain de tokens obtenu par compaction. Affichée en pied de fil.
+  const [telemetry, setTelemetry] = useState<{ compaction: number; retry: number; lastSavedTokens?: number }>(
+    { compaction: 0, retry: 0 },
+  );
+  // Vote (pouce haut/bas) par index de message. Éphémère — il vit le temps de la
+  // session et ne prétend pas persister un feedback durable (pas de télémétrie
+  // sortante). Il sert d'indicateur visuel immédiat.
+  const [feedbackByIndex, setFeedbackByIndex] = useState<Record<number, "up" | "down">>({});
+  // `setTelemetry` (useState) est stable : on le garde en ref pour que les
+  // closures de `handleSend` (mémorisées) y accèdent sans dépendre de lui.
+  const setTelemetryRef = useRef(setTelemetry);
+
+  // Usage du contexte courant : estimation (chars/4 + overhead) de l'historique
+  // modèle. Recalculée à chaque changement de messages ; pilotée par la même
+  // métrique que la compaction, elle sert d'indicateur visuel en pied de fil.
+  const contextTokens = useMemo(
+    () => estimateTokensWithOverhead(buildModelHistory(messages.filter(m => !m.streaming))),
+    [messages],
+  );
+
+  // Ouvre un checkpoint pour un nouveau tour d'agent. Best-effort : l'échec
+  // n'empêche jamais le tour de se dérouler (le mode Ask n'écrit rien sur disque).
+  // Un nouveau tour implique « Keep all » implicite du tour précédent : on purge
+  // l'ancien checkpoint pour ne pas accumuler de snapshots orphelins sur disque.
+  const beginTurn = useCallback(() => {
+    const prev = activeTurnIdRef.current;
+    if (prev) discardTurnCheckpoint(prev).catch(() => {});
+    setCheckpointBanner(null);
+    const id = crypto.randomUUID();
+    activeTurnIdRef.current = id;
+    turnTouchedRef.current = new Set();
+    streamDirtyRef.current = false;
+    void beginTurnCheckpoint(id).catch(() => {});
+  }, []);
+
+  // Snapshot d'un fichier avant sa première écriture du tour (idempotent).
+  const touchTurn = useCallback((path: string, ws: string) => {
+    const id = activeTurnIdRef.current;
+    if (!id) return;
+    void touchTurnFile(id, path, ws).then(() => {
+      turnTouchedRef.current.add(path);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => { ensurePricing().catch(() => {}); }, []);
   useEffect(() => { folderPathRef.current = folderPath; }, [folderPath]);
@@ -453,8 +549,25 @@ export default function AiPanel({
   }, [pendingScrollIndex, chatView]);
 
   useEffect(() => {
-    if (chatView === "chat") { messagesEndRef.current?.scrollIntoView(); }
+    if (chatView === "chat" && stickToBottomRef.current) { messagesEndRef.current?.scrollIntoView(); }
   }, [messages, chatView]);
+
+  // Détecte si l'utilisateur est proche du bas (tolérance ~80 px). Au-delà, on
+  // cesse de coller au bas et on affiche le bouton « Descendre ».
+  const handleThreadScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom < 80;
+    stickToBottomRef.current = atBottom;
+    setShowJumpToBottom(prev => (prev === !atBottom ? prev : !atBottom));
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
   useEffect(() => {
     const fp = folderPath ?? "";
@@ -472,7 +585,7 @@ export default function AiPanel({
         updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
       }
       setMessages([]);
-      activeSessionIdRef.current = null;
+      setActiveSessionId(null);
       onActiveSessionChangeRef.current?.(null);
       setChatView("new");
       localStorage.setItem("origin-ai-chat-view", "new");
@@ -488,8 +601,9 @@ export default function AiPanel({
           const displayMsgs = await restoreSession(storedId);
           if (cancelled) return;
           if (displayMsgs.length > 0) {
+            dbIdsRef.current = displayMsgs.map(m => m.dbId ?? null);
             setMessages(displayMsgs);
-            activeSessionIdRef.current = storedId;
+            setActiveSessionId(storedId);
             setChatView("chat");
             localStorage.setItem("origin-ai-chat-view", "chat");
           }
@@ -499,7 +613,7 @@ export default function AiPanel({
       })();
     }
     return () => { cancelled = true; };
-  }, [folderPath]);
+  }, [folderPath, setActiveSessionId]);
 
   const handleSessionSelect = useCallback(async (sessionId: string) => {
     streamCleanupRef.current?.();
@@ -512,7 +626,7 @@ export default function AiPanel({
       updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
     }
 
-    activeSessionIdRef.current = sessionId;
+    setActiveSessionId(sessionId);
     const fp = folderPathRef.current ?? "";
     localStorage.setItem(activeSessionKey(fp), sessionId);
     onActiveSessionChangeRef.current?.(sessionId);
@@ -522,6 +636,7 @@ export default function AiPanel({
 
     try {
       const displayMsgs = await restoreSession(sessionId);
+      dbIdsRef.current = displayMsgs.map(m => m.dbId ?? null);
       setMessages(displayMsgs);
       const scrollContent = pendingScrollContentRef.current;
       if (scrollContent) {
@@ -532,7 +647,7 @@ export default function AiPanel({
     } catch (err) {
       console.error("[AiPanel] Failed to load session messages:", err);
     }
-  }, []);
+  }, [setActiveSessionId]);
 
   const handleSend = useCallback(async (
     text: string,
@@ -552,6 +667,10 @@ export default function AiPanel({
     }
     pendingContentRef.current = "";
     pendingPartsRef.current = [];
+
+    // Mémorise la cible du tour pour permettre une régénération ultérieure.
+    activeModelIdRef.current = modelId;
+    activeProviderIdRef.current = providerId;
 
     const provider = PROVIDERS.find(p => p.id === providerId);
     if (!provider) return;
@@ -577,7 +696,7 @@ export default function AiPanel({
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
       sessionId = crypto.randomUUID();
-      activeSessionIdRef.current = sessionId;
+      setActiveSessionId(sessionId);
       localStorage.setItem(activeSessionKey(fp), sessionId);
       onActiveSessionChangeRef.current?.(sessionId);
       lsPush({ id: sessionId, title: text, workspace_path: fp, updated_at: Date.now() });
@@ -590,9 +709,13 @@ export default function AiPanel({
     }
 
     // ── DB: persist user message ─────────────────────────────────────────────
+    // On mémorise les ids DB au fur et à mesure : `dbIdsRef` reste aligné sur
+    // `messages` (user puis assistant), ce qui permet d'éditer/régénérer en
+    // supprimant les messages postérieurs. Un id reste `null` si la persistance
+    // a échoué pour cette ligne.
     if (sessionId) {
       try {
-        await insertMessage({
+        const uid = await insertMessage({
           sessionId,
           messageType: "user",
           content: text,
@@ -601,15 +724,21 @@ export default function AiPanel({
             ? JSON.stringify({ filename: editorContext.filename, startLine: editorContext.startLine, endLine: editorContext.endLine, type: editorContext.type })
             : null,
         });
+        dbIdsRef.current.push(uid);
       } catch (err) {
+        dbIdsRef.current.push(null);
         console.error("[AiPanel] Failed to persist user message:", err);
       }
+      let assistantDbId: string | null = null;
       try {
-        const assistantDbId = await insertMessage({ sessionId, messageType: "assistant", content: "", status: "streaming", model: modelId });
+        assistantDbId = await insertMessage({ sessionId, messageType: "assistant", content: "", status: "streaming", model: modelId });
         pendingAssistantDbIdRef.current = assistantDbId;
       } catch (err) {
         console.error("[AiPanel] Failed to persist assistant placeholder:", err);
       }
+      dbIdsRef.current.push(assistantDbId);
+    } else {
+      dbIdsRef.current.push(null, null);
     }
 
     // ── Build enriched message for the API ──────────────────────────────────
@@ -648,13 +777,27 @@ export default function AiPanel({
     localStorage.setItem("origin-ai-chat-view", "chat");
 
     const originMd = originMdRef.current;
-    const withOriginMd = (base: string) =>
-      originMd ? `${base}\n\n---\n\n${originMd}` : base;
+    const withOriginMd = (base: string) => {
+      // La consigne de style est toujours ajoutée en dernier : elle prime sur un
+      // éventuel prompt personnalisé qui demanderait des emojis.
+      const withStyle = `${base}\n\n---\n\n${STYLE_GUARDRAIL}`;
+      return originMd ? `${withStyle}\n\n---\n\n${originMd}` : withStyle;
+    };
 
     const isMax = (localStorage.getItem("origin-ai-effort") ?? "normal") === "max";
     const systemPrompt     = withOriginMd(localStorage.getItem("origin-ai-system-prompt") ?? (isMax ? DEFAULT_SYSTEM_PROMPT     : DEFAULT_SYSTEM_PROMPT_LITE));
     const askSystemPrompt  = withOriginMd(localStorage.getItem("origin-ai-ask-prompt")    ?? (isMax ? DEFAULT_ASK_PROMPT        : DEFAULT_ASK_PROMPT_LITE));
     const planSystemPrompt = withOriginMd(localStorage.getItem("origin-ai-plan-prompt")   ?? (isMax ? DEFAULT_PLAN_PROMPT       : DEFAULT_PLAN_PROMPT_LITE));
+
+    // ── Checkpoint du tour ───────────────────────────────────────────────────
+    // Ouvre un checkpoint dès qu'un tour peut écrire (Agent) ; en Ask, aucun
+    // fichier n'est touché et `finish` ne montrera donc jamais de bannière.
+    if (mode !== "ask") beginTurn();
+    // Réinitialise la télémétrie du tour : on repart d'un compteur vierge.
+    setTelemetry({ compaction: 0, retry: 0 });
+    // L'onglet Agents ne montre que les sous-agents du tour courant (les cartes
+    // du chat, elles, restent persistées dans les parts des messages).
+    clearSubAgents();
 
     // ── Event handler ────────────────────────────────────────────────────────
     const handleEvent = (event: AgentEvent) => {
@@ -686,7 +829,36 @@ export default function AiPanel({
           break;
         }
 
+        case "reasoning": {
+          // Chaîne de pensée exposée par certains modèles : on l'accumule dans une
+          // part `reasoning` dédiée (rendue en section repliable), sans la mêler au
+          // texte de réponse ni au contenu persisté de l'assistant.
+          const delta = event.delta;
+          pendingPartsRef.current = appendReasoning(pendingPartsRef.current, delta);
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") {
+              next[next.length - 1] = { ...last, parts: appendReasoning(last.parts ?? [], delta) };
+            }
+            return next;
+          });
+          break;
+        }
+
         case "tool-call": {
+          // Un tour qui émet un outil d'écriture devient « sale » : c'est ce qui
+          // déclenche l'affichage de la bannière Undo/Keep à la fin du tour.
+          if (event.toolName === "write_file" || event.toolName === "edit" || event.toolName === "multi_edit") {
+            streamDirtyRef.current = true;
+          }
+          // Un tool-call préfixé par `spawnId` appartient à un sous-agent : il est
+          // ajouté à la liste d'outils de sa carte (et JAMAIS au flux du root).
+          if (event.spawnId) {
+            const subTc: ToolCallDisplay = { id: event.id, toolName: event.toolName, args: event.args, status: "running" };
+            appendChildTool(event.spawnId, subTc);
+            break;
+          }
           const newPart: MessagePart = { type: "tool-call", tc: { id: event.id, toolName: event.toolName, args: event.args, status: "running" } };
           pendingPartsRef.current = [...pendingPartsRef.current, newPart];
           setMessages(prev => {
@@ -701,6 +873,10 @@ export default function AiPanel({
         }
 
         case "tool-result": {
+          if (event.spawnId) {
+            updateChildTool(event.spawnId, event.id, { status: "complete", result: event.result });
+            break;
+          }
           const tcUpdate = { status: "complete" as const, result: event.result, approve: undefined, reject: undefined };
           pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, tcUpdate);
           setMessages(prev => {
@@ -752,8 +928,112 @@ export default function AiPanel({
           break;
         }
 
+        case "approval-resolved": {
+          // Une action a été auto-approuvée ou bloquée sans carte de confirmation.
+          // On fige l'état du tool call correspondant pour que l'UI (et l'historique)
+          // reflète la décision.
+          const resolved = event.status === "approved"
+            ? { status: "complete" as const, approve: undefined, reject: undefined }
+            : { status: "complete" as const, result: { cancelled: true }, approve: undefined, reject: undefined };
+          pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, resolved);
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant" && last.parts) {
+              next[next.length - 1] = { ...last, parts: updateTcInParts(last.parts, event.id, resolved) };
+            }
+            return next;
+          });
+          break;
+        }
+
+        case "notice": {
+          // Bannière système in-line : compaction de l'historique ou reprise auto.
+          // On la pousse comme part `status` dans le message assistant courant.
+          const statusPart: MessagePart = { type: "status", kind: event.kind, detail: event.detail, savedTokens: event.savedTokens };
+          pendingPartsRef.current = [...pendingPartsRef.current, statusPart];
+          // Télémétrie : on incrémente le compteur de la session.
+          setTelemetryRef.current?.(t => {
+            const key = event.kind;
+            return { ...t, [key]: (t[key] ?? 0) + 1, lastSavedTokens: event.savedTokens ?? t.lastSavedTokens };
+          });
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") {
+              next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), statusPart] };
+            }
+            return next;
+          });
+          break;
+        }
+
         case "step-finish":
           break;
+
+        case "subagent-start": {
+          // Carte de sous-agent rattachée au tool-call `spawn_agent` (si l'id est
+          // connu) : on l'insère comme enfant du tool-call parent.
+          startSubAgent({ spawnId: event.spawnId, role: event.role, task: event.task, toolCallId: event.toolCallId });
+          const attachChild = (parts: MessagePart[]): MessagePart[] => {
+            if (!event.toolCallId) return parts;
+            return parts.map(p => {
+              if (p.type !== "tool-call" || p.tc.id !== event.toolCallId) return p;
+              const children = p.tc.children ?? [];
+              if (children.some(c => c.spawnId === event.spawnId)) return p;
+              return {
+                ...p,
+                tc: {
+                  ...p.tc,
+                  children: [...children, {
+                    spawnId: event.spawnId, role: event.role, task: event.task,
+                    iterations: 0, inputTokens: 0, outputTokens: 0, tools: [],
+                  }],
+                },
+              };
+            });
+          };
+          pendingPartsRef.current = attachChild(pendingPartsRef.current);
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") next[next.length - 1] = { ...last, parts: attachChild(last.parts ?? []) };
+            return next;
+          });
+          break;
+        }
+
+        case "subagent-step":
+          stepSubAgent(event.spawnId, event.iteration);
+          break;
+
+        case "subagent-end": {
+          endSubAgent(event.spawnId, {
+            status: event.status, report: event.report,
+            iterations: event.iterations, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
+          });
+          const finalizeChild = (parts: MessagePart[]): MessagePart[] => parts.map(p => {
+            if (p.type !== "tool-call" || !p.tc.children) return p;
+            let touched = false;
+            const children = p.tc.children.map(c => {
+              if (c.spawnId !== event.spawnId) return c;
+              touched = true;
+              return {
+                ...c, status: event.status, report: event.report,
+                iterations: event.iterations, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
+              };
+            });
+            return touched ? { ...p, tc: { ...p.tc, children } } : p;
+          });
+          pendingPartsRef.current = finalizeChild(pendingPartsRef.current);
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") next[next.length - 1] = { ...last, parts: finalizeChild(last.parts ?? []) };
+            return next;
+          });
+          break;
+        }
 
         case "finish": {
           if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
@@ -766,7 +1046,10 @@ export default function AiPanel({
             ? JSON.stringify(finalParts.map(p => {
                 if (p.type !== "tool-call") return p;
                 const { approve: _a, reject: _r, ...tcRest } = p.tc;
-                return { type: "tool-call", tc: tcRest };
+                // Les sous-agents sont persistés SANS leurs outils (transcript
+                // volumineux) : seul le rapport borné est conservé pour l'historique.
+                const children = tcRest.children?.map(c => ({ ...c, tools: undefined }));
+                return { type: "tool-call", tc: children ? { ...tcRest, children } : tcRest };
               }))
             : null;
           if (dbId) updateMessageContent(dbId, finalContent, "complete", partsJson).catch(() => {});
@@ -796,6 +1079,58 @@ export default function AiPanel({
             const color = (prov as { color?: string })?.color ?? "#6366f1";
             const cost = computeCost(modelId, usage.inputTokens, usage.outputTokens);
             recordUsage(modelId, modelName, providerId, usage.inputTokens, usage.outputTokens, cost, color, usage.cacheReadTokens);
+          }
+
+          // Bannière Undo all / Keep all : seulement si ce tour a écrit des
+          // fichiers (mode Plan phase 1 = lecture seule → jamais de bannière).
+          if (streamDirtyRef.current) {
+            const turnId = activeTurnIdRef.current;
+            if (turnId) {
+              const captured = Array.from(new Set(turnTouchedRef.current));
+              const fctx = folderPathRef.current ?? "";
+              setCheckpointBanner({ turnId, files: captured });
+              void countTurnCheckpoint(turnId).then(n => {
+                if (n > 0) setCheckpointBanner({ turnId, files: captured.length ? captured : [`${n} file${n === 1 ? "" : "s"}`] });
+              }).catch(() => {});
+              // Prévenu par la bannière, l'agent n'a plus besoin du checkpoint :
+              // on le conserve jusqu'à l'action utilisateur (Undo/Keep).
+              void fctx;
+            }
+            streamDirtyRef.current = false;
+          }
+
+          // ── Pré-compaction réactive de fin de tour ───────────────────────────
+          // Plutôt que d'attendre l'entrée du tour suivant, on vérifie l'usage
+          // *projeté* (historique + marge pour la prochaine réponse/outils). Dès
+          // qu'il franchit 80 %, on compacte maintenant et on l'annonce dans le
+          // fil. La compaction effective au tour suivant reste faite par runAgent,
+          // mais l'utilisateur voit immédiatement la pression mémoire.
+          {
+            const projectedHistory: ModelMessage[] = [
+              ...buildModelHistory(messagesRef.current.filter(m => !m.streaming)),
+            ];
+            if (shouldPreCompact(projectedHistory, NEXT_TURN_MARGIN_TOKENS)) {
+              const beforeTokens = estimateTokensWithOverhead(projectedHistory);
+              const compacted = compactHistory(projectedHistory);
+              const saved = Math.max(0, Math.round(beforeTokens - estimateTokensWithOverhead(compacted)));
+              const statusPart: MessagePart = {
+                type: "status", kind: "compaction",
+                detail: "Compaction réactive de fin de tour (pression ≥ 80 %)",
+                savedTokens: saved,
+              };
+              setTelemetryRef.current?.(t => ({
+                ...t, compaction: t.compaction + 1,
+                lastSavedTokens: saved || t.lastSavedTokens,
+              }));
+              setMessages(prev => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === "assistant") {
+                  next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), statusPart] };
+                }
+                return next;
+              });
+            }
           }
 
           if (currentModeRef.current === "plan") {
@@ -846,6 +1181,36 @@ export default function AiPanel({
       }
     };
 
+    // Applique une mutation à l'unique sous-agent `spawnId` d'un tool-call parent.
+    // Un sous-agent est rattaché à exactement un tool-call `spawn_agent`.
+    const mutateChild = (spawnId: string, fn: (children: SubAgentChild[]) => SubAgentChild[]): void => {
+      const apply = (parts: MessagePart[]): MessagePart[] => parts.map(p => {
+        if (p.type !== "tool-call" || !p.tc.children?.some(c => c.spawnId === spawnId)) return p;
+        return { ...p, tc: { ...p.tc, children: fn(p.tc.children) } };
+      });
+      pendingPartsRef.current = apply(pendingPartsRef.current);
+      setMessages(prev => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") next[next.length - 1] = { ...last, parts: apply(last.parts ?? []) };
+        return next;
+      });
+    };
+
+    // Ajoute un outil (read-only) à la carte d'un sous-agent en cours.
+    const appendChildTool = (spawnId: string, tc: ToolCallDisplay): void => {
+      mutateChild(spawnId, children => children.map(c =>
+        c.spawnId === spawnId ? { ...c, tools: [...(c.tools ?? []), tc] } : c));
+    };
+
+    // Fige un outil d'un sous-agent (résultat reçu).
+    const updateChildTool = (spawnId: string, toolId: string, update: Partial<ToolCallDisplay>): void => {
+      mutateChild(spawnId, children => children.map(c => c.spawnId !== spawnId ? c : {
+        ...c,
+        tools: (c.tools ?? []).map(t => t.id === toolId ? { ...t, ...update } : t),
+      }));
+    };
+
     let model;
     try {
       model = buildLanguageModel(providerId, modelId, apiKey ?? "");
@@ -862,13 +1227,36 @@ export default function AiPanel({
 
     const makeFullTools = () => createTools({
       folderPath: fp || ".",
-      onApproval: (evt) => handleEvent({
-        type: "approval-required",
-        id: evt.id,
-        action: evt.action,
-        approve: evt.approve,
-        reject: evt.reject,
-      }),
+      sessionId: activeSessionIdRef.current ?? undefined,
+      onBeforeWrite: (path) => touchTurn(path, fp || "."),
+      onApproval: (evt) => {
+        // Politique de permission : on lit le mode à l'instant T (localStorage),
+        // sans recréer les outils à chaque changement.
+        const mode: PermissionMode = loadPermissionMode();
+        const verdict = decideApproval(evt.action, { mode, workspace: fp || "." });
+
+        if (verdict.decision === "block") {
+          // Refus d'office (garde anti-catastrophe) : l'agent reçoit un échec de tool.
+          showToast(verdict.reason, "error");
+          evt.reject();
+          handleEvent({ type: "approval-resolved", id: evt.id, status: "rejected" });
+          return;
+        }
+        if (verdict.decision === "approve") {
+          // Auto-approuvé : on exécute directement, sans carte de confirmation.
+          void evt.approve();
+          handleEvent({ type: "approval-resolved", id: evt.id, status: "approved" });
+          return;
+        }
+        // `ask` : comportement normal (carte de confirmation).
+        handleEvent({
+          type: "approval-required",
+          id: evt.id,
+          action: evt.action,
+          approve: evt.approve,
+          reject: evt.reject,
+        });
+      },
     });
 
     if (mode === "plan") {
@@ -917,11 +1305,150 @@ export default function AiPanel({
       const { cancel } = runAgent({ model, messages: modelMessages, tools: askTools, systemPrompt: askSystemPrompt, cacheSystem: providerId === "anthropic", onEvent: handleEvent });
       streamCleanupRef.current = cancel;
     } else {
-      const { cancel } = runAgent({ model, messages: modelMessages, tools: makeFullTools(), systemPrompt, cacheSystem: providerId === "anthropic", onEvent: handleEvent });
-      streamCleanupRef.current = cancel;
+      // ── Mode IA : orchestration avec sous-agents ──────────────────────────────
+      // Le tool `spawn_agent` est exposé au root UNIQUEMENT ici (jamais en IDE).
+      // Son `execute` est intercepté côté hôte : le root ne reçoit que le rapport
+      // borné du sous-agent, le transcript complet reste hors de son contexte.
+      const spawnCancels: Array<() => void> = [];
+      const fullTools = wrapSpawnAgent(
+        { ...makeFullTools(), spawn_agent: spawnAgentTool },
+        {
+          model,
+          folderPath: fp || ".",
+          cacheSystem: providerId === "anthropic",
+          callbacks: {
+            onEvent: handleEvent,
+            onSpawn: (cancel) => { spawnCancels.push(cancel); },
+          },
+        },
+      );
+      const { cancel } = runAgent({ model, messages: modelMessages, tools: fullTools, systemPrompt, cacheSystem: providerId === "anthropic", onEvent: handleEvent });
+      // L'annulation du root coupe aussi les sous-agents en vol.
+      streamCleanupRef.current = () => { cancel(); for (const c of spawnCancels) c(); };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getFileContents is read fresh at call time; including it would churn this callback
   }, [showToast]);
+
+  // Annule le tour en cours. `cancel()` ne détache pas le flag `streaming`
+  // (aucun event n'est émis à l'abort), on le remet donc à false nous-mêmes,
+  // et on persiste le contenu partiel comme « interrupted » — comme le fait
+  // déjà la sélection de session / nouveau chat.
+  const handleStop = useCallback(() => {
+    streamCleanupRef.current?.();
+    streamCleanupRef.current = null;
+
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+    const prevDbId = pendingAssistantDbIdRef.current;
+    if (prevDbId) {
+      pendingAssistantDbIdRef.current = null;
+      updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+    }
+
+    setMessages(prev => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].streaming) { next[i] = { ...next[i], streaming: false }; break; }
+      }
+      return next;
+    });
+  }, []);
+
+  // Supprime côté DB tous les messages postérieurs à `fromIndex` (inclus) et
+  // renvoie le nouveau tableau de messages tronqué. On se base sur les ids DB
+  // indexés : les messages antérieurs ne sont jamais touchés, et un id manquant
+  // (persistance en échec) est simplement ignoré côté suppression.
+  const truncateFrom = useCallback(async (fromIndex: number): Promise<DisplayMessage[]> => {
+    const sessionId = activeSessionIdRef.current;
+    const ids = dbIdsRef.current.slice(fromIndex);
+    if (sessionId) {
+      const toDelete = ids.filter((id): id is string => !!id);
+      if (toDelete.length > 0) {
+        deleteMessagesByIds(sessionId, toDelete).catch(err =>
+          console.error("[AiPanel] Failed to truncate messages:", err));
+      }
+    }
+    dbIdsRef.current = dbIdsRef.current.slice(0, fromIndex);
+    const next = messagesRef.current.slice(0, fromIndex);
+    setMessages(next);
+    return next;
+  }, []);
+
+  // « Régénérer » : on remonte au message utilisateur qui précède la réponse,
+  // on tronque tout ce qui suit et on relance le tour avec le même texte — les
+  // pièces jointes d'origine sont conservées.
+  const handleRegenerate = useCallback((assistantIndex: number) => {
+    if (isStreaming) return;
+    const msgs = messagesRef.current;
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") { userIndex = i; break; }
+    }
+    if (userIndex === -1) return;
+    const user = msgs[userIndex];
+    void (async () => {
+      await truncateFrom(userIndex);
+      const mode = currentModeRef.current === "plan" ? "plan" : "agent";
+      void handleSend(
+        user.content, activeModelIdRef.current, activeProviderIdRef.current,
+        user.fileMentions ?? [], user.editorContext ?? null, mode,
+      );
+    })();
+  }, [isStreaming, truncateFrom, handleSend]);
+
+  // « Éditer et renvoyer » : on place le texte du message dans l'éditeur pour
+  // que l'utilisateur le corrige, et on tronque l'historique à partir de ce
+  // message (l'envoi reste manuel — pas de rejeu implicite).
+  const handleEditUserMessage = useCallback((userIndex: number) => {
+    if (isStreaming) return;
+    const user = messagesRef.current[userIndex];
+    if (!user) return;
+    chatBoxRef.current?.setText(user.content);
+    void truncateFrom(userIndex);
+  }, [isStreaming, truncateFrom]);
+
+  // Toute action sur un message (copier, éditer, régénérer) vaut « Keep all » du
+  // checkpoint courant : l'utilisateur ne reviendra plus en arrière sur ce tour,
+  // et on évite ainsi de laisser une bannière Undo pointer sur un état obsolète.
+  const handleMessageAction = useCallback(() => {
+    const prevTurn = activeTurnIdRef.current;
+    if (prevTurn) {
+      activeTurnIdRef.current = null;
+      turnTouchedRef.current = new Set();
+      discardTurnCheckpoint(prevTurn).catch(() => {});
+    }
+    setCheckpointBanner(null);
+  }, []);
+
+  // « Insérer » : place une citation du message dans l'éditeur du ChatBox, pour
+  // que l'utilisateur réponde en citant un extrait (comportement type Cursor).
+  const handleInsertMessage = useCallback((text: string) => {
+    const quoted = text.split("\n").map(l => `> ${l}`).join("\n") + "\n\n";
+    chatBoxRef.current?.setText(quoted);
+  }, []);
+
+  // Ouvre un chemin cité dans le chat. Les outils travaillent en chemins
+  // relatifs au workspace : on les résout en absolu avant d'ouvrir l'onglet.
+  const handleOpenFileRef = useRef(onOpenFile);
+  useEffect(() => { handleOpenFileRef.current = onOpenFile; }, [onOpenFile]);
+  const handleOpenFile = useCallback((path: string, line?: number, col?: number) => {
+    if (!path) return;
+    const fp = folderPathRef.current ?? "";
+    const isAbsolute = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+    const abs = isAbsolute || !fp
+      ? path
+      : `${fp.replace(/[\\/]$/, "")}/${path.replace(/^[\\/]+/, "")}`;
+    handleOpenFileRef.current?.(abs, line, col);
+  }, []);
+
+  // Bascule le vote d'un message (mutuellement exclusif, re-clic = annulation).
+  const handleVoteMessage = useCallback((index: number, vote: "up" | "down") => {
+    setFeedbackByIndex(prev => {
+      const next = { ...prev };
+      if (prev[index] === vote) delete next[index];
+      else next[index] = vote;
+      return next;
+    });
+  }, []);
 
   const handleNewChat = useCallback(() => {
     streamCleanupRef.current?.();
@@ -935,14 +1462,14 @@ export default function AiPanel({
     }
 
     setMessages([]);
-    activeSessionIdRef.current = null;
+    setActiveSessionId(null);
     const fp = folderPathRef.current ?? "";
     localStorage.removeItem(activeSessionKey(fp));
     onActiveSessionChangeRef.current?.(null);
     setChatView("new");
     localStorage.removeItem("origin-ai-chat-view");
     setSessions(lsForPath(fp));
-  }, []);
+  }, [setActiveSessionId]);
 
   // External drivers from the Agent mode task rail.
   const lastOpenSessionRef = useRef<string | null>(null);
@@ -1002,6 +1529,30 @@ export default function AiPanel({
     currentModeRef.current = "agent";
   }, []);
 
+  // ── Undo all / Keep all ──────────────────────────────────────────────────
+  // « Keep all » : on oublie simplement le checkpoint (les écritures restent).
+  const handleKeepAll = useCallback(async () => {
+    const banner = checkpointBanner;
+    setCheckpointBanner(null);
+    if (!banner) return;
+    discardTurnCheckpoint(banner.turnId).catch(() => {});
+    showToast("Changes kept", "success");
+  }, [checkpointBanner, showToast]);
+
+  // « Undo all » : on restaure chaque fichier capturé dans son état d'origine.
+  const handleUndoAll = useCallback(async () => {
+    const banner = checkpointBanner;
+    if (!banner) return;
+    const fp = folderPathRef.current ?? "";
+    try {
+      const restored = await undoTurnCheckpoint(banner.turnId, fp || null);
+      setCheckpointBanner(null);
+      showToast(`Reverted ${restored.length} file${restored.length === 1 ? "" : "s"}`, "success");
+    } catch (e) {
+      showToast(`Undo failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }, [checkpointBanner, showToast]);
+
   const handleStartPin = useCallback((content: string) => {
     setPendingPin({ content, sessionId: activeSessionIdRef.current ?? undefined });
   }, []);
@@ -1044,12 +1595,12 @@ export default function AiPanel({
     setSessions(prev => prev.filter(s => s.id !== sessionId));
     const fp = folderPathRef.current ?? "";
     if (activeSessionIdRef.current === sessionId) {
-      activeSessionIdRef.current = null;
+      setActiveSessionId(null);
       localStorage.removeItem(activeSessionKey(fp));
       onActiveSessionChangeRef.current?.(null);
     }
     deleteSession(sessionId).catch(err => console.error("[AiPanel] Failed to delete session:", err));
-  }, []);
+  }, [setActiveSessionId]);
 
   const dragging = useRef(false);
   const startX   = useRef(0);
@@ -1182,31 +1733,91 @@ export default function AiPanel({
                 ))}
               </div>
             </div>
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} />
           </div>
         )}
 
         {/* Active chat view */}
         {chatView === "chat" && (
           <>
-            <div style={{ flex: 1, overflowY: "auto", padding: "16px 14px 8px", display: "flex", flexDirection: "column" }}>
-              {messages.map((msg, i) => (
-                <div key={i} ref={el => { if (el) messageRefsMap.current.set(i, el); else messageRefsMap.current.delete(i); }}>
-                  <MessageBubble
-                    message={msg}
-                    folderPath={folderPath}
-                    onApplyCode={onApplyCode}
-                    getOpenTabPaths={getOpenTabPaths}
-                    onResolveFail={() => showToast("Could not determine target file for this code block.", "error")}
-                    onPin={handleStartPin}
-                    onPlanApprove={handlePlanApprove}
-                    onPlanReject={handlePlanReject}
-                  />
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
+            <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <div ref={scrollContainerRef} onScroll={handleThreadScroll} style={{ flex: 1, overflowY: "auto", padding: "16px 14px 8px", display: "flex", flexDirection: "column" }}>
+                {messages.map((msg, i) => (
+                  <div key={i} ref={el => { if (el) messageRefsMap.current.set(i, el); else messageRefsMap.current.delete(i); }}>
+                    <MessageBubble
+                      message={msg}
+                      folderPath={folderPath}
+                      onApplyCode={onApplyCode}
+                      getOpenTabPaths={getOpenTabPaths}
+                      onResolveFail={() => showToast("Could not determine target file for this code block.", "error")}
+                      onPin={handleStartPin}
+                      onPlanApprove={handlePlanApprove}
+                      onPlanReject={handlePlanReject}
+                      onRegenerate={() => handleRegenerate(i)}
+                      onEditUserMessage={() => handleEditUserMessage(i)}
+                      onInsert={() => handleInsertMessage(msg.content)}
+                      onOpenFile={handleOpenFile}
+                      canRegenerate={!isStreaming && i === messages.length - 1}
+                      onActionCopy={handleMessageAction}
+                      vote={feedbackByIndex[i] ?? null}
+                      onVote={v => handleVoteMessage(i, v)}
+                      /* L'anneau de contexte n'apparaît que sur le dernier message :
+                         il reflète l'état courant, pas un historique par message. */
+                      contextUsed={i === messages.length - 1 ? contextTokens : undefined}
+                      contextBudget={i === messages.length - 1 ? DEFAULT_TOKEN_BUDGET : undefined}
+                    />
+                  </div>
+                ))}
+                {telemetry.compaction > 0 || telemetry.retry > 0 ? (
+                  <div style={{
+                    marginTop: "4px", display: "flex", flexWrap: "wrap", gap: "10px",
+                    fontSize: "10px", fontFamily: "var(--font-mono)",
+                    color: "var(--origin-fg-subtle)",
+                  }}>
+                    {telemetry.compaction > 0 && (
+                      <span>
+                        {telemetry.compaction} compaction{telemetry.compaction > 1 ? "s" : ""}
+                        {telemetry.lastSavedTokens ? ` · ≈ ${telemetry.lastSavedTokens.toLocaleString()} tokens` : ""}
+                      </span>
+                    )}
+                    {telemetry.retry > 0 && (
+                      <span>{telemetry.retry} reprise{telemetry.retry > 1 ? "s" : ""} auto</span>
+                    )}
+                  </div>
+                ) : null}
+                <div ref={messagesEndRef} />
+              </div>
+              {showJumpToBottom && (
+                <button
+                  onClick={jumpToBottom}
+                  title="Descendre en bas"
+                  style={{
+                    position: "absolute", bottom: "10px", left: "50%", transform: "translateX(-50%)",
+                    display: "flex", alignItems: "center", gap: "5px",
+                    padding: "4px 10px", borderRadius: "14px",
+                    border: "1px solid var(--origin-border-default)",
+                    backgroundColor: "var(--origin-bg-active)",
+                    color: "var(--origin-fg-default)", cursor: "pointer",
+                    fontSize: "11px", boxShadow: "0 2px 8px rgba(0,0,0,0.25)", zIndex: 5,
+                  }}
+                >
+                  <Icon icon="lucide:arrow-down" width={12} />
+                  Descendre
+                </button>
+              )}
             </div>
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} />
+            {checkpointBanner && (
+              <div style={{ padding: "0 14px" }}>
+                <TurnCheckpointCard
+                  fileCount={checkpointBanner.files.length}
+                  files={checkpointBanner.files}
+                  undo={handleUndoAll}
+                  keep={handleKeepAll}
+                />
+              </div>
+            )}
+            {activeSessionId && <PinnedTodoList sessionId={activeSessionId} />}
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} />
           </>
         )}
 

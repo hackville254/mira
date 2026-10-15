@@ -5,7 +5,294 @@
 
 ---
 
-### [2026-10-14T03:40] | Extensions : sortie du modèle VS Code → API native `origin.*` + retrait marketplace & UI
+### [2026-10-15T18:40] | Orchestration — sous-agents read-only (mode IA uniquement)
+
+- **Contexte :**
+  Porter l'agent au niveau Cline/Trae en mode IA : le mode IA cible les projets >2M lignes où un agent seul « se perd » dans l'exploration. Décision validée : orchestration par **sous-agents seuls** (pas d'équipes pour l'instant), sous-agents en **lecture seule + budget dur**, UI **carte repliable style Trae** (ex. `Search Agent │ Étudier le code source Cline ›`) et un **onglet Agents** listant les sous-agents. Contrainte volontaire : en **mode IDE, aucun sous-agent ni équipe** (économie de tokens) — `spawn_agent` n'est **jamais** exposé au modèle en mode IDE.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/run.ts`** : `AgentEvent` étendu de `subagent-start` / `subagent-step` / `subagent-end` ; les 4 events de base (`token`, `reasoning`, `tool-call`, `tool-result`) portent un `spawnId?` optionnel pour **router** les events d'un sous-agent vers son nœud parent. `SubAgentStatus` exporté (`completed | max_iterations | max_tokens | timeout | error | cancelled`). `RunAgentOptions` étendu : `maxSteps?` (défaut 24), `toolTimeoutMs?` (0 = illimité, garde par `Promise.race` par outil), `abortSignal?`, `initialUsage?`, `onSettled?`. Propagation d'abort parent→enfant (`abortSignal.addEventListener("abort", () => controller.abort())`) ; `settle()` **idempotent** appelé à **tous** les points de sortie de la boucle de retry (succès, abort in/out du delay, épuisement des tentatives).
+  - **`src/lib/agent/subagent.ts`** (nouveau) : `runSubAgent(opts)` — runner d'un sous-agent. Budgets durs : `SUBAGENT_MAX_STEPS = 12`, `SUBAGENT_MAX_INPUT_TOKENS = 120_000`, `SUBAGENT_TIMEOUT_MS = 180_000`, `SUBAGENT_TOOL_TIMEOUT_MS = 30_000`, `SUBAGENT_REPORT_MAX_CHARS = 4_000`. Tools = `createReadOnlyTools({ folderPath })` exclusivement. Priorité d'issue `timeout > max_tokens > settled`. Émet `subagent-end` via `finalizeReport(text, status)` (note `[sub-agent stopped early: <status>]` si non `completed`, troncature à 4 000 chars).
+  - **`src/lib/agent/swarmStore.ts`** (nouveau) : registre observable des sous-agents du tour courant via `useSyncExternalStore` (avec `cachedList` pour la **stabilité de référence**) — `startSubAgent`, `stepSubAgent`, `endSubAgent`, `listSubAgents`, `listActiveSubAgents`, `clearSubAgents`, `useSubAgents`, `useActiveSubAgents`.
+  - **`src/lib/agent/spawnRuntime.ts`** (nouveau) : **hôte** du tool `spawn_agent` (intercepté côté hôte, jamais exécuté par le modèle). `wrapSpawnAgent(tools, …)` remplace l'`execute` de `spawn_agent`, émet `subagent-start` (avec `toolCallId`), lance `runSubAgent`, et ne renvoie au root que le **rapport borné**. `spawnAgentTool` = schéma `{ systemPrompt, task }` (calqué Cline) ; **`systemPrompt` accepté mais ignoré** (anti-réécriture des règles par le modèle).
+  - **`src/lib/aiTypes.ts`** : `ToolCallDisplay.children?: SubAgentChild[]` ; `SubAgentChild { spawnId, role, task, status?, iterations, inputTokens, outputTokens, report?, tools? }`.
+  - **`src/components/ai/SubAgentCard.tsx`** (nouveau) : carte repliable style Trae (spinner / Check / AlertTriangle + `Bot` + `role │ task` + libellé d'issue + chevron) ; déplié = résumé outils + rapport + stats steps/tokens ; `statusLabel`/`isHardStop` distinguent `completed` des arrêts durs.
+  - **`src/components/ai/AgentPanel.tsx`** (nouveau) : onglet « Agents » (état vide informatif, header `N sub-agents · X active`, liste des lignes, `VISIBLE_LIMIT = 20`).
+  - **`src/components/ai/ToolCallCard.tsx`**, **`MessageBubble.tsx`** : empilent les `SubAgentCard` des `children` sous le tool-call parent (branches running/complete et branche `group`).
+  - **`src/components/ai/AgentModeView.tsx`** : `activeToolTab === "agents"` rend `AgentPanel` (retiré de la branche « Coming soon »).
+  - **`src/components/ai/AiPanel.tsx`** : `handleEvent` gère `subagent-start/step/end` (attach/maj d'un `SubAgentChild` sur le tool-call parent) ; `tool-call`/`tool-result` **routés par `spawnId`** vers `appendChildTool`/`updateChildTool` ; helpers `mutateChild` ; `clearSubAgents()` au début de tour ; `streamCleanupRef` annule aussi les sous-agents en vol ; `children` **persistés sans leurs `tools`** (allègement de `tool_calls_json`).
+
+- **Décisions Techniques :**
+  - **Modèle `spawn_agent` calqué Cline** : l'hôte décide des tools, ils ne sont **jamais** exposés au modèle. Le sous-agent ne peut donc pas escalader ses capacités ; il ne renvoie qu'un **rapport borné** alors que l'hôte conserve le transcript complet.
+  - **Profondeur 1 imposée côté hôte** (`enableSpawnAgent: false` dans le toolset du sous-agent) → **anti-récursion par construction**, pas par consigne. C'est le « swarm light » de jcode (seul le root *fan-out*).
+  - **Lecture seule + budget dur** : un sous-agent ne peut ni écrire ni exécuter ; les budgets (steps, tokens, timeout) sont **durs** (abort réel), pas incitatifs → maîtrise du coût en tokens sur de très gros dépôts.
+  - **Mode IDE sans sous-agents (volontaire)** : `spawn_agent` n'est injecté que dans la branche agent/IA → l'IDE garde un agent unique, économique.
+  - **Routage par `spawnId`** plutôt que par canal séparé : un seul flux d'events, le parent sait à quel tool-call rattacher chaque event → UI simple et déterministe.
+  - **Persistance allégée** : sauver les `children` **sans** leurs `tools` évite de gonfler la base ; le détail outil reste consultable pendant le tour.
+
+- **Impacts & Dépendances :**
+  - Aucune nouvelle dépendance npm. Nouveaux fichiers : `subagent.ts`, `swarmStore.ts`, `spawnRuntime.ts`, `SubAgentCard.tsx`, `AgentPanel.tsx`.
+  - Comportement : en mode IA, le root peut déléguer une exploration à un *Search Agent* read-only ; l'utilisateur voit la carte de sous-agent dans le fil et la liste dans l'onglet Agents. Le mode IDE est inchangé (1 agent, pas de sous-agents).
+  - Sécurité/abuse : sous-agent sans écriture ni shell ni réseau (tools read-only), profondeur 1, budget en tokens et en temps dur, `systemPrompt` du modèle ignoré, abort parent→enfants.
+  - Validation : `npx tsc --noEmit` **exit 0**, `npx eslint` sur les 11 fichiers touchés **exit 0**, `npx vitest run src/lib/agent/__tests__` → **4 fichiers / 54 tests passés**.
+
+- **Prochaines étapes :**
+  - Équipes d'agents orchestrées (rôles multiples coordonnés) — **non démarré**, à valider avant implémentation.
+  - Éventuel index sémantique du dépôt pour l'exploration >2M lignes — hors périmètre de ce lot.
+
+---
+
+### [2026-10-15T17:35] | Tool calls — accordéon nu (style Trae) + chemins de fichiers cliquables
+
+- **Contexte :**
+  Les tool-calls étaient rendus dans des **encadrés** (bordure + fond) qui alourdissaient le fil, à l'inverse du rendu Trae/Cursor : une simple ligne de texte repliable. Demande explicite : accordéon léger `Read 2 files, Searched files 2 times ›`, **sans bordure**, et **le nom de fichier cliquable** ouvre le fichier dans l'éditeur.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/ToolGroupCard.tsx`** (réécrit) : accordéon nu — plus de check/icône de statut ni de fond ; texte gris `12px` + chevron `12px`. Déplié, chaque cible est rendue en **police mono cliquable** qui appelle `onOpenFile(path)` (grep/glob restent non cliquables car sans chemin).
+  - **`src/components/ai/ToolCallCard.tsx`** : les états `running` et `complete` perdent leur encadré (`baseStyle` → `boxedStyle`, réservé au seul état `approval-required`) ; `complete` affiche le **chemin cliquable** (`stopPropagation` pour ne pas déplier l'accordéon) ; l'état `running` se réduit à une ligne avec spinner. Import `toolIcon` supprimé (plus d'icônes décoratives).
+  - **`src/lib/toolGroups.ts`** : nouvelle `combinedGroupLabel(tools)` (agrège les verbes d'un run hétérogène : « Read 2 files, Searched files 2 times ») ; nouvelle `toolTargetPath(tc)` (chemin workspace-relatif exploitable) ; `buildToolRenderers` regroupe désormais **tous** les outils de lecture consécutifs (plus de flush sur changement de verbe).
+  - **`src/components/ai/MessageBubble.tsx`** : prop `onOpenFile` descendue vers `ToolCallCard` et `ToolGroupCard`.
+  - **`src/components/ai/AiPanel.tsx`** : prop `onOpenFile` ; `handleOpenFile` **résout le chemin relatif en absolu** (les tools travaillent en relatif au workspace) avant d'ouvrir l'onglet.
+  - **`src/App.tsx`** + **`src/components/ai/AgentModeView.tsx`** : câblage `onOpenFile → openTabAtLine`.
+
+- **Décisions Techniques :**
+  - **Résolution relatif → absolu côté AiPanel** (et non dans l'éditeur) : l'éditeur (`openTab`/`readFile`) consomme des chemins absolus ; les tools produisent du relatif au workspace. La frontière de conversion est donc le panneau, qui seul connaît `folderPath`.
+  - **Groupement par run consécutif** (et non par verbe) : c'est ce qui produit l'étiquette combinée de la capture ; un run d'un seul élément retombe en carte individuelle (plus lisible).
+  - **Encadré conservé pour `approval-required` uniquement** : cet état est une demande d'action sensible, il doit rester visuellement saillant.
+  - **Chemin cliquable avec `stopPropagation`** : cliquer le nom n'ouvre pas l'accordéon ; cliquer ailleurs le déplie — deux intentions distinctes sur la même ligne.
+
+- **Impacts & Dépendances :**
+  - Aucune dépendance nouvelle. Harmonisation du chat agent avec le rendu Trae (accordéons nus, chemins actionnables).
+  - Validation : `tsc` clean, `eslint src/` **0 erreur** (7 warnings préexistants), vitest **281/281**, `vite build` clean.
+
+- **Prochaines étapes :**
+  - Étendre le clic aux cibles `grep`/`glob` (ouvrir une recherche dans le panneau Search) si besoin.
+
+---
+
+- **Contexte :**
+  Rappel des manques du chat agent face à Cline/Cursor/Trae, traités en une fois. Quatre constats : (1) le modèle générait des emojis décoratifs (📋 …) dans ses réponses — rien ne l'interdisait ; (2) les **étapes de raisonnement** n'étaient pas visibles ; (3) aucun **indicateur de contexte/tokens** ; (4) pas de **boutons d'action** sur les messages ni d'**auto-scroll intelligent** ; et besoin d'**éditer / renvoyer** un message.
+
+- **Modifications effectuées :**
+  - **`src/lib/ai.ts`** : nouvelle constante exportée `STYLE_GUARDRAIL` (interdiction explicite des emojis / symboles Unicode décoratifs dans les réponses, arguments de tools et fichiers générés).
+  - **`src/lib/textStyle.ts`** (nouveau) : `stripDecorativeEmojis(text)` — filet défensif au rendu ; **préserve** les blocs ``` ``` et le code inline `` ` `` (ne casse jamais du code légitime).
+  - **`src/components/ai/MarkdownMessage.tsx`** : le contenu passe par `stripDecorativeEmojis` avant rendu.
+  - **`src/components/ai/AiPanel.tsx`** : `withOriginMd` injecte `STYLE_GUARDRAIL` pour **tous** les modes/prompts custom ; `handleEvent` gère la part `reasoning` ; `contextTokens` (`useMemo` sur `estimateTokensWithOverhead`) ; auto-scroll intelligent (`stickToBottomRef`, tolérance 80 px) + bouton « Descendre » flottant ; refs `chatBoxRef`, `dbIdsRef`, `activeModelIdRef`/`activeProviderIdRef` ; handlers `handleRegenerate`, `handleEditUserMessage`, `handleInsertMessage`, `handleVoteMessage`, `handleMessageAction`, `truncateFrom` ; état `feedbackByIndex`.
+  - **`src/lib/agent/run.ts`** : `AgentEvent` étendu d'une variante `reasoning` ; `case "reasoning-delta"` dans la boucle `fullStream` (champ `.text`).
+  - **`src/lib/aiTypes.ts`** : `MessagePart` étendu d'une variante `reasoning` ; helper `appendReasoning` (fusion avec la dernière part `reasoning`) ; `DisplayMessage.dbId` (id de la ligne `messages`, pour cibler édition/régénération).
+  - **`src/lib/toolGroups.ts`** : `buildToolRenderers` expose les parts `reasoning` (`{ kind: "reasoning", content }`).
+  - **`src/components/ai/ReasoningBlock.tsx`** (nouveau) : section repliable (« Raisonnement ») ouverte par défaut pendant le streaming.
+  - **`src/components/ai/ContextUsageBar.tsx`** (nouveau) : **anneau circulaire** type Cursor (arc SVG en `strokeDasharray`, 15 px) + `{pct}%` ; couleur vert/orange (≥80 %)/rouge (≥seuil critique), mêmes seuils que la compaction.
+  - **`src/components/ai/MessageActionsBar.tsx`** (nouveau) : barre d'actions reproduisant la photo de référence — icônes 15 px sur 26 px, alignées à gauche (**copier · insérer/citer · régénérer (assistant) / éditer (user) · pouce haut · pouce bas**), **anneau de contexte poussé à droite** (`marginLeft:auto`). Vote piloté par le parent.
+  - **`src/components/ai/MessageBubble.tsx`** : rendu de la part `reasoning` (`ReasoningBlock`) ; `hasVisibleContent` en tient compte ; barre d'actions sous le contenu (au survol, hors streaming) ; prop `onInsert`.
+  - **`src/lib/sessionStore.ts`** : restauration des parts `reasoning` + peuplement de `dbId` depuis la ligne DB.
+  - **`src/lib/db.ts`** : `deleteMessagesByIds(sessionId, ids)` — suppression ciblée avec **garde d'appartenance** (`AND session_id = ?`), pour éditer/régénérer sans risque de suppression croisée entre sessions.
+  - **`src/components/ai/ChatBox.tsx`** : API impérative `ChatBoxHandle.setText` (via `handleRef`) pour « éditer et renvoyer » / « citer ».
+  - **Suppression** : `src/lib/agent/subagent.ts` (ébauche non câblée, cassait `tsc`).
+
+- **Décisions Techniques :**
+  - **Anti-emoji à deux niveaux** : *prévention* (consigne système) + *filet* au rendu. La consigne seule est peu fiable (le modèle peut désobéir) ; le filet seul salirait le code. Le filet **épargne le code** pour ne jamais altérer un contenu légitime.
+  - **Jauge de contexte = anneau circulaire** (et non barre) pour coller à la référence visuelle demandée ; réutilise `estimateTokensWithOverhead` + les seuils de compaction → cohérence avec le comportement réel (l'utilisateur voit ce qui déclenchera la compaction).
+  - **Anneau affiché uniquement sur le dernier message** : il reflète l'état courant, pas un historique par message (évite la redondance visuelle).
+  - **« Insérer » = citer** : Cursor utilise cette icône pour « repartir de ce message ». Faute d'API d'insertion directe dans l'éditeur, la traduction la plus honnête et utile est **citer le message dans le ChatBox** (réponse contextuelle), pas un bouton mort.
+  - **Vote éphémère en session** : aucun envoi télémétrique sortant (pas de nouvelle surface de fuite) ; l'état est purement visuel.
+  - **Troncature par ids DB indexés** : édition/régénération suppriment proprement les messages postérieurs, avec garde d'appartenance à la session — pas de suppression croisée.
+
+- **Impacts & Dépendances :**
+  - Aucune nouvelle dépendance npm. Nouveaux composants : `textStyle.ts`, `MessageActionsBar.tsx`, `ContextUsageBar.tsx`, `ReasoningBlock.tsx`. `db.ts` expose `deleteMessagesByIds`.
+  - Comportement : le raisonnement du modèle (si fourni par le provider Orvyx) est désormais visible et repliable ; les réponses ne contiennent plus d'emojis décoratifs ; chaque message propose ses actions au survol.
+  - Validation : `tsc --noEmit --incremental false` clean, `eslint src/` **0 erreur** (7 warnings préexistants hors périmètre), vitest **281/281**, `vite build` clean.
+
+- **Prochaines étapes :**
+  - Persister un éventuel vote (feedback) si un canal de télémétrie produit est décidé — actuellement volontairement éphémère.
+
+---
+
+- **Contexte :**
+  Dernier lot du rapprochement Cline/Cursor/Trae. Trois besoins : (1) un **système de permission** calqué sur Trae (`Manual`/`Auto`/`Full Access`) et Cline (permissions *tiered* + *conditionnelles*), sans introduire un second modèle « juge » ; (2) rendre la **compaction visible** dans le fil (comme Trae affiche « Compaction de l'historique… ») et la déclencher **réactivement en fin de tour** dès que l'usage projeté franchit 80 % ; (3) une **télémétrie discrète** du nombre de compactions / reprises.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/permissions.ts`** (nouveau) : `PermissionMode = "manual"|"auto"|"full"`, clé `origin-ai-permission-mode`, défaut `manual`. `decideApproval(action, ctx)` par **règles déterministes** : garde anti-catastrophe brut→`block` (fork bomb, `rm -rf /` et `/*`, `mkfs`, `dd of=/dev/…`, écriture disque brute, `shutdown/reboot`, `chmod 777 /`) **prioritaire sur tous les modes** ; `full`→`approve` ; `ask_user`→toujours `ask` ; `manual` : écriture/exec→`ask` sinon `approve` ; `auto` : écriture **dans le workspace**→`approve`, hors workspace/bash→`ask`. Helpers `isWriteAction`, `actionPath`, `normalizePath`, `isInsideWorkspace` (casse/séparateurs normalisés). `PERMISSION_MODE_INFO`, `loadPermissionMode`/`savePermissionMode`.
+  - **`src/lib/agent/tokenBudget.ts`** : ajout `projectedUsage(messages, marginTokens, budget)` et `shouldPreCompact(...)` — pré-compaction **réactive** : l'usage projeté (historique + marge du tour suivant) ≥ seuil 80 %.
+  - **`src/lib/agent/run.ts`** : `AgentEvent` étendu (`approval-resolved`, `notice{kind:"compaction"|"retry"}`). Bloc budget : émet un `notice` de compaction quand l'historique est réellement réduit (avec tokens économisés) ; boucle retry : émet un `notice` de reprise avant le keep-alive.
+  - **`src/lib/aiTypes.ts`** : `MessagePart` étendu d'une variante `status` (`kind`, `detail`, `savedTokens?`).
+  - **`src/components/ai/StatusNotice.tsx`** (nouveau) : bannière in-line repliable « Compaction de l'historique » / « Reprise automatique » (chevron, icône, tokens économisés).
+  - **`src/components/ai/MessageBubble.tsx`** : rendu de la part `status` via `StatusNotice` ; `hasVisibleContent` tient compte des parts `status`.
+  - **`src/lib/toolGroups.ts`** : `buildToolRenderers` expose les parts `status` (`{ kind: "status", part }`).
+  - **`src/lib/sessionStore.ts`** : la restauration préserve désormais les parts `status` et `plan-card` (avant, tout non-`tool-call` était écrasé en `text`).
+  - **`src/components/ai/AiPanel.tsx`** : `onApproval` décide via `decideApproval` (mode lu à l'instant T) — `block`→toast+reject, `approve`→exécution directe, `ask`→carte ; `handleEvent` gère `approval-resolved` (fige l'état) et `notice` (crée la part `status` + incrémente la télémétrie) ; **pré-compaction réactive en fin de tour** (usage projeté ≥80 % → `compactHistory` + `notice`, marge 16k) ; **indicateur de télémétrie** discret en pied de fil ; reset des compteurs par tour.
+  - **`src/components/ai/ChatBox.tsx`** : `ApprovalMenu` câblé sur `loadPermissionMode`/`savePermissionMode` (le `selected` cosmétique est remplacé par un état persisté) ; option `custom` retirée (aucun fichier de config supporté → ne pas mentir à l'utilisateur).
+  - **`src/components/settings/SettingsPanel.tsx`** : nouvelle `PermissionSection` câblée sur la section nav **« Permission Approval »** (préexistante mais en « Coming soon ») : sélecteur du mode + encart explicatif (avertissement orange en Full Access).
+  - **Tests** : `__tests__/permissions.test.ts` (15) + `tokenBudget.test.ts` étendu (`shouldPreCompact`/`projectedUsage`, 4) → vitest **281/281**.
+
+- **Décisions Techniques :**
+  - **Pas de LLM Guardian** (contrairement à Trae Auto) : règles déterministes = zéro coût, zéro latence, zéro nouvelle surface d'injection de prompt. On reprend de Cline les permissions *tiered* (lecture sûre / écriture à confirmer) et *conditionnelles* (décider sur le **contenu** — chemin, commande — pas seulement le nom du tool).
+  - **Garde anti-catastrophe non désactivable, y compris en Full Access** : l'utilisateur peut tout autoriser, mais jamais détruire irréversiblement la machine. La garde est **étroite** (destruction système/disque) pour ne pas devenir un filtre gênant.
+  - **`ask_user` n'est jamais auto-approuvé** : l'approuver annulerait la question elle-même.
+  - **Pré-compaction en fin de tour** : évite d'attendre l'entrée suivante (retour utilisateur plus rapide au tour suivant) ; la compaction effective reste faite par `runAgent` — une seule implémentation, pas de divergence.
+  - **Restauration des parts non-textuelles** : sans le correctif `sessionStore`, rouvrir une session perdait les bannières de compaction et les cartes de plan.
+
+- **Impacts & Dépendances :**
+  - Aucune nouvelle dépendance. `permissions.ts` est consommé par `AiPanel` (décision runtime), `ChatBox` (sélecteur) et `SettingsPanel` (réglage). `tokenBudget.shouldPreCompact` est consommé par `AiPanel`.
+  - Comportement par défaut inchangé pour l'utilisateur existant : mode `manual` (tout confirmer), comme avant.
+  - Validation : `tsc --noEmit --incremental false` clean, `eslint src/` **0 erreur** (5 warnings préexistants hors périmètre), vitest **281/281**, cargo **90/90**, `vite build` clean, `cargo build --no-default-features` clean.
+
+- **Prochaines étapes :**
+  - Envisager un mode **Custom** reposant sur un vrai fichier de règles (profils type Trae `customProfiles`) si le besoin se confirme.
+  - Étendre la télémétrie (latence, tokens consommés/tour) si utile au réglage fin.
+
+---
+
+### [2026-10-15T15:32] | LOT D — Réduction de contexte + vitesse (patterns jcode)
+
+- **Contexte :**
+  Suite du rapprochement avec Cline/Cursor/Trae. Deux forces de **jcode** (agent TUI Rust) à porter : (1) une **gestion de budget de contexte** qui compacte avant de dépasser la fenêtre du modèle et **tronque d'urgence** en dernier recours, (2) une **politique de retry** qui réessaie les erreurs réellement transitoires sans jamais rejouer un tour qui a déjà produit des éditions.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/tokenBudget.ts`** (nouveau) : constantes et helpers portés de `jcode-compaction-core` — `CHARS_PER_TOKEN=4`, `SYSTEM_OVERHEAD_TOKENS=18_000` (ajouté seulement si budget ≥ 100k), `IMAGE_TOKEN_COST=1_600` (coût forfaitaire image, évite la surestimation ×100 du base64), `COMPACTION_THRESHOLD=0.80`, `CRITICAL_THRESHOLD=0.95`, `EMERGENCY_TOOL_RESULT_MAX_CHARS=4_000`, `DEFAULT_TOKEN_BUDGET=200_000`. `estimateTokens` / `estimateTokensWithOverhead` / `budgetLevel` (`ok`|`compact`|`critical`) ; `emergencyTruncateText` (garde tête `max/2` + queue `max/4` + marqueur) et `emergencyTruncateToolResults` (ne touche jamais au dernier message = tour courant).
+  - **`src/lib/agent/retry.ts`** (nouveau) : `FailureKind` (`permanent`|`rate-limited`|`transient`), `MAX_ATTEMPTS=3`, `BASE_DELAY_MS=3_000`, `MAX_DELAY_MS=30_000`, `MAX_RATE_LIMIT_WAIT_MS=5min`, `CONTINUATION_REMINDER`. Classification par précédence **Permanent > RateLimited > Transient > Permanent (défaut sûr)** ; codes HTTP reconnus comme **nombres isolés** (`containsCode` ignore `req_15030`) ; `parseRetryAfter` (ms/s/m/h) ; `retryDelayMs` = backoff exp `base·2^(attempt-1)` **+ jitter ±20 %**, plafonné, `Retry-After` serveur prioritaire sous le cap.
+  - **`src/lib/agent/compactHistory.ts`** : supprime l'`estimateTokens` et le gate local `40_000` ; importe les constantes partagées, gate = `0.80 × 200_000 = 160_000`.
+  - **`src/lib/agent/run.ts`** : `attemptRun()` factorisé. Avant l'appel, `budgetLevel()` décide : `critical` → `emergencyTruncateToolResults` puis `compactHistory` (re-troncature si encore ≥ 95 %) ; sinon `compactHistory`. Boucle de tour : `producedOutput` partagé, `canRetry = !producedOutput || attempt === 1`, backoff via `retryDelayMs`, `CONTINUATION_REMINDER` injecté en message user final pour les reprises, keep-alive `token` vide pour garder l'UI en streaming. Helpers `toError` / `sleep(ms, signal)` (annulable).
+  - **Tests** : `src/lib/agent/__tests__/retry.test.ts` (12) + `tokenBudget.test.ts` (12) → vitest **262/262**.
+
+- **Décisions Techniques :**
+  - **Ne jamais rejouer un tour ayant produit du contenu** (`canRetry`) : une reprise aveugle dupliquerait des éditions déjà approuvées. Un tour « à vide » peut être rejoué à l'identique ; un tour « sale » reçoit un simple rappel de continuation.
+  - **Défaut = permanent** dans la classification : en l'absence de marqueur connu on ne réessaie **pas** — un retry silencieux masquerait une erreur de config (clé invalide, modèle inconnu).
+  - **Comptage heuristique chars/4** assumé (pas de tokenizer exact) : la décision porte uniquement sur « quand compacter », jamais sur une troncature silencieuse d'une réponse utilisateur en vol.
+  - **Coût image forfaitaire** : le base64 d'une image fausse `chars/4` d'un facteur ~100 ; on compte un forfait par image.
+  - **Troncature d'urgence = dernier rempart**, ne touche jamais le tour courant et préserve l'ordre/format des messages.
+
+- **Impacts & Dépendances :**
+  - Aucune nouvelle dépendance (ni front ni Rust). Le seuil de compaction passe effectivement de 40k à 160k tokens — les longues sessions seront compactées **beaucoup moins souvent**, ce qui préserve le contexte utile plus longtemps (aligné jcode).
+  - `run.ts` est appelé par `AiPanel` via `runAgent` : signature **inchangée**, comportement interne enrichi (budget + retry). `containsCode` est désormais **exporté** (utilisé par les tests).
+  - Validation : `tsc --noEmit --incremental false` clean, `eslint` clean, vitest **262/262**, cargo **90/90**, `cargo build --no-default-features` clean.
+
+- **Prochaines étapes :**
+  - Phase `validate-all` : revue finale transversale (LOT A→D), vérification de l'intégration bout-en-bout dans `AiPanel`.
+  - Envisager : compaction **réactive en fin de tour** (déclencher dès que l'usage projeté franchit 80 % plutôt qu'à l'entrée suivante), et télémesure du nombre de compactions/retries pour le réglage fin.
+
+---
+
+### [2026-10-15T15:20] | LOT A — Undo all / Keep all : checkpoints par tour (snapshots par copie)
+
+- **Contexte :**
+  Objectif : atteindre le niveau Cline/Cursor/Trae côté agent. Trae (et Cursor) offrent un **rollback en un clic** de toutes les modifications d'un tour d'agent (« Undo all » / « Keep all »). Origin n'avait aucun filet de sécurité : si l'agent modifiait 12 fichiers, l'utilisateur devait revenir à la main (git, undo éditeur…). Ce lot porte ce pattern.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/checkpoint.rs`** (nouveau) : journal de checkpoint par `turn_id`. Commandes `checkpoint_begin`, `checkpoint_touch_file` (idempotent : le **premier** état gagne), `checkpoint_undo` (réécrit les fichiers existants, **supprime** ceux créés pendant le tour, puis purge), `checkpoint_discard`, `checkpoint_count`. Racine = `<app_data_dir>/checkpoints` (jamais dans le workspace). Écriture de manifeste **atomique** (tmp + rename).
+  - **`src-tauri/src/fs.rs`** : ajout de **`assert_in_workspace_public`**, wrapper exposant la garde de confinement (canonicalisation + détection de symlinks) aux autres modules.
+  - **`src-tauri/src/lib.rs`** : `mod checkpoint;` + enregistrement des 5 commandes dans l'`invoke_handler`.
+  - **`src/lib/turnCheckpoint.ts`** (nouveau) : façade front (`beginTurnCheckpoint`, `touchTurnFile`, `undoTurnCheckpoint`, `discardTurnCheckpoint`, `countTurnCheckpoint`).
+  - **`src/lib/agent/tools.ts`** : `createTools` accepte **`onBeforeWrite`**, appelé dans le `approve()` de `write_file`/`edit`/`multi_edit` — donc **juste avant l'écriture effective**, et **pas** quand l'utilisateur refuse le diff.
+  - **`src/components/ai/AiPanel.tsx`** : état de tour (`activeTurnIdRef`, `turnTouchedRef`, `streamDirtyRef`, `checkpointBanner`). `beginTurn()` ouvre un checkpoint dès le début d'un tour non-`ask` et **purge l'ancien** (Keep all implicite). Le `tool-call` d'un outil d'écriture marque le tour « sale » ; le `finish` affiche la bannière si le tour a écrit. `handleUndoAll`/`handleKeepAll` exécutent les actions avec toasts.
+  - **`src/components/ai/TurnCheckpointCard.tsx`** (nouveau) : bannière liste de fichiers modifiés + boutons **Undo all / Keep all**, repliable au-delà de 2 fichiers.
+
+- **Décisions Techniques :**
+  - **Copies ciblées plutôt que git** (choix utilisateur validé) : le workspace n'est pas forcément un dépôt git, et même s'il l'est, manipuler son index/HEAD risque de **perdre du travail non commité**. Une copie des seuls fichiers touchés est simple, prévisible, sans effet de bord sur l'état git.
+  - **Snapshot dans le data dir applicatif, pas dans le workspace** : on ne pollue pas le projet de l'utilisateur et on évite qu'un snapshot apparaisse dans son diff/git.
+  - **Nom de backup dérivé d'un hash FNV-1a** du chemin absolu → aucun `/` ni `..` injectable via un nom de fichier, même si un manifeste était forgé.
+  - **Garde `assert_in_workspace` à la restauration** : un manifeste altéré **ne peut pas** écrire hors du workspace — la restauration est re-validée côté Rust, pas seulement à la capture.
+  - **Idempotence au premier état** : si un fichier est édité 3 fois dans le même tour, on restaure l'état **d'avant le tour** ; capturer à chaque écriture produirait un rollback incohérent.
+  - **Purge du checkpoint précédent à l'ouverture d'un nouveau tour** : évite la fuite disque de snapshots orphelins (l'utilisateur peut ignorer la bannière et continuer à travailler).
+
+- **Impacts & Dépendances :**
+  - Rust : nouveau module `checkpoint` (dépend de `tauri::Manager` pour `app_data_dir`), pas de nouvelle crate. `fs.rs` expose une fonction publique supplémentaire.
+  - Front : `createTools` gagne un paramètre optionnel `onBeforeWrite` (rétrocompatible — les autres appelants `createReadOnlyTools`/`createAskTools` ne le passent pas).
+  - **Tests** : vitest **237/237**, cargo **90/90** (dont 2 nouveaux sur `path_hash` et la validation de `turn_id`). `tsc --noEmit` clean, `eslint` sans erreur nouvelle, `cargo build --no-default-features` sans warning.
+  - Limite connue : le checkpoint est **en mémoire côté front** (`activeTurnIdRef`) ; si l'app se ferme entre l'écriture et le clic Undo, la bannière disparaît (les snapshots restent sur disque jusqu'au prochain tour). Acceptable pour un rollback « de tour ».
+
+- **Prochaines étapes :**
+  - **LOT B** : tool `ask_user` interactif (question + 2-4 options cliquables, réponse renvoyée comme résultat de tool) — `AskUserCard`.
+  - **LOT C** : TodoList épinglée au-dessus de l'input (lecture du `todoStore`).
+  - **LOT D** : réduction de contexte + vitesse (patterns jcode : compaction 80 %/95 %, comptage heuristique chars/4, retry backoff exponentiel).
+
+---
+
+### [2026-10-15T15:18] | LOT C — TodoList épinglée au-dessus de l'input
+
+- **Contexte :**
+  Trae affiche la todo-list de l'agent **au-dessus de la zone d'input**, en résumé compact qui se déplie : l'utilisateur voit l'avancement sans ouvrir de panneau. Origin n'exposait les todos que comme carte de tool call, noyée dans le fil.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/todoStore.ts`** (nouveau) : store **réactif observable** par `sessionId` — `TodoItem { id, content, status: pending|in_progress|done|cancelled }`, `getTodos`/`setTodos`/`clearTodos`/`subscribe`, et hook **`useTodos(sessionId)`** via `useSyncExternalStore`.
+  - **`src/lib/agent/tools.ts`** : supprime le `Map`/`TodoItem` local, importe le store partagé. `createTools` gagne **`sessionId?`** (injecté par l'appelant, **jamais** par le modèle). `todo_write` = `{ todos: [...] }` → `setTodos(sessionId, …)` ; `todo_read` = `{}` → `getTodos(sessionId)`.
+  - **`src/components/ai/PinnedTodoList.tsx`** (nouveau) : ligne résumé (icône, compteur `fait/total`, tâche courante, barre de progression, chevron) ; se déplie en liste avec icônes/couleurs par statut ; renvoie `null` si vide ou tout terminé/annulé.
+  - **`src/components/ai/AiPanel.tsx`** : `activeSessionId` promu en **state** (+ ref) pour re-render réactif ; les 6 sites d'assignation mis à jour ; `<PinnedTodoList>` juste au-dessus du `<ChatBox>`.
+  - **`src/lib/ai.ts`** : consignes `todo_write` dans le prompt système (full + lite).
+
+- **Décisions Techniques :**
+  - **`sessionId` hors du contrat d'outil** : si le modèle pouvait le fournir, il pourrait lire/écrire les todos d'une **autre** session (contournement d'isolation). Il est injecté côté hôte uniquement.
+  - **`useSyncExternalStore`** plutôt qu'un contexte React : lecture fine, pas de re-render du panneau entier, et le store reste utilisable hors composant (tests, tools).
+  - **Auto-masquage quand tout est terminé** : sans ça, la liste resterait collée à l'écran après la fin d'une tâche, bruit visuel permanent.
+
+- **Impacts & Dépendances :**
+  - `todoStore` remplace l'ancien état local de `tools.ts` — l'état des todos devient **partagé** entre les tools et l'UI.
+  - Validation : vitest **237/237** (à cette étape), `tsc`/`eslint` clean. Pas de changement Rust.
+
+- **Prochaines étapes :**
+  - **LOT D** : réduction de contexte + vitesse (jcode).
+
+---
+
+### [2026-10-15T15:12] | LOT B — Tool `ask_user` interactif (pattern Trae)
+
+- **Contexte :**
+  Trae (et Cline) permettent à l'agent de **poser une question structurée** à l'utilisateur en plein tour, avec des options cliquables, au lieu de deviner. Origin ne savait que s'arrêter ou demander en langage naturel dans le fil.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/tools.ts`** : `PendingAction` étendu avec `{ type: "ask_user"; question; options; allowFreeform }` ; `ApprovalEvent.reject` devient `(answer?: string) => void` ; nouvel outil `ask_user` (2–4 options, `allow_freeform` par défaut `true`), **bloque** via une Promise. `approve()` → `{ cancelled: true }` ; `reject(answer)` → `{ answer }`.
+  - **`src/lib/aiTypes.ts`** : `ToolCallDisplay.reject` = `(answer?: string) => void`.
+  - **`src/components/ai/AskUserCard.tsx`** (nouveau) : options cliquables + saisie libre (Entrée / bouton Send) ; état « Answered » figé après réponse.
+  - **`src/components/ai/ToolCallCard.tsx`** : label `ask_user: "Question"`, routage vers `AskUserCard` (avec `tc.reject?.(answer)` ou état figé), résumé `Answer: …`.
+  - **`src/lib/ai.ts`** : consignes `ask_user` dans le prompt système (full + lite).
+
+- **Décisions Techniques :**
+  - **La réponse passe par le canal `reject(answer)`** (extension du canal d'approbation existant) plutôt qu'un nouveau chemin : un seul mécanisme bloquant à maintenir, et l'outil renvoie la réponse **comme résultat de tool** (le modèle la voit dans son contexte, comme chez Trae/Cline).
+  - **`approve()` = annulation** (l'utilisateur ferme/skip) : l'agent reçoit `{ cancelled: true }` et peut décider quoi faire, au lieu d'inventer une réponse.
+  - **`allow_freeform` par défaut `true`** : sans saisie libre, on enfermerait l'utilisateur dans les options proposées par le modèle — risque de réponse forcée non voulue.
+
+- **Impacts & Dépendances :**
+  - Signature de `ApprovalEvent.reject` élargie (rétrocompatible : les outils qui ignorent l'argument continuent de fonctionner).
+  - Validation : vitest **237/237** (à cette étape), `tsc`/`eslint` clean. Pas de changement Rust.
+
+- **Prochaines étapes :**
+  - **LOT C** : TodoList épinglée au-dessus de l'input.
+
+---
+
+### [2026-10-15T14:55] | Vague 1 — Fiabilité édition (moteur de matching Cline)
+
+- **Contexte :**
+  Objectif : rapprocher l'agent de l'IDE du niveau Cline/Cursor. Analyse comparative → priorisation en 3 vagues ; la **Vague 1** cible la fiabilité des éditions (le point qui casse le plus un agent : « old_string not found »), plus le bornage des I/O. Le code source réel de Cline SDK a été cloné en référence (`/Users/user/code/_reference/cline`) et ses patterns portés dans Origin.
+
+- **Modifications effectuées :**
+  - **`src/lib/editMatch.ts`** (nouveau, moteur pur) : `canonicalize()` (NFC + normalisation de la ponctuation typographique `—`/guillemets/apostrophes/espaces insécables + échappements), `levenshteinDistance` (mémoire linéaire) + `similarity`, `findTextMatch(haystack, needle)` à **4 niveaux** (exact → trimEnd par ligne → trim complet → similarité **≥ 0.66**), `replaceText`. **Refus explicite de l'ambiguïté** : 0 occurrence → `not_found` (+ `bestSimilarity`), >1 → `ambiguous` (+ compteur). 19 tests.
+  - **`src/lib/applyEdit.ts`** (réécrit en façade) : `applyEdit` (compat, renvoie `string | null`), `applyEditDetailed` (renvoie `{ ok, content, fuzz, similarity }` | échec), type `EditFailure`, et **`describeEditFailure(path, outcome)`** — messages **actionnables** (« Do not re-send this call unchanged », « extend old_string… ») portés de `editor.ts` de Cline.
+  - **`src/lib/agent/tools.ts`** : tool `edit` (mode agent) branché sur `applyEditDetailed` + `describeEditFailure`, entrées `z.coerce.string()`, note de fuzzy match renvoyée au modèle. **`multi_edit` ajouté au toolset agent** (atomique, all-or-nothing, un seul diff, nomme l'édition fautive) ; `edit`/`multi_edit` du mode **ask** alignés sur le même moteur. `read_file` branché sur la lecture bornée.
+  - **`src/lib/ai.ts`** : prompts système enrichis (matching tolérant, **unicité obligatoire**, contexte 3–5 lignes, « ne jamais renvoyer un appel échoué à l'identique », `multi_edit` pour plusieurs changements dans un fichier).
+  - **`src-tauri/src/fs.rs`** : nouvelle commande **`read_file_range`** (`FileSlice { content, start_line, end_line, total_lines, truncated }`), plafond **2000 lignes/appel**, bornes clampées, réutilise `assert_in_workspace`. 7 tests.
+  - **`src-tauri/src/ai.rs`** : **`agent_bash_run`** réécrit — `tokio::process::Command` + **`kill_on_drop(true)`**, **timeout dur 120 s** (process réellement tué), `stdin` null, **troncature stdout/stderr à 64 Ko/flux**, champs `timed_out`/`truncated`.
+  - **`src/components/ai/ToolCallCard.tsx`** : `multi_edit` (label/icône/aperçu), affichage de la **plage de lignes** et de la troncature pour `read_file`.
+  - **`src-tauri/src/lib.rs`** : `fs::read_file_range` enregistrée dans l'`invoke_handler`.
+
+- **Décisions Techniques :**
+  - **Porter le moteur de Cline plutôt que l'inventer** : le fuzzy matching à seuil + canonicalisation Unicode + refus d'ambiguïté sont éprouvés à grande échelle ; les réimplémenter from scratch aurait réintroduit les mêmes bugs. Origin garde l'orchestration TS (Vercel AI SDK) côté renderer ; Rust ne durcit que les **bordures système** (FS/shell), conforme à la règle « TS pour l'orchestration, Rust pour le confinement ».
+  - **Refus de l'ambiguïté = choix de sécurité** : éditer une occurrence arbitraire quand `old_string` apparaît plusieurs fois est un vecteur de **corruption silencieuse**. On préfère refuser et demander plus de contexte (test historique « multiple occurrences » réécrit de `"bar foo foo"` → `null`, changement volontaire).
+  - **`kill_on_drop` obligatoire** : `std::process::Command::output()` ne peut pas être interrompu ; un `timeout` sans kill laisserait le process **fuir** et grossir indéfiniment. `tokio::process` + drop du `Child` garantit l'arrêt.
+  - **Bornes = anti-DoS + économie de contexte** : `read_file` plafonné (2000 lignes) et `bash_run` plafonné (64 Ko) empêchent un fichier/sortie volumineux de saturer la mémoire de la webview ou la fenêtre de contexte du modèle.
+  - **`z.coerce` sur les entrées d'édition/lecture** : les modèles renvoient parfois des nombres en string ; coercition = moins d'échecs de validation Zod sans relâcher le typage interne.
+
+- **Impacts & Dépendances :**
+  - Front : `applyEdit` reste exporté (compat) ; les 3 appels internes passent par `applyEditDetailed`. `read_file` renvoie désormais un **objet slice** et non `{ content }` brut — `ToolCallCard` gère les deux formes.
+  - Rust : `BashResult` gagne 2 champs (`timed_out`, `truncated`) ; `ai.rs` dépend de `tokio` features `process`/`time`/`io-util` (déjà présentes).
+  - **Tests** : vitest **237/237** (dont 19 sur le moteur d'édition), cargo **88/88** (dont 7 sur `read_file_range`). `tsc --noEmit` clean, `eslint src/` sans erreur nouvelle, `cargo build --no-default-features` sans warning.
+
+- **Prochaines étapes :**
+  - **Vague 2** : contexte projet (`AGENTS.md` / `.originrules`…), `@codebase` sémantique, diagnostics post-édition, queue de messages.
+  - **Vague 3** : terminal persistant, checkpoints/rollback, MCP, sous-agents, permissions granulaires.
+  - Surveiller en usage réel : taux de `not_found` vs `ambiguous` (télémétrie légère à prévoir) pour ajuster le seuil de similarité si besoin.
+
+---
 
 - **Contexte :**
   Décision produit : « supprimer le système d'extension façon VS Code et créer notre propre système comme Zed, pour rendre l'outil plus léger ». Approche retenue (validée) : **garder le sandbox QuickJS** mais remplacer le shim `vscode.*` par une **API `origin.*` maison** ; **retirer le marketplace Open VSX** ; **retirer l'icône/menu Extensions de l'activity bar** (UI masquée « pour le moment »).

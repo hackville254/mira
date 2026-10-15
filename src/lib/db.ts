@@ -173,6 +173,22 @@ export async function loadMessages(sessionId: string): Promise<DbMessage[]> {
   );
 }
 
+/**
+ * Supprime des messages par id, en se limitant à une session donnée.
+ * Le `AND session_id = ?` est une garde d'appartenance : même si un id
+ * provenait d'une autre session (bug d'appelant), on ne peut pas l'effacer
+ * depuis le contexte de cette session — pas de suppression croisée.
+ */
+export async function deleteMessagesByIds(sessionId: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const db = await getDb();
+  const placeholders = ids.map(() => "?").join(", ");
+  await db.execute(
+    `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`,
+    [sessionId, ...ids],
+  );
+}
+
 export async function deleteSession(id: string): Promise<void> {
   const db = await getDb();
   await db.execute(`DELETE FROM messages WHERE session_id = ?`, [id]);

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { Icon } from "@iconify/react";
 import AiPanel, { type AiDiffTabInput } from "./AiPanel";
+import AgentPanel from "./AgentPanel";
 import TaskRail from "./TaskRail";
 import Sidebar from "../Sidebar";
 import TabBar, { type Tab } from "../editor/TabBar";
@@ -168,6 +169,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
         getOpenTabPaths={() => tabs.map(t => t.path)}
         getFileContents={() => fileContents}
         onOpenDiffTab={openAiDiffTab}
+        onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
       />
 
       {/* Tool panels (center) — always open */}
@@ -511,7 +513,9 @@ export default function AgentModeView(props: AgentModeViewProps) {
             </div>
           )}
 
-          {(activeToolTab === "docview" || activeToolTab === "diffview" || activeToolTab === "agents") && (
+          {activeToolTab === "agents" && <AgentPanel />}
+
+          {(activeToolTab === "docview" || activeToolTab === "diffview") && (
             <div className="flex-1 flex flex-col items-center justify-center gap-2" style={{ color: "var(--origin-fg-subtle)" }}>
               <Icon icon={TOOL_TABS.find(t => t.id === activeToolTab)?.icon ?? "lucide:file"} width={32} />
               <p className="text-sm font-medium">{TOOL_TABS.find(t => t.id === activeToolTab)?.label}</p>

@@ -11,7 +11,7 @@ import ollamaIcon      from '../../assets/ai-icons/ollama.svg';
 import claudeColorIcon from '../../assets/ai-icons/claude-color.svg';
 import metaColorIcon   from '../../assets/ai-icons/meta-color.svg';
 
-export const DEFAULT_MODEL_ID    = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL_ID    = 'claude-sonnet-4-5';
 export const DEFAULT_PROVIDER_ID = 'anthropic';
 
 export interface AIModel {
@@ -36,6 +36,29 @@ export interface AIProvider {
 
 export const PROVIDERS: AIProvider[] = [
   {
+    id: 'orvyx',
+    name: 'Orvyx',
+    initial: 'Ø',
+    icon: null,
+    invert: false,
+    color: '#7c3aed',
+    textColor: '#ffffff',
+    models: [
+      { id: 'claude-sonnet-4-5',              name: 'Claude Sonnet 4.5',    description: 'Balanced speed and intelligence',      color: '#f97316' },
+      { id: 'claude-opus-4-8',                name: 'Claude Opus 4.8',      description: 'Most capable, best for complex tasks', color: '#ef4444' },
+      { id: 'claude-haiku-4-5',               name: 'Claude Haiku 4.5',     description: 'Fast and lightweight',                 color: '#f59e0b' },
+      { id: 'deepseek-v4-flash',              name: 'DeepSeek V4 Flash',    description: 'Fast DeepSeek, 1M context',            color: '#1a6cf5' },
+      { id: 'deepseek-v4-pro',                name: 'DeepSeek V4 Pro',      description: 'Strong reasoning, 1M context',         color: '#2563eb' },
+      { id: 'deepseek-r1-0528',               name: 'DeepSeek R1',          description: 'Advanced reasoning model',             color: '#3b82f6' },
+      { id: 'qwen3-coder-480b-a35b-instruct-turbo', name: 'Qwen3 Coder 480B', description: 'Specialised for code generation',   color: '#8b5cf6' },
+      { id: 'gemini-2.5-pro',                 name: 'Gemini 2.5 Pro',       description: 'Most capable Gemini model',            color: '#3b82f6' },
+      { id: 'gemini-2.5-flash',               name: 'Gemini 2.5 Flash',     description: 'Fast multimodal model',                color: '#6366f1' },
+      { id: 'gpt-oss-120b',                   name: 'GPT-OSS 120B',         description: 'Open-weight general model',            color: '#22c55e' },
+      { id: 'kimi-k2.6',                      name: 'Kimi K2.6',            description: 'Long-context general model',           color: '#0ea5e9' },
+      { id: 'glm-4.6',                        name: 'GLM 4.6',              description: 'Efficient general-purpose model',      color: '#14b8a6' },
+    ],
+  },
+  {
     id: 'anthropic',
     name: 'Anthropic',
     initial: 'A',
@@ -44,8 +67,8 @@ export const PROVIDERS: AIProvider[] = [
     color: '#c9765a',
     textColor: '#ffffff',
     models: [
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Balanced speed and intelligence',      color: '#f97316', icon: claudeColorIcon },
-      { id: 'claude-opus-4-8',   name: 'Claude Opus 4.8',   description: 'Most capable, best for complex tasks', color: '#ef4444', icon: claudeColorIcon },
+      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Balanced speed and intelligence',      color: '#f97316', icon: claudeColorIcon },
+      { id: 'claude-opus-4-1',   name: 'Claude Opus 4.1',   description: 'Most capable, best for complex tasks', color: '#ef4444', icon: claudeColorIcon },
       { id: 'claude-haiku-4-5',  name: 'Claude Haiku 4.5',  description: 'Fast and lightweight',                 color: '#f59e0b', icon: claudeColorIcon },
     ],
   },

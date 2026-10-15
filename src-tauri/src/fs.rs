@@ -55,6 +55,13 @@ fn assert_in_workspace(path: &str, workspace_root: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Wrapper public de `assert_in_workspace` pour les autres modules (ex.
+/// `checkpoint`) qui doivent appliquer la même garde sans dupliquer la logique
+/// de canonicalisation / détection de symlinks.
+pub fn assert_in_workspace_public(path: &str, workspace_root: &str) -> Result<(), String> {
+    assert_in_workspace(path, workspace_root)
+}
+
 #[derive(serde::Serialize)]
 pub struct DirEntry {
     name: String,
@@ -92,6 +99,71 @@ pub fn read_file(path: String, workspace_root: Option<String>) -> Result<String,
         assert_in_workspace(&path, &root)?;
     }
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// Plafond de lignes renvoyées par `read_file_range`. Au-delà, on tronque et on
+/// signale `truncated = true` : le modèle peut alors demander la suite via
+/// `start_line`. Borne anti-DoS (un fichier de 500 k lignes ne doit pas saturer
+/// la fenêtre de contexte ni la mémoire de la webview).
+pub const READ_FILE_MAX_LINES: usize = 2000;
+
+#[derive(serde::Serialize)]
+pub struct FileSlice {
+    content: String,
+    start_line: usize, // 1-based, borne réellement appliquée
+    end_line: usize,   // 1-based inclusif
+    total_lines: usize,
+    truncated: bool,
+}
+
+/// Lit un fichier **par plage de lignes** (1-based, `end_line` inclusif).
+///
+/// `start_line = 0` ou `end_line = 0` sont interprétés comme « depuis le début »
+/// / « jusqu'à la fin ». Les bornes sont clampées à la taille réelle du fichier.
+/// Le nombre de lignes renvoyées est plafonné à `READ_FILE_MAX_LINES`.
+#[tauri::command]
+pub fn read_file_range(
+    path: String,
+    workspace_root: Option<String>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<FileSlice, String> {
+    if let Some(root) = workspace_root {
+        assert_in_workspace(&path, &root)?;
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+
+    // `lines()` perd le `\r` final et l'information de newline final : on
+    // reconstruit un découpage qui préserve le contenu exact des lignes.
+    let all: Vec<&str> = text.split('\n').collect();
+    let total_lines = if text.is_empty() { 0 } else { all.len() };
+
+    let start = start_line.unwrap_or(1).max(1);
+    let requested_end = end_line.unwrap_or(0);
+    let mut end = if requested_end == 0 { total_lines } else { requested_end };
+    if end < start {
+        end = start.saturating_sub(1);
+    }
+    if end > total_lines {
+        end = total_lines;
+    }
+
+    let capped_end = end.min(start.saturating_add(READ_FILE_MAX_LINES).saturating_sub(1));
+    let truncated = capped_end < end;
+
+    let slice: String = if total_lines == 0 || start > total_lines {
+        String::new()
+    } else {
+        all[start - 1..capped_end].join("\n")
+    };
+
+    Ok(FileSlice {
+        content: slice,
+        start_line: start,
+        end_line: capped_end,
+        total_lines,
+        truncated,
+    })
 }
 
 /// Taille maximale d'un fichier binaire renvoyé au front (base64) : au-delà, on
@@ -250,6 +322,99 @@ fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resu
     }
     std::fs::copy(src, dst)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Crée un fichier temporaire unique contenant `content` et renvoie son chemin.
+    /// Suffixe par process-id + compteur atomique pour éviter les collisions entre
+    /// tests parallèles (cargo exécute les tests en parallèle par défaut).
+    fn tmp_file(content: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let mut p = std::env::temp_dir();
+        p.push(format!("origin_fs_test_{}_{}.txt", std::process::id(), n));
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    #[test]
+    fn read_file_range_full_file() {
+        let p = tmp_file("a\nb\nc");
+        let s = read_file_range(p.to_string_lossy().to_string(), None, None, None).unwrap();
+        assert_eq!(s.content, "a\nb\nc");
+        assert_eq!(s.start_line, 1);
+        assert_eq!(s.end_line, 3);
+        assert_eq!(s.total_lines, 3);
+        assert!(!s.truncated);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_subrange_is_inclusive() {
+        let p = tmp_file("a\nb\nc\nd");
+        let s = read_file_range(p.to_string_lossy().to_string(), None, Some(2), Some(3)).unwrap();
+        assert_eq!(s.content, "b\nc");
+        assert_eq!(s.start_line, 2);
+        assert_eq!(s.end_line, 3);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_clamps_out_of_bounds() {
+        let p = tmp_file("a\nb\nc");
+        let s = read_file_range(p.to_string_lossy().to_string(), None, Some(2), Some(999)).unwrap();
+        assert_eq!(s.content, "b\nc");
+        assert_eq!(s.end_line, 3);
+        assert!(!s.truncated);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_start_past_eof_is_empty() {
+        let p = tmp_file("a\nb");
+        let s = read_file_range(p.to_string_lossy().to_string(), None, Some(50), None).unwrap();
+        assert_eq!(s.content, "");
+        assert_eq!(s.total_lines, 2);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_truncates_at_cap() {
+        let lines: Vec<String> = (0..(READ_FILE_MAX_LINES + 5)).map(|i| i.to_string()).collect();
+        let p = tmp_file(&lines.join("\n"));
+        let s = read_file_range(p.to_string_lossy().to_string(), None, Some(1), None).unwrap();
+        assert!(s.truncated);
+        assert_eq!(s.end_line, READ_FILE_MAX_LINES);
+        assert_eq!(s.content.split('\n').count(), READ_FILE_MAX_LINES);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_zero_start_means_from_top() {
+        let p = tmp_file("a\nb\nc");
+        let s = read_file_range(p.to_string_lossy().to_string(), None, Some(0), Some(2)).unwrap();
+        assert_eq!(s.content, "a\nb");
+        assert_eq!(s.start_line, 1);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn read_file_range_rejects_escape() {
+        let fake_root = std::env::temp_dir().join("origin_fs_test_root");
+        std::fs::create_dir_all(&fake_root).unwrap();
+        let err = read_file_range(
+            "/etc/hosts".to_string(),
+            Some(fake_root.to_string_lossy().to_string()),
+            None,
+            None,
+        );
+        assert!(err.is_err());
+        std::fs::remove_dir_all(&fake_root).ok();
+    }
 }
 
 /// Returns the config base directory for a known editor on the current OS.

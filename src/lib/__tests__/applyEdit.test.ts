@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { applyEdit } from "../applyEdit";
+import { applyEdit, applyEditDetailed } from "../applyEdit";
+import { canonicalize, similarity, levenshteinDistance } from "../editMatch";
 
 describe("applyEdit", () => {
   it("replaces an exact match in the middle of the file", () => {
@@ -27,16 +28,10 @@ describe("applyEdit", () => {
     expect(applyEdit("", "anything", "replaced")).toBeNull();
   });
 
-  it("replaces only the first occurrence when there are multiple", () => {
-    const result = applyEdit("foo foo foo", "foo", "bar");
-    expect(result).toBe("bar foo foo");
-  });
-
-  it("falls back to trimmed match when exact match fails", () => {
-    const file = "function foo() {}";
-    // original has extra surrounding whitespace
-    const result = applyEdit(file, "  function foo  ", "function bar");
-    expect(result).toBe("function bar() {}");
+  it("refuses to edit when the original is ambiguous (multiple occurrences)", () => {
+    // Sécurité : appliquer une édition à une occurrence arbitraire est pire que
+    // d'échouer. L'agent doit fournir plus de contexte pour lever l'ambiguïté.
+    expect(applyEdit("foo foo foo", "foo", "bar")).toBeNull();
   });
 
   it("uses updated verbatim (does not trim updated)", () => {
@@ -47,13 +42,82 @@ describe("applyEdit", () => {
     expect(applyEdit("aXb", "X", "")).toBe("ab");
   });
 
-  it("handles empty original that exists at index 0", () => {
-    // empty string is always found at index 0
-    const result = applyEdit("abc", "", "PREFIX");
-    expect(result).toBe("PREFIXabc");
+  it("returns null for an empty original", () => {
+    expect(applyEdit("abc", "", "PREFIX")).toBeNull();
   });
 
   it("does not modify file when original not found even with trim", () => {
     expect(applyEdit("function foo() {}", "function bar", "function baz")).toBeNull();
+  });
+});
+
+describe("applyEdit — tolérance (porté de Cline)", () => {
+  it("matches after trimEnd per line (fuzz 100)", () => {
+    const file = "function foo() {\n  return 1;\n}\n";
+    // Le modèle a laissé des espaces en fin de lignes.
+    const original = "function foo() {  \n  return 1;  \n}";
+    const res = applyEditDetailed(file, original, "function foo() {\n  return 2;\n}");
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.fuzz).toBe(100);
+      expect(res.content).toBe("function foo() {\n  return 2;\n}\n");
+    }
+  });
+
+  it("matches after full trim per line (fuzz 1000)", () => {
+    const file = "function foo() {\n    return 1;\n}\n";
+    // Indentation différente émise par le modèle.
+    const original = "function foo() {\n  return 1;\n}";
+    const res = applyEditDetailed(file, original, "function foo() {\n    return 99;\n}");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.fuzz).toBe(1000);
+  });
+
+  it("matches typographic punctuation (smart quotes / em-dash)", () => {
+    const file = 'const s = "hello" \u2014 world;';
+    const original = "const s = \u201Chello\u201D \u2013 world;"; // guillemets courbes + en-dash
+    const res = applyEditDetailed(file, original, 'const s = "hi" - world;');
+    expect(res.ok).toBe(true);
+  });
+
+  it("falls back to Levenshtein similarity ≥ 0.66 for near misses", () => {
+    const file = "function computeTotal(items) {\n  return items.length;\n}";
+    // Faute de frappe légère : le modèle écrit « compuetTotal ».
+    const original = "function compuetTotal(items) {\n  return items.length;\n}";
+    const res = applyEditDetailed(file, original, "function computeTotal(items) {\n  return 0;\n}");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.fuzz).toBe(1000);
+  });
+
+  it("refuses a match below the similarity threshold", () => {
+    const file = "function computeTotal(items) {\n  return items.length;\n}";
+    const original = "totally unrelated content here";
+    expect(applyEdit(file, original, "x")).toBeNull();
+  });
+
+  it("reports ambiguity after canonicalisation too", () => {
+    const file = 'a = "x";\nb = "x";\n';
+    const original = 'a = \u201Cx\u201D;'; // une seule occurrence canonique → OK
+    const res = applyEditDetailed(file, original, 'a = "y";');
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe("editMatch — primitives", () => {
+  it("levenshteinDistance basic cases", () => {
+    expect(levenshteinDistance("", "")).toBe(0);
+    expect(levenshteinDistance("abc", "abc")).toBe(0);
+    expect(levenshteinDistance("abc", "abd")).toBe(1);
+    expect(levenshteinDistance("kitten", "sitting")).toBe(3);
+  });
+
+  it("similarity returns 1 for identical strings", () => {
+    expect(similarity("abc", "abc")).toBe(1);
+  });
+
+  it("canonicalize normalizes typographic punctuation", () => {
+    expect(canonicalize("\u201Cquote\u201D")).toBe('"quote"');
+    expect(canonicalize("a\u2014b")).toBe("a-b");
+    expect(canonicalize("a\u00A0b")).toBe("a b");
   });
 });

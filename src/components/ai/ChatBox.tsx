@@ -1,11 +1,13 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target } from "lucide-react";
+import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square } from "lucide-react";
 import PreferencesDropdown from "./PreferencesDropdown";
 import MentionDropdown from "./MentionDropdown";
 import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
+import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
+import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 
 // ── Agent selector ────────────────────────────────────────────────────────────
 
@@ -75,17 +77,20 @@ function ModeDropdown({ anchorEl, selected, onSelect, onClose }: {
 
 // ── Approval menu (UI only) ─────────────────────────────────────────────────────
 
-const APPROVAL_OPTIONS = [
-  { id: "manual", Icon: Hand,           label: "Manual Approval", desc: "You confirm important actions",                        color: undefined },
-  { id: "auto",   Icon: MessageCircle,  label: "Auto Approval",   desc: "AI reviews actions and asks you when needed",          color: undefined },
-  { id: "full",   Icon: Map,            label: "Full Access",     desc: "Run directly on your computer without approval",       color: "#d9822b" },
-  { id: "custom", Icon: Bot,            label: "Custom",          desc: "Set rules in a config file",                           color: undefined },
+const APPROVAL_OPTIONS: { id: PermissionMode; Icon: typeof Hand; label: string; desc: string; color?: string }[] = [
+  { id: "manual", Icon: Hand,           label: "Manual Approval", desc: "You confirm important actions",                  color: undefined },
+  { id: "auto",   Icon: MessageCircle,  label: "Auto Approval",   desc: "Auto-approves edits in the project, asks otherwise", color: undefined },
+  { id: "full",   Icon: Map,            label: "Full Access",     desc: "Run directly on your computer without approval", color: "#d9822b" },
 ];
 
-function ApprovalMenu({ anchorEl, onClose }: { anchorEl: HTMLElement | null; onClose: () => void }) {
+function ApprovalMenu({ anchorEl, onClose, mode, onSelect }: {
+  anchorEl: HTMLElement | null;
+  onClose: () => void;
+  mode: PermissionMode;
+  onSelect: (mode: PermissionMode) => void;
+}) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const [selected, setSelected] = useState("manual");
   useEffect(() => {
     if (!anchorEl) return;
     const r = anchorEl.getBoundingClientRect();
@@ -108,12 +113,11 @@ function ApprovalMenu({ anchorEl, onClose }: { anchorEl: HTMLElement | null; onC
       boxShadow:"0 8px 32px rgba(0,0,0,0.35)", padding:"6px", zIndex:9999 }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 8px 8px" }}>
         <span style={{ fontSize:"12px", color:"var(--origin-fg-muted)" }}>How should Agent actions be approved?</span>
-        <span style={{ fontSize:"12px", color:"var(--origin-fg-muted)", textDecoration:"underline", cursor:"pointer" }}>Learn more</span>
       </div>
       {APPROVAL_OPTIONS.map(({ id, Icon, label, desc, color }) => {
-        const isSelected = selected === id;
+        const isSelected = mode === id;
         return (
-          <button key={id} onClick={() => { setSelected(id); onClose(); }}
+          <button key={id} onClick={() => { onSelect(id); onClose(); }}
             style={{ width:"100%", display:"flex", alignItems:"flex-start", gap:"10px", padding:"8px 10px",
               borderRadius:"7px", border:"none", cursor:"pointer", background:"transparent", textAlign:"left", transition:"background 0.1s" }}
             onMouseEnter={e => { e.currentTarget.style.background = "var(--origin-bg-hover)"; }}
@@ -343,14 +347,26 @@ function contextLabel(ctx: EditorContext): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/** API impérative exposée au parent (ex. « éditer et renvoyer » un message). */
+export interface ChatBoxHandle {
+  /** Remplace le contenu de l'éditeur par `text` et place le focus à la fin. */
+  setText: (text: string) => void;
+}
+
 interface ChatBoxProps {
   onSend?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode) => void;
   getEditorContext?: () => EditorContext | null;
   forcedContext?: EditorContext | null;
   onForcedContextConsumed?: () => void;
+  /** Un tour est-il en cours ? Transforme le bouton d'envoi en bouton Stop. */
+  isStreaming?: boolean;
+  /** Interrompt le tour courant (abort du stream + tools). */
+  onStop?: () => void;
+  /** Ref transmise par le parent pour piloter l'éditeur (edit & resend). */
+  handleRef?: React.RefObject<ChatBoxHandle | null>;
 }
 
-export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed }: ChatBoxProps) {
+export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
@@ -365,6 +381,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [modeOpen, setModeOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => loadPermissionMode());
   const [mentionActive, setMentionActive] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [attachOpen, setAttachOpen] = useState(false);
@@ -378,11 +395,57 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     () => localStorage.getItem("origin-ai-provider") ?? DEFAULT_PROVIDER_ID
   );
 
+  // Fallback dev : si rien n'est mémorisé, on adopte le provider/modèle du `.env`
+  // (lecture asynchrone). Les valeurs du localStorage restent prioritaires.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!localStorage.getItem("origin-ai-provider")) {
+        const provider = await resolveDefaultProvider(DEFAULT_PROVIDER_ID);
+        if (!cancelled) setSelectedProviderId(provider);
+      }
+      if (!localStorage.getItem("origin-ai-model")) {
+        const model = await resolveDefaultModel(DEFAULT_MODEL_ID);
+        if (!cancelled) setSelectedModelId(model);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const refreshContext = useCallback(() => {
     if (!getEditorContext || contextDismissed) return;
     const ctx = getEditorContext();
     setContextSnap(ctx);
   }, [getEditorContext, contextDismissed]);
+
+  // API impérative : « éditer et renvoyer » un message utilisateur place son
+  // texte dans l'éditeur. On remplace tout l'HTML (les badges de fichiers, que
+  // le texte brut ne peut pas restituer, sont volontairement perdus) et on
+  // repositionne le curseur à la fin.
+  useEffect(() => {
+    if (!handleRef) return;
+    handleRef.current = {
+      setText: (text: string) => {
+        const el = editableRef.current;
+        if (!el) return;
+        el.innerHTML = "";
+        el.appendChild(document.createTextNode(text));
+        setIsEmpty(text.trim() === "");
+        setMentionActive(false);
+        setMentionQuery("");
+        mentionRangeRef.current = null;
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = document.getSelection();
+        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      },
+    };
+    return () => { handleRef.current = null; };
+  }, [handleRef]);
 
   useEffect(() => {
     if (!forcedContext) return;
@@ -711,8 +774,13 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           <ChevronDown size={10} style={{ transform: approvalOpen ? "rotate(180deg)" : "none", transition: "transform 0.1s" }} />
         </button>
         {approvalOpen && (
-          // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
-          <ApprovalMenu anchorEl={containerRef.current} onClose={() => setApprovalOpen(false)} />
+          <ApprovalMenu
+            // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
+            anchorEl={containerRef.current}
+            onClose={() => setApprovalOpen(false)}
+            mode={permissionMode}
+            onSelect={(m) => { savePermissionMode(m); setPermissionMode(m); }}
+          />
         )}
 
         {/* Agent / mode selector */}
@@ -766,7 +834,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
         </button>
 
         <button
-          onClick={handleSend}
+          onClick={isStreaming ? onStop : handleSend}
+          title={isStreaming ? "Stop generating" : "Send"}
           style={{
             display: "flex",
             alignItems: "center",
@@ -776,11 +845,13 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             borderRadius: "7px",
             border: "none",
             cursor: "pointer",
-            backgroundColor: "var(--origin-accent-blue)",
-            color: "#fff",
+            backgroundColor: isStreaming ? "var(--origin-bg-active)" : "var(--origin-accent-blue)",
+            color: isStreaming ? "var(--origin-fg-default)" : "#fff",
           }}
         >
-          <ArrowUp size={15} />
+          {isStreaming
+            ? <Square size={12} fill="currentColor" />
+            : <ArrowUp size={15} />}
         </button>
       </div>
 

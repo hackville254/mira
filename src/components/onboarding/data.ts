@@ -20,7 +20,7 @@ export interface Provider {
 }
 
 export const PROVIDERS: Provider[] = [
-  { id: 'anthropic',  label: 'Anthropic',  icon: 'anthropic.svg',       invert: true,  group: 'api',   keyLabel: 'API Key',  keyPlaceholder: 'sk-ant-...',            models: ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5'], docs: 'https://console.anthropic.com/' },
+  { id: 'anthropic',  label: 'Anthropic',  icon: 'anthropic.svg',       invert: true,  group: 'api',   keyLabel: 'API Key',  keyPlaceholder: 'sk-ant-...',            models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'], docs: 'https://console.anthropic.com/' },
   { id: 'openai',     label: 'OpenAI',     icon: 'openai.svg',           invert: true,  group: 'api',   keyLabel: 'API Key',  keyPlaceholder: 'sk-...',                models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'], docs: 'https://platform.openai.com/api-keys' },
   { id: 'gemini',     label: 'Gemini',     icon: 'gemini-color.svg',     invert: false, group: 'api',   keyLabel: 'API Key',  keyPlaceholder: 'AIza...',               models: ['gemini-2.5-pro', 'gemini-2.5-flash'], docs: 'https://aistudio.google.com/app/apikey' },
   { id: 'openrouter', label: 'OpenRouter', icon: 'openrouter.svg',       invert: true,  group: 'api',   keyLabel: 'API Key',  keyPlaceholder: 'sk-or-...',             models: [], customModels: true, docs: 'https://openrouter.ai/keys' },

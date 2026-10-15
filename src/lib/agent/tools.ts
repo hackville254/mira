@@ -2,34 +2,26 @@ import { tool } from "ai";
 import { z } from "zod";
 import { invoke } from "@tauri-apps/api/core";
 import { resolvePath } from "../resolvePath";
-import { applyEdit } from "../applyEdit";
+import { applyEditDetailed, describeEditFailure } from "../applyEdit";
 import { checkPath } from "./security";
+import { getTodos, setTodos, type TodoItem } from "./todoStore";
 
-// ── Todo scratchpad ────────────────────────────────────────────────────────────
-//
-// In-memory, per-session task list the agent maintains across a multi-step
-// run. Keyed by session ID; not persisted to disk.
-
-export interface TodoItem {
-  id:      string;                              // short unique id, e.g. "t1", "t2"
-  content: string;                              // description of the task
-  status:  "pending" | "in_progress" | "done";
-}
-
-const todoStore = new Map<string, TodoItem[]>();
+export type { TodoItem };
 
 // ── Pending action descriptors ─────────────────────────────────────────────────
 
 export type PendingAction =
   | { type: "write_file"; path: string; content: string; originalContent: string }
   | { type: "edit";       path: string; original: string; updated: string; mergedContent: string; originalContent: string }
-  | { type: "bash_run";   command: string; cwd: string };
+  | { type: "bash_run";   command: string; cwd: string }
+  | { type: "ask_user";   question: string; options: string[]; allowFreeform: boolean };
 
 export interface ApprovalEvent {
   id:      string;
   action:  PendingAction;
   approve: () => void;
-  reject:  () => void;
+  /** Pour `ask_user`, `reject(answer)` transmet la réponse choisie / saisie. */
+  reject:  (answer?: string) => void;
 }
 
 // ── Tool factory ───────────────────────────────────────────────────────────────
@@ -37,25 +29,48 @@ export interface ApprovalEvent {
 export function createTools(opts: {
   folderPath:  string;
   onApproval:  (event: ApprovalEvent) => void;
+  /**
+   * Appelé AVANT la première écriture d'un fichier dans un tour d'agent, pour
+   * que l'appelant puisse en capturer un snapshot (support « Undo all »).
+   * Le callback est lui-même chargé de l'idempotence (un même chemin ne doit
+   * être snapshoté qu'une fois par tour).
+   */
+  onBeforeWrite?: (path: string) => void;
+  /**
+   * Identifiant de session injecté par l'appelant (jamais fourni par le modèle).
+   * Sert de clé au store de todo — garantit qu'un `todo_write` ne peut pas
+   * écrire dans la liste d'une autre session en mentant sur l'id.
+   */
+  sessionId?: string;
 }) {
-  const { folderPath, onApproval } = opts;
+  const { folderPath, onApproval, onBeforeWrite, sessionId } = opts;
+
+  /** Snapshot paresseux : appelé au moment de l'approbation, pas à la demande. */
+  const recordWrite = (path: string) => { onBeforeWrite?.(path); };
 
   return {
 
     read_file: tool({
       description:
-        `Read the full contents of a file. Workspace root: ${folderPath}. ` +
-        "Use absolute paths or paths relative to the workspace root (e.g. src/foo.ts).",
+        `Read the contents of a file. Workspace root: ${folderPath}. ` +
+        "Use absolute paths or paths relative to the workspace root (e.g. src/foo.ts). " +
+        `Large files are returned in slices: at most 2000 lines per call. The result reports ` +
+        "start_line/end_line/total_lines/truncated — if truncated, call read_file again with " +
+        "start_line set to the returned end_line + 1 to continue.",
       inputSchema: z.object({
-        path: z.string().describe("Absolute or workspace-relative path to the file"),
+        path:       z.string().describe("Absolute or workspace-relative path to the file"),
+        start_line: z.coerce.number().int().optional().describe("First line to read (1-based). Defaults to 1."),
+        end_line:   z.coerce.number().int().optional().describe("Last line to read (1-based, inclusive). Defaults to EOF."),
       }),
-      execute: async ({ path }) => {
+      execute: async ({ path, start_line, end_line }) => {
         const resolved = resolvePath(path, folderPath);
         const guard = checkPath(resolved, "read");
         if (!guard.ok) return { error: guard.reason };
         try {
-          const content = await invoke<string>("read_file", { path: resolved, workspaceRoot: folderPath });
-          return { content };
+          const slice = await invoke<{
+            content: string; start_line: number; end_line: number; total_lines: number; truncated: boolean;
+          }>("read_file_range", { path: resolved, workspaceRoot: folderPath, startLine: start_line ?? null, endLine: end_line ?? null });
+          return slice;
         } catch (e) {
           return { error: String(e) };
         }
@@ -144,6 +159,7 @@ export function createTools(opts: {
             action: { type: "write_file", path: resolved, content, originalContent },
             approve: async () => {
               try {
+                recordWrite(resolved);
                 await invoke("write_file", { path: resolved, content, workspaceRoot: folderPath });
                 resolve({ success: true, path: resolved });
               } catch (e) {
@@ -158,15 +174,16 @@ export function createTools(opts: {
 
     edit: tool({
       description:
-        "Edit an existing file using search/replace. " +
-        "`original` must match the current file content exactly (including whitespace). " +
-        "Requires user approval — the diff will be shown before applying.",
+        "Replace old_string with new_string in an existing file. Requires user approval — the diff is shown before applying.\n" +
+        "Matching is tolerant: exact → whitespace-trimmed → normalized punctuation → fuzzy (≥66% similar). " +
+        "old_string MUST resolve to exactly ONE location. If it appears multiple times the edit is refused as " +
+        "ambiguous — include 3–5 lines of unique surrounding context. Never send the same call twice after a failure.",
       inputSchema: z.object({
-        path:     z.string().describe("Absolute or workspace-relative path to the file"),
-        original: z.string().describe("Exact text to find (verbatim)"),
-        updated:  z.string().describe("Replacement text"),
+        path:       z.string().describe("Absolute or workspace-relative path to the file"),
+        old_string: z.coerce.string().describe("Text to find — copy it verbatim from the current file, incl. indentation"),
+        new_string: z.coerce.string().describe("Replacement text"),
       }),
-      execute: async ({ path, original, updated }, { toolCallId }) => {
+      execute: async ({ path, old_string, new_string }, { toolCallId }) => {
         const resolved = resolvePath(path, folderPath);
         const guard = checkPath(resolved, "write");
         if (!guard.ok) return { error: guard.reason };
@@ -177,19 +194,74 @@ export function createTools(opts: {
           return { error: `Cannot read file: ${String(e)}` };
         }
 
-        const mergedContent = applyEdit(fileContent, original, updated);
-        if (mergedContent === null) {
-          return { error: "ORIGINAL text not found in file — no edit applied." };
-        }
+        const res = applyEditDetailed(fileContent, old_string, new_string);
+        if (!res.ok) return { error: describeEditFailure(resolved, res.outcome) };
+        const mergedContent = res.content;
+        const fuzzyNote = res.fuzz > 0 ? ` (fuzzy match, fuzz ${res.fuzz})` : "";
 
         return new Promise((resolve) => {
           onApproval({
             id: toolCallId,
-            action: { type: "edit", path: resolved, original, updated, mergedContent, originalContent: fileContent },
+            action: { type: "edit", path: resolved, original: old_string, updated: new_string, mergedContent, originalContent: fileContent },
             approve: async () => {
               try {
+                recordWrite(resolved);
                 await invoke("write_file", { path: resolved, content: mergedContent, workspaceRoot: folderPath });
-                resolve({ success: true, path: resolved });
+                resolve({ success: true, path: resolved, note: fuzzyNote || undefined });
+              } catch (e) {
+                resolve({ error: String(e) });
+              }
+            },
+            reject: () => resolve({ cancelled: true }),
+          });
+        });
+      },
+    }),
+
+    multi_edit: tool({
+      description:
+        "Apply several search/replace edits to ONE file atomically and open a single diff. " +
+        "Edits run in order, each old_string matched against the content produced by the previous edit " +
+        "(same tolerant matching as `edit`). If ANY edit fails or is ambiguous, NOTHING is written — " +
+        "the whole batch is rejected and the error names the failing edit. Prefer this over many `edit` calls.",
+      inputSchema: z.object({
+        path:  z.string().describe("Absolute or workspace-relative path to the file"),
+        edits: z.array(z.object({
+          old_string: z.coerce.string().describe("Text to find — verbatim, must be unique at the time it is applied"),
+          new_string: z.coerce.string().describe("Replacement text"),
+        })).min(1).describe("Ordered list of replacements; all-or-nothing"),
+      }),
+      execute: async ({ path, edits }, { toolCallId }) => {
+        const resolved = resolvePath(path, folderPath);
+        const guard = checkPath(resolved, "write");
+        if (!guard.ok) return { error: guard.reason };
+        let fileContent: string;
+        try {
+          fileContent = await invoke<string>("read_file", { path: resolved, workspaceRoot: folderPath });
+        } catch (e) {
+          return { error: `Cannot read file: ${String(e)}` };
+        }
+
+        let content = fileContent;
+        for (let i = 0; i < edits.length; i++) {
+          const e = edits[i];
+          const res = applyEditDetailed(content, e.old_string, e.new_string);
+          if (!res.ok) {
+            return { error: `Edit #${i + 1} of ${edits.length} failed — no changes were written. ${describeEditFailure(resolved, res.outcome)}` };
+          }
+          content = res.content;
+        }
+
+        const mergedContent = content;
+        return new Promise((resolve) => {
+          onApproval({
+            id: toolCallId,
+            action: { type: "edit", path: resolved, original: edits.map((e) => e.old_string).join("\n…\n"), updated: edits.map((e) => e.new_string).join("\n…\n"), mergedContent, originalContent: fileContent },
+            approve: async () => {
+              try {
+                recordWrite(resolved);
+                await invoke("write_file", { path: resolved, content: mergedContent, workspaceRoot: folderPath });
+                resolve({ success: true, path: resolved, applied: edits.length });
               } catch (e) {
                 resolve({ error: String(e) });
               }
@@ -201,7 +273,11 @@ export function createTools(opts: {
     }),
 
     bash_run: tool({
-      description: "Run a shell command. Requires user approval.",
+      description:
+        "Run a shell command. Requires user approval. Non-interactive, with a hard " +
+        "120s timeout (the process is killed on timeout) and output capped at 64 KB " +
+        "per stream. For long-running processes (dev servers, watchers) start them " +
+        "detached (e.g. `nohup … &`) and poll instead of blocking.",
       inputSchema: z.object({
         command: z.string().describe("Command to execute"),
         cwd:     z.string().optional().describe("Working directory (defaults to workspace root)"),
@@ -216,10 +292,12 @@ export function createTools(opts: {
             action: { type: "bash_run", command, cwd: resolvedCwd },
             approve: async () => {
               try {
-                const result = await invoke<{ stdout: string; stderr: string; exit_code: number }>(
+                const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean; truncated: boolean }>(
                   "agent_bash_run", { command, cwd: resolvedCwd }
                 );
-                resolve(result);
+                const notes: string[] = [];
+                if (result.truncated) notes.push("output was truncated at 64 KB");
+                resolve(notes.length ? { ...result, note: notes.join("; ") } : result);
               } catch (e) {
                 resolve({ error: String(e) });
               }
@@ -232,38 +310,64 @@ export function createTools(opts: {
 
     todo_write: tool({
       description:
-        "Replace the persistent task list for this agent session. Use for any " +
+        "Replace the persistent task list for this session. Use for any " +
         "non-trivial multi-step task: keep exactly one item `in_progress` and " +
-        "flip items to `done` as you finish them. Always pass the FULL list — " +
+        "flip items to `done` as you finish them (never batch completions — mark " +
+        "each one the moment it is actually finished). Always pass the FULL list — " +
         "it overwrites the previous one. Auto-executes (no approval).",
       inputSchema: z.object({
-        sessionId: z.string().describe("Stable id for this agent session"),
         todos: z.array(
           z.object({
             id:      z.string().describe("Short unique id, e.g. \"t1\", \"t2\""),
             content: z.string().describe("Description of the task"),
-            status:  z.enum(["pending", "in_progress", "done"]),
+            status:  z.enum(["pending", "in_progress", "done", "cancelled"]),
           }),
         ).describe("The complete task list for this session"),
       }),
-      execute: async ({ sessionId, todos }) => {
+      execute: async ({ todos }) => {
+        if (!sessionId) return { ok: false, count: 0 };
         const items: TodoItem[] = todos.map((t) => ({
           id: t.id, content: t.content, status: t.status,
         }));
-        todoStore.set(sessionId, items);
+        setTodos(sessionId, items);
         return { ok: true, count: items.length };
       },
     }),
 
     todo_read: tool({
       description:
-        "Read the persistent task list for this agent session. Returns an " +
+        "Read the persistent task list for this session. Returns an " +
         "empty list if nothing has been written yet. Auto-executes (no approval).",
+      inputSchema: z.object({}),
+      execute: async () => {
+        return { todos: getTodos(sessionId) };
+      },
+    }),
+
+    ask_user: tool({
+      description:
+        "Ask the user a clarifying question and BLOCK until they answer. Use it when you genuinely " +
+        "cannot proceed without a decision that is the user's to make (ambiguous intent, a destructive " +
+        "or irreversible choice, a preference you cannot infer). Do NOT use it for things you can " +
+        "determine from the codebase — prefer reading files. Provide 2–4 concrete options; the user may " +
+        "also type a free-form answer. Your turn PAUSES here until answered: never ask two questions in " +
+        "a row, and never ask before having read the relevant files.",
       inputSchema: z.object({
-        sessionId: z.string().describe("Stable id for this agent session"),
+        question: z.string().describe("The question to ask — concise, one decision only"),
+        options: z.array(z.string()).min(2).max(4).describe("2–4 concrete, mutually exclusive options"),
+        allow_freeform: z.coerce.boolean().optional().describe("Also allow a typed answer (default true)"),
       }),
-      execute: async ({ sessionId }) => {
-        return { todos: todoStore.get(sessionId) ?? [] };
+      execute: async ({ question, options, allow_freeform }, { toolCallId }) => {
+        const allowFreeform = allow_freeform ?? true;
+        return new Promise((resolve) => {
+          onApproval({
+            id: toolCallId,
+            action: { type: "ask_user", question, options, allowFreeform },
+            approve: () => resolve({ cancelled: true }),
+            // La réponse choisie par l'utilisateur est transmise via `answer`.
+            reject: (answer?: string) => resolve({ answer: answer ?? "" }),
+          });
+        });
       },
     }),
 
@@ -333,35 +437,40 @@ export function createAskTools(opts: {
       execute: async ({ path, old_string, new_string }) => {
         const resolved = await resolveFileContent(path, folderPath, getFileContents);
         if ("error" in resolved) return { error: resolved.error };
-        const patched = applyEdit(resolved.content, old_string, new_string);
-        if (patched === null) return { error: "old_string not found in file — add more context lines to make it unique." };
-        onShowDiff(resolved.fullPath, resolved.content, patched);
-        return { ok: true };
+        const res = applyEditDetailed(resolved.content, old_string, new_string);
+        if (!res.ok) return { error: describeEditFailure(resolved.fullPath, res.outcome) };
+        onShowDiff(resolved.fullPath, resolved.content, res.content);
+        return { ok: true, fuzz: res.fuzz };
       },
     }),
 
     multi_edit: tool({
       description:
         "Apply multiple search/replace edits to a single file atomically, then open a diff for review. " +
-        "Edits are applied in order; each old_string is matched against the content after previous edits.",
+        "Edits are applied in order; each old_string is matched against the content after previous edits. " +
+        "Matching is tolerant (exact → trimmed → normalized punctuation → fuzzy ≥66%); if any edit is " +
+        "ambiguous or not found the whole batch is refused and nothing is shown.",
       inputSchema: z.object({
         path:  z.string().describe("Workspace-relative path to the file"),
         edits: z.array(z.object({
-          old_string: z.string().describe("Exact text to replace (verbatim, must be unique)"),
-          new_string: z.string().describe("Replacement text"),
-        })).describe("Ordered list of replacements to apply"),
+          old_string: z.coerce.string().describe("Text to replace — verbatim, must be unique at the time it is applied"),
+          new_string: z.coerce.string().describe("Replacement text"),
+        })).min(1).describe("Ordered list of replacements to apply"),
       }),
       execute: async ({ path, edits }) => {
         const resolved = await resolveFileContent(path, folderPath, getFileContents);
         if ("error" in resolved) return { error: resolved.error };
         let content = resolved.content;
-        for (const e of edits) {
-          const result = applyEdit(content, e.old_string, e.new_string);
-          if (result === null) return { error: `old_string not found: "${e.old_string.slice(0, 60)}…"` };
-          content = result;
+        for (let i = 0; i < edits.length; i++) {
+          const e = edits[i];
+          const res = applyEditDetailed(content, e.old_string, e.new_string);
+          if (!res.ok) {
+            return { error: `Edit #${i + 1} of ${edits.length} failed — no changes shown. ${describeEditFailure(resolved.fullPath, res.outcome)}` };
+          }
+          content = res.content;
         }
         onShowDiff(resolved.fullPath, resolved.content, content);
-        return { ok: true };
+        return { ok: true, applied: edits.length };
       },
     }),
   } as const;

@@ -1,4 +1,6 @@
 mod ai;
+mod ai_env;
+mod checkpoint;
 mod dap;
 // `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
 // réseau (`tests/lsp_install_e2e.rs`) de télécharger réellement un binaire LSP
@@ -140,6 +142,9 @@ async fn get_ide_panel_url(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev uniquement : injecte le `.env` (clé API, provider/modèle par défaut)
+    // dans l'environnement du process. No-op en build release.
+    ai_env::load_dotenv_into_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -157,6 +162,7 @@ pub fn run() {
             keychain::delete_secret,
             fs::read_dir,
             fs::read_file,
+            fs::read_file_range,
             fs::read_file_base64,
             fs::write_file,
             fs::rename_path,
@@ -211,6 +217,12 @@ pub fn run() {
             ai::agent_bash_run,
             ai::ai_stream_proxy,
             ai::fetch_text,
+            checkpoint::checkpoint_begin,
+            checkpoint::checkpoint_touch_file,
+            checkpoint::checkpoint_undo,
+            checkpoint::checkpoint_discard,
+            checkpoint::checkpoint_count,
+            ai_env::dev_ai_config,
             lsp::lsp_start,
             lsp::lsp_request,
             lsp::lsp_notify,
