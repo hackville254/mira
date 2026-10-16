@@ -113,19 +113,17 @@ export const TODO_RULES =
  */
 export const EDIT_RULES_FULL = [
   "## Editing",
-  "- Use `editor` for edits and `apply_patch` for multi-line diffs across one or more files.",
-  "- `editor` REPLACES `old_text` with `new_text` (creates the file if it does not exist, or inserts `new_text` before `insert_line` when that is provided).",
-  "- CRITICAL: `editor` rejects any call whose `old_text` or `new_text` exceeds 6000 characters. To write a large file, create it with a first `editor` call (first chunk), then append the remaining chunks with further `editor` calls using `insert_line` or a short, unique `old_text` anchor. Never send a whole large file in one call.",
-  "- `old_text` must be copied verbatim from the current file, indentation included, and MUST resolve to exactly ONE location: include 3 to 5 lines of unique surrounding context, otherwise the edit is refused as ambiguous.",
-  "- After a failed edit, re-read the file and adjust the snippet. Never re-send the same call unchanged.",
+  "- To write a large file, build it in chunks: create it with a first `editor` call (under 6000 characters), then append each remaining chunk with `insert_line = line_count + 1`. Never send the whole file at once.",
+  "- `old_text` is an EXACT, single-match anchor. If an edit fails with \"text not found\", you are editing a stale version: re-read the file, then re-send with a fresh snippet.",
+  "- After a failed edit, never re-send the same call unchanged: re-read the file and adjust the snippet.",
 ].join("\n");
 
 /** Règles d'édition condensées (effort normal). */
 export const EDIT_RULES_LITE = [
   "## Editing",
-  "- Use `editor` for targeted edits; `apply_patch` for multi-line diffs.",
-  "- CRITICAL: `editor` rejects `old_text`/`new_text` over 6000 characters. Build a large file in several `editor` calls: create it with the first chunk, then insert the rest with `insert_line` or short unique `old_text` anchors.",
-  "- `old_text` must be unique and include 3 to 5 lines of context. Never re-send a failed edit unchanged: re-read the file and adjust.",
+  "- CREATE a file: `path` + `new_text`, no `old_text`. REPLACE: `path` + `old_text` + `new_text`. APPEND: `path` + `new_text` + `insert_line = line_count + 1`.",
+  "- CRITICAL: `editor` rejects `old_text`/`new_text` over 6000 characters. Build a large file in several `editor` calls: create it with the first chunk, then append the rest with `insert_line = line_count + 1`.",
+  "- `old_text` must be verbatim and match exactly ONE location (3 to 5 lines of context). On \"text not found\", re-read the file and adjust; never re-send a failed edit unchanged.",
 ].join("\n");
 
 /**
@@ -217,14 +215,7 @@ export function composeSystemPrompt({ blocks, style = STYLE_GUARDRAIL, extra }: 
 
 // ── Presets par mode ───────────────────────────────────────────────────────────
 
-import { FULL_TOOLS_LIST, READ_ONLY_TOOLS_LIST, ASK_MODE_FILES_NOTE } from "./toolPresentation";
-
-/** Bloc listant les outils réellement exposés. Factuel, sans redire l'identité. */
-function toolsBlock(full: boolean): string {
-  return full
-    ? `## Available tools\nTools: ${FULL_TOOLS_LIST}.`
-    : `## Available tools\nRead-only exploration tools.\nTools: ${READ_ONLY_TOOLS_LIST}.`;
-}
+import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY, ASK_MODE_FILES_NOTE } from "./toolPresentation";
 
 /** Plan de sortie structuré attendu en mode PLAN. */
 const PLAN_OUTPUT_FULL = [
@@ -287,16 +278,17 @@ export function buildSystemPrompt(
     // IA, le bloc n'a de sens qu'à l'effort max et concerne `spawn_agent`.
     if (withTeams) blocks.push(DELEGATION_GUIDANCE_TEAMS);
     else if (isMax) blocks.push(DELEGATION_GUIDANCE);
-    // …mécanique ensuite.
-    blocks.push(toolsBlock(true), isMax ? EDIT_RULES_FULL : EDIT_RULES_LITE);
+    // …mécanique ensuite : le contrat d'outils documente chaque outil RÉELLEMENT
+    // exposé en mode Agent (dont la limite de 6000 car. de `editor`), puis les
+    // règles d'édition détaillées.
+    blocks.push(TOOL_CONTRACT_FULL, isMax ? EDIT_RULES_FULL : EDIT_RULES_LITE);
   } else if (mode === "ask") {
     // ASK répond aux questions : on cadre d'abord COMMENT répondre (principe),
     // puis le cycle de revue des changements. `isMax` fait varier le niveau de
     // détail du cycle de revue (un seul bloc vs. règles d'édition complètes).
-    blocks.push(ASK_ANSWER_RULES, ASK_MODE_FILES_NOTE);
-    if (isMax) blocks.push(EDIT_RULES_FULL);
+    blocks.push(ASK_ANSWER_RULES, ASK_MODE_FILES_NOTE, TOOL_CONTRACT_READ_ONLY);
   } else {
-    blocks.push(toolsBlock(false), isMax ? PLAN_OUTPUT_FULL : PLAN_OUTPUT_LITE);
+    blocks.push(TOOL_CONTRACT_READ_ONLY, isMax ? PLAN_OUTPUT_FULL : PLAN_OUTPUT_LITE);
   }
 
   return composeSystemPrompt({ blocks, extra: workspaceNote });

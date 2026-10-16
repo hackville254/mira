@@ -302,23 +302,41 @@ export async function startClineRun(
 
   // Aucun `prompt` : la session est créée sans tour (voir `sidecar/src/index.ts`).
   //
-  // CONTINUITÉ : si `resumeSessionId` est fourni, on NE recrée PAS de session —
-  // on réutilise celle-ci (l'historique conversationnel est dans le SDK, pas
-  // côté front). C'est le cœur de la continuité multi-tours.
+  // CONTINUITÉ — REPRISE PAR RE-SEED (et non par réutilisation d'id)
+  // ----------------------------------------------------------------
+  // Le SDK Cline ne garde ses sessions qu'en MÉMOIRE vive (`core.sessions`) :
+  // `send`/`updateSessionModel` font `getSessionOrThrow` et jettent
+  // `session_not_found` si la session n'est plus résidente (sidecar redémarré,
+  // session évincée). Réutiliser le même `sessionId` échouait donc en silence.
+  //
+  // Le chemin OFFICIEL du SDK (`StartSessionInput.initialMessages`, documenté
+  // « used by resume, fork, and compaction ») est de re-seeder une session neuve
+  // avec l'historique persisté. On lit donc l'historique via la commande
+  // `messages` (`readMessages`) et on le réinjecte au `start`. La continuité ne
+  // dépend plus de la survie du process ; le nouvel id est remonté à l'appelant
+  // (qui le repersiste), donc rien à remapper ici.
+  let initialMessages: unknown[] | undefined;
   let sessionId: string;
   if (params.resumeSessionId) {
-    sessionId = params.resumeSessionId;
-    // Le modèle peut avoir changé entre deux tours : on resynchronise la session
-    // vivante sur le modèle courant (no-op si identique côté SDK).
     try {
-      await invoke("cline_sidecar_send", {
-        command: { type: "updateModel", sessionId, modelId: params.modelId },
+      const res = await invoke<{ messages?: unknown[] }>("cline_sidecar_send", {
+        command: { type: "messages", sessionId: params.resumeSessionId },
       });
+      const messages = Array.isArray(res?.messages) ? res.messages : [];
+      if (messages.length > 0) {
+        initialMessages = messages;
+        log.info("agent/clineClient", `reprise: ${messages.length} message(s) re-seedés`);
+      } else {
+        // Historique vide/introuvable (session inconnue) : on repart proprement
+        // sur une session neuve plutôt que d'échouer.
+        log.warn("agent/clineClient", `reprise: aucun message pour ${params.resumeSessionId}, session neuve`);
+      }
     } catch (error) {
-      log.warn("agent/clineClient", `resume: updateModel ignoré: ${describeError(error)}`);
+      log.warn("agent/clineClient", `reprise: lecture de l'historique ignorée: ${describeError(error)}`);
     }
-    log.info("agent/clineClient", `reprise de session sessionId=${sessionId}`);
-  } else {
+  }
+
+  {
     const tHandshake = performance.now();
     const result = await invoke<{ sessionId: string }>("cline_sidecar_send", {
       command: {
@@ -331,6 +349,7 @@ export async function startClineRun(
         systemPrompt: params.systemPrompt ?? "",
         mode: params.mode ?? "act",
         enableTeams: params.enableTeams === true,
+        ...(initialMessages ? { initialMessages } : {}),
         ...(typeof params.maxIterations === "number" ? { maxIterations: params.maxIterations } : {}),
         ...(params.extraTools && params.extraTools.length > 0 ? { extraTools: params.extraTools } : {}),
       },
@@ -346,7 +365,8 @@ export async function startClineRun(
     // appel modèle. Un chiffre élevé ici n'est PAS imputable au modèle.
     log.info(
       "agent/clineClient",
-      `session établie @+${Math.round(performance.now() - tHandshake)}ms sessionId=${sessionId}`,
+      `session établie @+${Math.round(performance.now() - tHandshake)}ms sessionId=${sessionId}` +
+      (initialMessages ? ` (reprise de ${params.resumeSessionId})` : ""),
     );
   }
 

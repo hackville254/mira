@@ -6,6 +6,15 @@ import AskUserCard from "./AskUserCard";
 import SubAgentCard from "./SubAgentCard";
 
 const TOOL_LABELS: Record<string, string> = {
+  // Noms du SDK Cline (moteur actuel).
+  read_files: "Read files",
+  search_codebase: "Search codebase",
+  editor: "Edit file",
+  run_commands: "Run command",
+  fetch_web_content: "Fetch web content",
+  skills: "Skill",
+  ask_question: "Question",
+  // Noms du harness historique (conservés pour les tours déjà en base).
   read_file: "Read file",
   list_directory: "List directory",
   grep: "Search",
@@ -19,15 +28,24 @@ const TOOL_LABELS: Record<string, string> = {
 
 function toolLabel(name: string) { return TOOL_LABELS[name] ?? name; }
 
+/** Outils qui visent UN fichier : on affiche son nom de base en aperçu. */
+const FILE_TOOLS = new Set([
+  "read_file", "list_directory", "write_file", "edit", "multi_edit",
+  "editor",
+]);
+
 function argsPreview(toolName: string, args: unknown): string {
   const a = args as Record<string, unknown>;
   if (!a) return "";
-  if (toolName === "read_file" || toolName === "list_directory" || toolName === "write_file" || toolName === "edit" || toolName === "multi_edit") {
-    const p = String(a.path ?? "");
+  if (FILE_TOOLS.has(toolName)) {
+    // Le SDK `editor` porte `path` ; `read_files` porte `paths` (tableau).
+    const raw = Array.isArray(a.paths) ? a.paths[0] : a.path;
+    const p = String(raw ?? "");
     return p.split(/[/\\]/).pop() ?? p;
   }
+  if (toolName === "search_codebase") return `"${String(a.query ?? a.pattern ?? "")}"`;
   if (toolName === "grep") return `"${a.query}"`;
-  if (toolName === "bash_run") return String(a.command ?? "").slice(0, 60);
+  if (toolName === "bash_run" || toolName === "run_commands") return String(a.command ?? "").slice(0, 60);
   if (toolName === "glob") return String(a.folder ?? "workspace");
   return "";
 }
@@ -39,7 +57,13 @@ function resultSummary(result: unknown): string {
   if (obj.error) return `Error: ${obj.error}`;
   if (obj.cancelled) return "Cancelled";
   if (typeof obj.answer === "string") return obj.answer ? `Answer: ${obj.answer}` : "No answer provided";
-  if (obj.success) return `Written: ${obj.path}`;
+  // Forme du SDK Cline : `{ query, result, success }` — le texte exploitable est
+  // dans `result` (« File created successfully at: … », « Edited … »), jamais
+  // dans un champ `path`. On lit donc `result` en priorité pour éviter un
+  // « Written: undefined » quand un ancien champ `path` est absent.
+  if (typeof obj.result === "string" && obj.result.trim().length > 0) return obj.result.slice(0, 300);
+  // Harness historique : `{ success: true, path }`.
+  if (obj.success) return typeof obj.path === "string" ? `Written: ${obj.path}` : "Done";
   if (obj.content && typeof obj.content === "string") {
     // read_file renvoie une tranche : on annonce la plage et la troncature.
     if (typeof obj.total_lines === "number") {

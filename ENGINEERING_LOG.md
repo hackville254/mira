@@ -5,6 +5,81 @@
 
 ---
 
+### [2026-10-16T19:19] | Continuité de session RÉPARÉE : reprise par re-seed (`initialMessages`)
+
+- **Contexte :**
+  Log UI : `resume: updateModel ignoré: {"code":"session_not_found","message":"session not found: 1792147973864_9g9ts"}`. La continuité multi-tours était **cassée en silence** : chaque reprise échouait, la conversation perdait son contexte.
+
+- **Cause racine (analysee dans `@cline/core/dist/index.js`) :**
+  - `send` → `runTurn` → `getSessionOrThrow(sessionId)` ; `updateSessionModel` → `updateSessionConnection` → `getSessionOrThrow`. Les deux **jettent `SessionNotFoundError`** si la session n'est pas dans `this.sessions` (Map **en mémoire vive**).
+  - Le SDK ne persiste pas les sessions *résidentes* : après un redémarrage du sidecar (ou éviction), la session existe **sur disque (SQLite)** mais **plus en mémoire**. Notre reprise réutilisait le même `sessionId` (`updateModel` + `send`) → `session_not_found` systématique.
+  - `restore` N'EST PAS la solution : il **fork** la session (nouvel id) et sert au rollback checkpoint/git (`RestoreOptions.workspace`).
+
+- **Solution retenue (chemin OFFICIEL du SDK) :**
+  `StartSessionInput.initialMessages` (`LlmsProviders.MessageWithMetadata[]`), documenté dans le SDK : « used by **resume**, fork, and compaction ». On lit l'historique persisté via `readMessages` (lecture **disque**, pas via `getSessionOrThrow`) et on le réinjecte dans un `start` neuf. La continuité ne dépend plus de la survie du process ; le nouvel id SDK est repersisté côté front (`setClineSessionId`, déjà en place).
+
+- **Modifications effectuées :**
+  - `src-tauri/cline-sidecar/src/index.ts` : `StartCommand.initialMessages?: unknown[]` (transporte tel quel — transport passif, pas d'interprétation) ; `case "start"` le passe à `engine.start({ initialMessages })`.
+  - `src/lib/agent/clineClient.ts` : sur `resumeSessionId`, on appelle la commande `messages` (`readMessages`), puis on **démarre une session neuve** avec `initialMessages`. Suppression de l'ancien chemin `updateModel` + réutilisation d'id (source du bug). Historique vide/introuvable → session neuve propre (dégradation gracieuse).
+
+- **Décisions Techniques :**
+  - `initialMessages` typé `unknown[]` côté sidecar : il ne fait que **transporter** la sortie de `readMessages` (elle-même `MessageWithMetadata[]`), donc aucun risque de désalignement de schéma et aucune surface d'injection nouvelle (le front fournit déjà prompt système, clé API et mode).
+  - Bornes existantes suffisantes : commande entrante plafonnée à 8 Mio (`MAX_COMMAND_LINE_BYTES`) — largement au-dessus d'un historique conversationnel ; pas de garde redondante ajoutée (éviter la sur-ingénierie).
+
+- **Impacts & Dépendances :**
+  - Fichiers : `cline-sidecar/src/index.ts`, `src/lib/agent/clineClient.ts`. `clineHarness.ts`/`AiPanel.tsx` inchangés (l'id remappé est déjà repersisté).
+  - Effet : la conversation garde son contexte entre tours, même après redémarrage du sidecar. Coût : l'historique est re-transmis au `start` (comportement identique à une session vivante qui rejoue son historique).
+
+- **Validation :**
+  - `tsc` front EXIT 0 ; `tsc` sidecar EXIT 0 ; `vitest run` → **482/482** ; `eslint` EXIT 0 ; build sidecar (`esbuild`) OK.
+
+- **Prochaines étapes :**
+  - Test UI réel : enchaîner ≥ 3 tours et vérifier dans les logs `reprise: N message(s) re-seedés` + absence de `session_not_found`, et que l'agent se souvient du contexte.
+
+---
+
+
+### [2026-10-16T19:05] | `editor` SDK décortiqué : 3 formes distinctes + « Written: undefined » corrigé
+
+- **Contexte :**
+  Nouvelle remontée utilisateur, toujours sur `editor` : `Editor input too large: new_text was 7795/16971 characters`, puis `Editor operation failed: No replacement performed: text not found in /Users/.../script.js`, puis la carte de tool affichant `Written: undefined`. Analyse du bundle réel `@cline/core/dist/index.js` (fonctions `wa`, `mk`, `EW`, `xW`, `va`, `PW`) pour établir le comportement EXACT de l'outil, invisible dans les `.d.ts` (stubs).
+
+- **Découvertes (comportement réel de `editor`) :**
+  - Fichier ABSENT → l'outil **crée** le fichier avec `new_text` et **ignore `old_text`** (`if(!await AW(a)) return RW(a,o.new_text)`).
+  - Fichier PRÉSENT, `old_text` **omis** → erreur `already exists, but \`old_text\` was omitted`.
+  - Fichier PRÉSENT, `old_text` non trouvé (0 occurrence) → `No replacement performed: text not found in <path>`.
+  - `old_text` trouvé 2+ fois → `No replacement performed: multiple occurrences of text found`.
+  - `insert_line` (one-based, borné à `1..line_count+1`) → insère AVANT la ligne ; **`line_count + 1` = ajout en fin (EOF)**.
+  - `old_text`/`new_text` plafonnés à **6000 caractères chacun** (`mk`), limite dure.
+  - La comparaison est EXACTE (après normalisation des fins de ligne seulement) : aucune tolérance d'indentation/espaces.
+  - Le résultat est une **string** (`File created successfully at: …`, `Edited …`, `Inserted content at line N in …`) ; le `execute` du SDK renvoie `{ query, result, success }`.
+
+- **Cause racine du `Written: undefined` :**
+  `ToolCallCard.resultSummary` testait `obj.success` puis lisait `obj.path` — champ de l'ANCIEN harness front, absent du SDK. Sur un résultat SDK `{ success:true, result:"..." }`, `obj.path` valait `undefined` → carte « Written: undefined ».
+
+- **Modifications effectuées :**
+  - `src/lib/agent/toolPresentation.ts` : puces `editor` du `TOOL_CONTRACT_FULL` réécrites en 3 formes distinctes (CREATE sans `old_text` / REPLACE avec `old_text` / APPEND via `insert_line = line_count + 1`), + rappel limite 6000 et règle « match exactement UNE fois ». En-tête documentant le comportement réel (`wa`/`mk`).
+  - `src/lib/agent/prompts.ts` : `EDIT_RULES_FULL`/`EDIT_RULES_LITE` recentrés sur la STRATÉGIE (découpage en chunks, re-lecture sur « text not found ») pour ne pas dupliquer le contrat d'outil.
+  - `src/components/ai/ToolCallCard.tsx` : `resultSummary` lit d'abord `obj.result` (forme SDK) avant `obj.success`/`obj.path` (forme historique) → plus jamais « Written: undefined ». `TOOL_LABELS`/`argsPreview` connaissent les noms Cline (`read_files`, `search_codebase`, `editor`, `run_commands`, `fetch_web_content`, `skills`, `ask_question`) tout en gardant les alias historiques.
+  - `src/lib/agent/__tests__/prompts.test.ts` : +2 invariants (CREATE/REPLACE/APPEND + `line_count + 1` présents ; rappel « 6000 » présent en agent max ET normal).
+
+- **Décisions Techniques :**
+  - Le contrat d'outil (mécanique EXACTE du SDK) vit dans `TOOL_CONTRACT_FULL` ; les `EDIT_RULES` ne portent que le comportement (stratégie, récupération après échec). Évite la redite — surveillée par `prompts.metrics.test.ts`.
+  - Budget de prompt maintenu < 6000 caractères/preset (test de garde) : l'ajout de précision a exigé de CONDENSER, pas d'empiler.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `toolPresentation.ts`, `prompts.ts`, `__tests__/prompts.test.ts`, `components/ai/ToolCallCard.tsx`. Aucune modification du moteur ni du sidecar.
+  - Effet attendu : le modèle choisit la bonne forme d'`editor` du premier coup (moins d'échecs « text not found ») ; l'UI affiche le vrai message de résultat/erreur.
+
+- **Validation :**
+  - `npx tsc --noEmit` → EXIT 0 ; `npx vitest run` → **482/482** (37 fichiers) ; `npx eslint` sur les 4 fichiers → EXIT 0.
+
+- **Prochaines étapes :**
+  - Test UI réel : demander un « gros fichier » et vérifier (a) plusieurs `editor` enchaînés (create + appends), (b) aucun « Written: undefined », (c) les cartes affichent le message d'erreur réel en cas d'échec.
+
+---
+
+
 ### [2026-10-16T12:50] | Prompt système réaligné sur les outils Cline réels (+ limite editor 6000)
 
 - **Contexte :**

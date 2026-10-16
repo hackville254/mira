@@ -105,6 +105,23 @@ interface StartCommand {
    * exécuter du code arbitraire dans le sidecar.
    */
   extraTools?: ExtraToolSpec[];
+  /**
+   * Historique conversationnel à RÉINJECTER au démarrage (reprise de session).
+   *
+   * POURQUOI : le SDK ne garde les sessions qu'en MÉMOIRE vive
+   * (`core.sessions`). Si le sidecar a redémarré — ou si la session n'est plus
+   * résidente — une reprise par `send` échoue (`session_not_found`). Le chemin
+   * OFFICIEL de reprise du SDK est de **re-seeder** une session neuve avec
+   * `initialMessages` (cf. `StartSessionInput.initialMessages`, doc. SDK :
+   * « used by resume, fork, and compaction »). Le front lit donc l'historique
+   * persisté (`messages`) et le renvoie ici : la continuité ne dépend plus de la
+   * survie du process.
+   *
+   * Type volontairement `unknown[]` : le sidecar ne fait que TRANSPORTER ce que
+   * le SDK a lui-même produit (`readMessages`) — il ne le construit ni ne
+   * l'interprète, donc aucun risque de désalignement de schéma.
+   */
+  initialMessages?: unknown[];
   /** Garde-fou anti-boucle. */
   maxIterations?: number;
 }
@@ -449,6 +466,13 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
         // Identifie la surface qui démarre la session dans les métadonnées.
         source: "origin" as never,
         mode: (cmd.mode ?? "act") as never,
+        // REPRISE : historique persisté réinjecté (voir `StartCommand.initialMessages`).
+        // Le SDK reconstruit le store conversationnel avec ces messages AVANT le
+        // premier tour : l'agent retrouve tout son contexte même si la session
+        // n'était plus résidente. Absent = session neuve (comportement inchangé).
+        ...(cmd.initialMessages && cmd.initialMessages.length > 0
+          ? { initialMessages: cmd.initialMessages }
+          : {}),
         // Outils CUSTOM de la session (ex. todo list type Trae). Résolus depuis
         // les specs déclaratives du front ; leurs effets remontent par
         // `emit({ kind: "tool_event", ... })`.

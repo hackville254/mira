@@ -17,7 +17,7 @@ import {
   DEFAULT_ASK_PROMPT,
   DEFAULT_PLAN_PROMPT,
 } from "../prompts";
-import { FULL_TOOLS_LIST, READ_ONLY_TOOLS_LIST } from "../toolPresentation";
+import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY } from "../toolPresentation";
 
 // Séparateur utilisé par le composeur entre deux blocs.
 const SEP = "\n\n---\n\n";
@@ -74,7 +74,7 @@ describe("buildSystemPrompt — invariants par mode", () => {
     const p = buildSystemPrompt("agent", true);
     expect(p).toContain(identity("agent"));
     expect(p).toContain(CONCISION);
-    expect(p).toContain(FULL_TOOLS_LIST);
+    expect(p).toContain(TOOL_CONTRACT_FULL);
     expect(p).toContain(TODO_RULES);
     expect(p).toContain(ASK_USER_RULES);
     expect(p).toContain(STYLE_GUARDRAIL);
@@ -111,16 +111,16 @@ describe("buildSystemPrompt — invariants par mode", () => {
     expect(p).toContain("## Changes in ASK mode");
     expect(p).not.toContain(DELEGATION_GUIDANCE);
     expect(p).not.toContain(TODO_RULES);
-    expect(p).not.toContain(FULL_TOOLS_LIST);
+    expect(p).not.toContain(TOOL_CONTRACT_FULL);
   });
 
   it("mode PLAN expose en lecture seule et impose le format <origin-plan>", () => {
     const p = buildSystemPrompt("plan", true);
     expect(p).toContain(identity("plan"));
-    expect(p).toContain(READ_ONLY_TOOLS_LIST);
+    expect(p).toContain(TOOL_CONTRACT_READ_ONLY);
     expect(p).toContain("<origin-plan>");
     expect(p).toContain("</origin-plan>");
-    expect(p).not.toContain(FULL_TOOLS_LIST);
+    expect(p).not.toContain(TOOL_CONTRACT_FULL);
     expect(p).not.toContain(DELEGATION_GUIDANCE);
   });
 
@@ -142,7 +142,7 @@ describe("buildSystemPrompt — invariants par mode", () => {
   it("ordonne PRINCIPES avant DÉTAILS D'OUTIL en mode AGENT", () => {
     const p = buildSystemPrompt("agent", true);
     // Les principes comportementaux précèdent les sections d'outils.
-    expect(p.indexOf(TODO_RULES)).toBeLessThan(p.indexOf("## Available tools"));
+    expect(p.indexOf(TODO_RULES)).toBeLessThan(p.indexOf("## Tools"));
     expect(p.indexOf(ASK_USER_RULES)).toBeLessThan(p.indexOf("## Editing"));
     expect(p.indexOf(DELEGATION_GUIDANCE)).toBeLessThan(p.indexOf("## Editing"));
   });
@@ -153,14 +153,17 @@ describe("buildSystemPrompt — invariants par mode", () => {
     expect(p).toContain("## Changes in ASK mode");
   });
 
-  it("mode ASK : `isMax` a un effet réel (presets non identiques)", () => {
+  it("mode ASK est en LECTURE SEULE : aucun outil d'édition, quel que soit l'effort", () => {
     const max = buildSystemPrompt("ask", true);
     const normal = buildSystemPrompt("ask", false);
-    expect(max).not.toBe(normal);
-    expect(max.length).toBeGreaterThan(normal.length);
-    // max ajoute la mécanique d'édition complète, normal non.
-    expect(max).toContain(EDIT_RULES_FULL);
-    expect(normal).not.toContain(EDIT_RULES_FULL);
+    // ASK ne modifie jamais de fichiers : on n'y annonce aucun outil d'écriture,
+    // ni `editor` ni les règles d'édition (l'effort ne change pas les outils).
+    for (const p of [max, normal]) {
+      expect(p).not.toContain("`editor`");
+      expect(p).not.toContain(EDIT_RULES_FULL);
+      expect(p).not.toContain(EDIT_RULES_LITE);
+      expect(p).toContain("read-only");
+    }
   });
 });
 
@@ -180,11 +183,44 @@ describe("compat — constantes exportées (délèguent au composeur)", () => {
 });
 
 describe("anti-dérive — les noms d'outils cités existent", () => {
-  it("la liste des outils de l'agent est bien injectée telle quelle", () => {
-    expect(buildSystemPrompt("agent", true)).toContain(FULL_TOOLS_LIST);
+  it("le contrat d'outils agent est bien injecté", () => {
+    expect(buildSystemPrompt("agent", true)).toContain(TOOL_CONTRACT_FULL);
   });
 
-  it("la liste lecture seule est bien injectée en mode PLAN", () => {
-    expect(buildSystemPrompt("plan", true)).toContain(READ_ONLY_TOOLS_LIST);
+  it("le contrat lecture seule est bien injecté en mode PLAN", () => {
+    expect(buildSystemPrompt("plan", true)).toContain(TOOL_CONTRACT_READ_ONLY);
+  });
+
+  // Invariants verrouillés sur les flags RÉELS du SDK Cline (voir
+  // `toolPresentation.ts`) : les réintroduire serait un bug silencieux.
+  it("n'annonce JAMAIS `apply_patch` (désactivé par le SDK dans tous les modes)", () => {
+    expect(buildSystemPrompt("agent", true)).not.toContain("apply_patch");
+    expect(buildSystemPrompt("ask", true)).not.toContain("apply_patch");
+    expect(buildSystemPrompt("plan", true)).not.toContain("apply_patch");
+  });
+
+  it("n'annonce `editor` QUE en mode AGENT (désactivé en plan/ask)", () => {
+    expect(buildSystemPrompt("agent", true)).toContain("`editor`");
+    expect(buildSystemPrompt("ask", true)).not.toContain("`editor`");
+    expect(buildSystemPrompt("plan", true)).not.toContain("`editor`");
+  });
+
+  // Invariants verrouillés sur le comportement RÉEL de `editor` (SDK Cline) :
+  // sans ces distinctions, le modèle mélange création et remplacement et prend
+  // des erreurs « text not found » / « already exists, but old_text was omitted ».
+  it("distingue CREATE (sans old_text), REPLACE (avec old_text) et APPEND (insert_line)", () => {
+    for (const p of [buildSystemPrompt("agent", true), buildSystemPrompt("agent", false)]) {
+      expect(p).toMatch(/CREATE/i);
+      expect(p).toMatch(/REPLACE/i);
+      expect(p).toMatch(/APPEND/i);
+      // La forme d'ajout en fin doit être nommée explicitement avec sa formule.
+      expect(p).toContain("insert_line");
+      expect(p).toContain("line_count + 1");
+    }
+  });
+
+  it("rappelle la limite dure de 6000 caractères de `editor`", () => {
+    expect(buildSystemPrompt("agent", true)).toContain("6000");
+    expect(buildSystemPrompt("agent", false)).toContain("6000");
   });
 });
