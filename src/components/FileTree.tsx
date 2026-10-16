@@ -35,7 +35,7 @@ export default function FileTree({
   const {
     rootName, rows, gitDecorations, selected, anchor, renamingPath, pendingCreate,
     dragPaths, dropTarget, canPaste,
-    toggleExpanded, setExpandedAll, select, setSelected,
+    toggleExpanded, setExpandedAll, select,
     beginDrag, endDrag, setDropTarget, dropInto, importInto,
     copyToClipboard, pasteInto, pruneSelection,
     startRename, cancelRename, commitRename,
@@ -64,12 +64,25 @@ export default function FileTree({
 
 
   // ── Suppression avec confirmation (style VS Code) ─────────────────────────────
-  const requestDelete = useCallback(async (paths: string[]) => {
+  //
+  // ATTENTION : ne JAMAIS utiliser `window.confirm` ici. Sous Tauri, `confirm`
+  // est asynchrone (il renvoie une `Promise<boolean>`, pas un booléen) : un test
+  // synchrone `if (!window.confirm(...))` compare toujours un objet → jamais
+  // falsy → la garde est court-circuitée et la suppression s'exécute AVANT (voire
+  // sans) l'acceptation de l'utilisateur. On passe donc par une modale React
+  // interne : confirmation explicite, déterministe et cross-platform.
+
+  /** Chemins en attente de confirmation de suppression (modale ouverte). */
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
+
+  /** Ouvre la confirmation de suppression. Aucun fichier n'est touché ici. */
+  const requestDelete = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
-    const label = paths.length === 1
-      ? `"${baseName(paths[0])}"`
-      : `${paths.length} items`;
-    if (!window.confirm(`Are you sure you want to delete ${label}?`)) return;
+    setPendingDelete(paths);
+  }, []);
+
+  /** Applique réellement la suppression (appelée UNIQUEMENT après acceptation). */
+  const performDelete = useCallback(async (paths: string[]) => {
     const ctx = { workspaceRoot: folderPath!, onChanged: () => {} };
     const results = await deleteEntries(ctx, paths);
     const failed = results.filter(r => !r.ok);
@@ -209,12 +222,11 @@ export default function FileTree({
       void doPaste(target);
       return;
     }
-    // Cmd/Ctrl+A → tout sélectionner.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
-      e.preventDefault();
-      setSelected(rows.map(r => r.entry.path));
-      return;
-    }
+    // Cmd/Ctrl+A → volontairement PAS géré ici : la sélection multiple via
+    // Ctrl+A n'a de sens que dans l'éditeur. Dans l'arbre, on laisse l'event
+    // filer (neutralisé en amont par le listener global) pour ne jamais
+    // sélectionner « tout » l'UI. La sélection multiple reste possible au clic
+    // (Maj / Ctrl-clic).
 
     // Navigation dans l'arbre (flèches / Entrée / Espace).
     const visiblePaths = rows.map(r => r.entry.path);
@@ -271,7 +283,7 @@ export default function FileTree({
       default:
         break;
     }
-  }, [rows, selectedPaths, canPaste, folderPath, requestDelete, startRename, startCreate, doCopy, doPaste, setSelected, select, toggleExpanded, onFileOpen]);
+  }, [rows, selectedPaths, canPaste, folderPath, requestDelete, startRename, startCreate, doCopy, doPaste, select, toggleExpanded, onFileOpen]);
 
   if (!folderPath) {
     return (
@@ -351,6 +363,107 @@ export default function FileTree({
         />
       )}
 
+      {/* Modale de confirmation de suppression. Seul « Delete » déclenche
+          performDelete ; « Cancel » / clic sur le fond / Échap n'y touchent pas. */}
+      {pendingDelete && (
+        <DeleteConfirmDialog
+          paths={pendingDelete}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={async () => {
+            const paths = pendingDelete;
+            setPendingDelete(null);
+            await performDelete(paths);
+          }}
+        />
+      )}
+
+    </div>
+  );
+}
+
+/** Modale de confirmation de suppression (style VS Code) — 100 % in-app. */
+function DeleteConfirmDialog({
+  paths, onConfirm, onCancel,
+}: {
+  paths: string[];
+  onConfirm: () => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const label = paths.length === 1 ? `"${baseName(paths[0])}"` : `${paths.length} items`;
+
+  // Échap → annuler (jamais supprimer).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirm delete"
+      data-origin-delete-dialog=""
+      tabIndex={-1}
+      ref={el => el?.focus()}
+      onKeyDown={onKeyDown}
+      onClick={onCancel}
+      style={{
+        position: "fixed", inset: 0, zIndex: 70,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "rgba(0,0,0,0.45)", padding: "20px",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: "420px",
+          background: "var(--origin-bg-base)",
+          border: "1px solid var(--origin-border-default)",
+          borderRadius: "10px",
+          boxShadow: "0 12px 32px rgba(0,0,0,0.35)",
+          overflow: "hidden",
+          fontSize: "12px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px 14px", borderBottom: "1px solid var(--origin-border-default)" }}>
+          <Trash2 size={16} style={{ color: "var(--origin-semantic-error, #ef4444)", flexShrink: 0 }} />
+          <span style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)" }}>
+            Delete {paths.length === 1 ? "file" : `${paths.length} items`}
+          </span>
+        </div>
+
+        <div style={{ padding: "12px 14px", color: "var(--origin-fg-muted)", lineHeight: 1.5 }}>
+          Are you sure you want to delete {label}? This action cannot be undone.
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", padding: "10px 14px", borderTop: "1px solid var(--origin-border-default)", backgroundColor: "var(--origin-bg-editor)" }}>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              padding: "5px 12px", borderRadius: "6px", fontSize: "12px",
+              cursor: busy ? "default" : "pointer",
+              border: "1px solid var(--origin-border-default)",
+              background: "transparent", color: "var(--origin-fg-default)",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } }}
+            disabled={busy}
+            style={{
+              padding: "5px 12px", borderRadius: "6px", fontSize: "12px", fontWeight: 500,
+              cursor: busy ? "default" : "pointer",
+              border: "1px solid var(--origin-semantic-error, #ef4444)",
+              background: "var(--origin-semantic-error, #ef4444)",
+              color: "#fff", opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {busy ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

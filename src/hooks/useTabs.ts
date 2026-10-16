@@ -128,6 +128,49 @@ export function useTabs() {
     setActiveTab(tabPath);
   }
 
+  /**
+   * Rafraîchit, pour un lot de chemins, l'état de l'éditeur après une action
+   * EXTERNE (typ. « Undo all » / « revert » de l'agent) : les fichiers revenus
+   * sur disque sont relus, les fichiers supprimés voient leur onglet fermé et
+   * l'arbre est rafraîchi. On efface aussi les erreurs de lecture périmées.
+   *
+   * Un onglet non sauvegardé n'est PAS écrasé (aucune perte silencieuse). Sans
+   * ce rafraîchissement, l'éditeur continuerait d'afficher le contenu que
+   * l'agent venait justement d'annuler — d'où l'impression de « bypass ».
+   */
+  async function applyExternalFileChanges(paths: string[]): Promise<void> {
+    const unique = [...new Set(paths)];
+    for (const path of unique) {
+      if (!path || path.startsWith('__')) continue;
+      const isOpen = tabsRef.current.some(t => t.path === path);
+      const wasLoaded = fileContentsRef.current[path] !== undefined;
+      if (!isOpen && !wasLoaded) continue;
+      if (fileKindOf(path) === 'binary') continue;
+
+      let content: string | null = null;
+      try {
+        content = await readFile(path);
+      } catch {
+        content = null; // fichier supprimé (ou illisible) → on ferme l'onglet
+      }
+
+      if (content === null) {
+        setTabs(prev => prev.filter(t => t.path !== path));
+        setFileContents(prev => { const { [path]: _gone, ...rest } = prev; return rest; });
+        setFileErrors(prev => { const { [path]: _err, ...rest } = prev; return rest; });
+        continue;
+      }
+
+      // Ne jamais écraser des modifications locales non sauvegardées.
+      if (tabsRef.current.some(t => t.path === path && t.isDirty)) continue;
+
+      setFileContents(prev => ({ ...prev, [path]: content as string }));
+      setTabs(prev => prev.map(t => t.path === path ? { ...t, isDirty: false } : t));
+      setFileErrors(prev => { const { [path]: _err, ...rest } = prev; return rest; });
+    }
+    setFileTreeVersion(v => v + 1);
+  }
+
   function openPreviewTab() {
     const tabPath = '__preview__';
     setTabs(prev => prev.find(t => t.path === tabPath)
@@ -258,5 +301,6 @@ export function useTabs() {
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
+    applyExternalFileChanges,
   };
 }

@@ -99,6 +99,25 @@ fn write_line(level: &str, target: &str, message: &str) -> bool {
     writeln!(file, "{line}").is_ok()
 }
 
+/// Redirige une ligne de **stderr du sidecar Node** vers le journal central.
+///
+/// Le sidecar écrit son diagnostic sur stderr (le canal protocolaire est
+/// stdout) : on le fait apparaître dans le terminal `tauri dev` et dans le
+/// fichier de log, sans jamais le renvoyer au webview. La redaction habituelle
+/// s'applique (une clé glissée par erreur ne finit pas sur disque).
+pub fn forward_sidecar_stderr(_app: &tauri::AppHandle, line: &str) {
+    let _ = write_line("warn", "cline/sidecar", line);
+}
+
+/// Journalise une ligne depuis le code Rust interne (hors commande Tauri).
+///
+/// Exposé pour instrumenter les chemins chauds côté Rust (checkpoints,
+/// sidecar) directement dans le terminal `tauri dev`, sans passer par le front.
+/// La redaction défensive s'applique comme partout.
+pub fn log_line(level: &str, target: &str, message: &str) {
+    let _ = write_line(level, target, message);
+}
+
 /// Commande unique de log, appelée par le front.
 ///
 /// `level` ∈ {debug, info, warn, error}. Toute autre valeur est ramenée à `info`.

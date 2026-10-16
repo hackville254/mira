@@ -88,7 +88,7 @@ export const BATCHING_RULES = [
 export const ASK_USER_RULES =
   "## Asking the user\n" +
   "- Ask ONLY when a decision is genuinely the user's: ambiguous intent, a destructive or irreversible choice, or a preference you cannot infer from the code.\n" +
-  "- Call `ask_user` with 2 to 4 concrete options. Read the relevant files FIRST: never ask a question you could answer yourself, and never chain two questions.";
+  "- Call `ask_question` with 2 to 4 concrete options. Read the relevant files FIRST: never ask a question you could answer yourself, and never chain two questions.";
 
 /** Politique d'utilisation des todos (checklist vivante). Principe comportemental. */
 export const TODO_RULES =
@@ -97,21 +97,35 @@ export const TODO_RULES =
   "- Keep EXACTLY one item `in_progress` and flip each item to done in your very next tool call once it is actually finished: never batch completions, never wait until the end.\n" +
   "- Skip the checklist for a quick single-step request. Do not restate the list in your reply; the user already sees it. The list must always reflect reality.";
 
-/** Règles d'édition précises (mode Agent, effort max). Détail d'outil : placé BAS. */
+/**
+ * Règles d'édition (mode Agent, effort max). Détail d'outil : placé BAS.
+ *
+ * ── La limite de 6000 caractères ───────────────────────────────────────────────
+ * Le tool `editor` du SDK Cline REFUSE toute opération dont `old_text` ou
+ * `new_text` dépasse 6000 caractères (limite DURE du SDK, non configurable) :
+ * l'appel échoue avec « Editor input too large ». Créer un gros fichier en un
+ * seul appel est donc impossible. La seule stratégie qui marche est séquentielle
+ * et doit être dite EXPLICITEMENT au modèle, sinon il réessaie en boucle :
+ *   1. premier `editor` : créer le fichier avec un premier bloc (< 6000 chars) ;
+ *   2. `editor` suivants : insérer le reste par petits blocs, avec `insert_line`
+ *      (insertion avant une ligne) ou un remplacement `old_text` court et unique ;
+ *   3. vérifier à la fin avec `read_files` si un doute subsiste.
+ */
 export const EDIT_RULES_FULL = [
   "## Editing",
-  "- Prefer `edit` (exact search/replace) over `write_file`, and reserve `write_file` for new files or full rewrites.",
-  "- `old_string` must be copied verbatim from the current file, indentation included. It MUST resolve to exactly ONE location: include 3 to 5 lines of unique surrounding context, otherwise the edit is refused as ambiguous.",
-  "- After a failed edit, read the file again and adjust the snippet. Never re-send the same call unchanged.",
-  "- Use `multi_edit` for several changes in the same file: it is atomic and shows a single diff.",
+  "- Use `editor` for edits and `apply_patch` for multi-line diffs across one or more files.",
+  "- `editor` REPLACES `old_text` with `new_text` (creates the file if it does not exist, or inserts `new_text` before `insert_line` when that is provided).",
+  "- CRITICAL: `editor` rejects any call whose `old_text` or `new_text` exceeds 6000 characters. To write a large file, create it with a first `editor` call (first chunk), then append the remaining chunks with further `editor` calls using `insert_line` or a short, unique `old_text` anchor. Never send a whole large file in one call.",
+  "- `old_text` must be copied verbatim from the current file, indentation included, and MUST resolve to exactly ONE location: include 3 to 5 lines of unique surrounding context, otherwise the edit is refused as ambiguous.",
+  "- After a failed edit, re-read the file and adjust the snippet. Never re-send the same call unchanged.",
 ].join("\n");
 
 /** Règles d'édition condensées (effort normal). */
 export const EDIT_RULES_LITE = [
   "## Editing",
-  "- Prefer `edit` over `write_file`; `write_file` only for new files.",
-  "- `old_string` must be unique and include 3 to 5 lines of context. Use `multi_edit` for several changes in one file.",
-  "- Never re-send a failed edit unchanged: re-read the file and adjust.",
+  "- Use `editor` for targeted edits; `apply_patch` for multi-line diffs.",
+  "- CRITICAL: `editor` rejects `old_text`/`new_text` over 6000 characters. Build a large file in several `editor` calls: create it with the first chunk, then insert the rest with `insert_line` or short unique `old_text` anchors.",
+  "- `old_text` must be unique and include 3 to 5 lines of context. Never re-send a failed edit unchanged: re-read the file and adjust.",
 ].join("\n");
 
 /**
@@ -129,14 +143,45 @@ export const STYLE_GUARDRAIL = [
 ].join("\n");
 
 /**
- * Consigne de délégation vers les sous-agents (mode IA uniquement — le tool
- * `spawn_agent` n'est exposé que là).
+ * Consigne de délégation vers les sous-agents (mode IA uniquement).
+ *
+ * ── Pourquoi deux variantes ────────────────────────────────────────────────────
+ * Le SDK Cline expose DEUX mécanismes de sous-agents, mutuellement exclusifs :
+ *
+ *   - `enableAgentTeams` (mode IA d'Origin) → une ÉQUIPE de coéquipiers
+ *     rattachés, pilotés par les outils `team_*`. Chaque action d'un coéquipier
+ *     émet un `team_progress` : c'est le SEUL chemin OBSERVABLE dans l'UI
+ *     (cartes de sous-agents, onglet Agents). C'est le mode par défaut d'Origin.
+ *
+ *   - `enableSpawnAgent` → un sous-agent DÉTACHÉ : il travaille, mais n'émet
+ *     AUCUN `team_progress` (invisible dans l'UI). Origin ne l'active donc
+ *     JAMAIS en mode IA (cf. `cline-sidecar/src/index.ts`, `buildStartConfig`).
+ *
+ * Conséquence : une consigne qui parle de `spawn_agent` est INERTE en mode IA
+ * (l'outil n'est pas exposé), et le modèle, ne voyant aucune instruction sur
+ * les outils `team_*`, ne délègue jamais (« les sous-agents ne se coordonnent
+ * pas »). On parle donc explicitement du mécanisme RÉELLEMENT exposé.
  *
  * Principe, pas seuil : on n'impose aucune règle chiffrée que le modèle suivrait
- * aveuglément. On lui explique QUE SON CONTEXTE EST SA RESSOURCE LA PLUS CHÈRE et
+ * aveuglément. On explique QUE SON CONTEXTE EST SA RESSOURCE LA PLUS CHÈRE et
  * que toute investigation large qui ne produit pas directement la réponse finale
- * doit passer par un sous-agent. Le catalogue des rôles (qui délègue QUOI) est
- * porté par la description du tool `spawn_agent` — ici on motive le POURQUOI.
+ * doit passer par un coéquipier. Le catalogue des rôles (qui délègue QUOI) est
+ * porté par la description des outils `team_*` — ici on motive le POURQUOI.
+ */
+export const DELEGATION_GUIDANCE_TEAMS = [
+  "## Delegation (you run with a team of teammates)",
+  "- You have a team. Broad, self-contained investigations MUST go to a teammate instead of filling your own context: finding where something is defined, used, or configured across a large tree; understanding a flow end to end; reviewing a change for risk; mapping test coverage; assessing doc or API impact. The larger or fuzzier the search, the stronger the reason to delegate.",
+  "- Context is your scarcest resource. Every raw search dump, file read, or grep you keep for yourself is context you cannot spend on reasoning. A teammate's transcript never enters your context: you only get back a bounded report. That asymmetry is the whole point of delegating.",
+  "- Use `team_spawn_teammate` to create a teammate, then `team_task` / `team_run_task` to give it a specific, self-contained task. Poll or await results with `team_status` / `team_await_runs`, and read their findings before acting. When the work is done, shut idle teammates down with `team_shutdown_teammate`.",
+  "- Do it yourself when the answer is one or two targeted reads whose location you already know: the round-trip would cost more than it saves. The judgment is about relative context cost, not a fixed count.",
+  "- A teammate's report is a strong lead, not ground truth: verify anything you act on before relying on it.",
+  "- Delegation is how you keep working on a very large repository without losing the thread. Reach for it by default on broad work; skip it only when it clearly costs more than it saves.",
+].join("\n");
+
+/**
+ * Variante pour un sous-agent DÉTACHÉ (`spawn_agent`). Conservée pour couvrir le
+ * cas où Origin activerait `enableSpawnAgent` (mode IA sans équipes) ; elle n'est
+ * pas utilisée par le mode IA par défaut, qui passe par `DELEGATION_GUIDANCE_TEAMS`.
  */
 export const DELEGATION_GUIDANCE = [
   "## Delegation (only when you have the `spawn_agent` tool)",
@@ -229,13 +274,19 @@ export function buildSystemPrompt(
   mode: "agent" | "ask" | "plan",
   isMax: boolean,
   workspaceNote = "",
+  withTeams = false,
 ): string {
   const blocks: string[] = [identity(mode), CONCISION];
 
   if (mode === "agent") {
     // Principes d'abord…
     blocks.push(TODO_RULES, ASK_USER_RULES, BATCHING_RULES);
-    if (isMax) blocks.push(DELEGATION_GUIDANCE);
+    // Délégation : en mode IA (`withTeams`), les coéquipiers `team_*` sont
+    // TOUJOURS annoncés — sans quoi le modèle, ignorant leur existence, ne
+    // délègue jamais (cf. commentaire de `DELEGATION_GUIDANCE_TEAMS`). Hors mode
+    // IA, le bloc n'a de sens qu'à l'effort max et concerne `spawn_agent`.
+    if (withTeams) blocks.push(DELEGATION_GUIDANCE_TEAMS);
+    else if (isMax) blocks.push(DELEGATION_GUIDANCE);
     // …mécanique ensuite.
     blocks.push(toolsBlock(true), isMax ? EDIT_RULES_FULL : EDIT_RULES_LITE);
   } else if (mode === "ask") {

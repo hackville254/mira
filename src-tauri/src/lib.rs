@@ -15,7 +15,9 @@ mod keychain;
 mod log;
 mod lsp;
 pub mod lsp_index;
+mod node_runtime;
 mod search;
+mod sidecar;
 mod system;
 mod terminal;
 mod tree;
@@ -141,6 +143,60 @@ async fn get_ide_panel_url(
         .ok_or_else(|| "panel not found".to_string())
 }
 
+/// Construit et installe le menu applicatif natif, adapté à l'OS.
+///
+/// Objectif : **retirer** l'item natif « Select All » (Cmd+A sur macOS, Ctrl+A
+/// ailleurs) du menu Édition. Sur macOS en particulier, cet item est fourni par
+/// le menu par défaut de Tauri et déclenche une sélection « tout » NATIVE, au
+/// niveau OS, qui court-circuite le `preventDefault()` du webview — d'où le
+/// contournement impossible à bloquer depuis le JS. En le retirant, le raccourci
+/// retombe dans le DOM et notre handler le gère (sélection confinée à l'éditeur).
+///
+/// Contenu par OS :
+/// - macOS : sous-menu applicatif (À propos / Quitter) + Édition (Couper/Copier/
+///   Coller) + Fenêtre. PAS de SelectAll.
+/// - Windows / Linux : barre « Édition » (Couper/Copier/Coller) + Quitter. PAS de
+///   SelectAll. (Sur ces OS, `Undo/Redo` natifs ne sont pas supportés : ils
+///   restent gérés par CodeMirror et le DOM.)
+fn build_app_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, SubmenuBuilder};
+
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .cut()
+        .copy()
+        .paste()
+        .build()?;
+
+    #[cfg(target_os = "macos")]
+    let menu = {
+        let app_menu = SubmenuBuilder::new(app, "Origin")
+            .about(None)
+            .separator()
+            .quit()
+            .build()?;
+        let window = SubmenuBuilder::new(app, "Window")
+            .minimize()
+            .maximize()
+            .separator()
+            .close_window()
+            .build()?;
+        MenuBuilder::new(app)
+            .item(&app_menu)
+            .item(&edit)
+            .item(&window)
+            .build()?
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let menu = {
+        let file = SubmenuBuilder::new(app, "File").quit().build()?;
+        MenuBuilder::new(app).item(&file).item(&edit).build()?
+    };
+
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Dev uniquement : injecte le `.env` (clé API, provider/modèle par défaut)
@@ -156,7 +212,30 @@ pub fn run() {
         .manage(terminal::TerminalState::new())
         .manage(lsp::LspState::new())
         .manage(dap::DapState::new())
+        .manage(sidecar::SidecarState::new())
         .manage(PanelUrlState::default())
+        .setup(|app| {
+            // Menu applicatif EXPLICITE, par OS. Raison : sur macOS, Tauri ajoute
+            // sinon un menu par défaut dont l'item « Edit ▸ Select All » est lié à
+            // Cmd+A au niveau de l'OS — cet item déclenche un « tout sélectionner »
+            // NATIF qui court-circuite le `preventDefault()` du DOM. Impossible
+            // depuis le JS de l'empêcher. On fournit donc notre propre menu, SANS
+            // l'item natif SelectAll, pour que Cmd+A / Ctrl+A atteigne la webview
+            // et soit géré par notre logique (sélection confinée à l'éditeur).
+            build_app_menu(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Cycle de vie du sidecar Node lié à la fenêtre principale : à la
+            // destruction, on coupe le process (sinon un `node` orphelin
+            // continuerait à tourner et à tenir son fichier SQLite). Best-effort
+            // et non bloquant — `kill_on_drop` sert de filet de sécurité.
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    sidecar::shutdown_blocking(window.app_handle());
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             keychain::set_secret,
             keychain::get_secret,
@@ -245,6 +324,11 @@ pub fn run() {
             extensions::uninstall_extension,
             extensions::read_extension_asset,
             extensions::inspect_extension,
+            node_runtime::resolve_node_runtime,
+            sidecar::cline_sidecar_start,
+            sidecar::cline_sidecar_send,
+            sidecar::cline_sidecar_stop,
+            sidecar::cline_sidecar_status,
             embed_ide_panel,
             resize_ide_panel,
             destroy_ide_panel,

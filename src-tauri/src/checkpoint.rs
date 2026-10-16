@@ -105,11 +105,18 @@ fn save_manifest(root: &Path, turn_id: &str, manifest: &CheckpointManifest) -> R
 /// Ouvre un checkpoint de tour : crée le dossier et un manifeste vide.
 #[tauri::command]
 pub fn checkpoint_begin(app: tauri::AppHandle, turn_id: String) -> Result<(), String> {
+    let t = std::time::Instant::now();
     assert_safe_turn_id(&turn_id)?;
     let root = checkpoints_root(&app)?;
     let dir = root.join(&turn_id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    save_manifest(&root, &turn_id, &CheckpointManifest::default())
+    let res = save_manifest(&root, &turn_id, &CheckpointManifest::default());
+    crate::log::log_line(
+        "debug",
+        "checkpoint",
+        &format!("begin turn={turn_id} en {}ms", t.elapsed().as_millis()),
+    );
+    res
 }
 
 /// Snapshot d'un fichier AVANT écriture. Idempotent : si le fichier est déjà
@@ -124,6 +131,7 @@ pub fn checkpoint_touch_file(
     path: String,
     workspace_root: Option<String>,
 ) -> Result<(), String> {
+    let t = std::time::Instant::now();
     assert_safe_turn_id(&turn_id)?;
     if let Some(root) = workspace_root.as_deref() {
         super::fs::assert_in_workspace_public(&path, root)?;
@@ -132,6 +140,11 @@ pub fn checkpoint_touch_file(
     let mut manifest = load_manifest(&root, &turn_id);
 
     if manifest.entries.iter().any(|e| e.path == path) {
+        crate::log::log_line(
+            "debug",
+            "checkpoint",
+            &format!("touch (déjà capturé, skip) {}ms {path}", t.elapsed().as_millis()),
+        );
         return Ok(()); // déjà capturé pour ce tour
     }
 
@@ -146,8 +159,19 @@ pub fn checkpoint_touch_file(
         backup = Some(name);
     }
 
-    manifest.entries.push(SnapshotEntry { path, existed, backup });
-    save_manifest(&root, &turn_id, &manifest)
+    manifest.entries.push(SnapshotEntry { path: path.clone(), existed, backup });
+    let res = save_manifest(&root, &turn_id, &manifest);
+    // Instrumentation undo/keep (demande explicite) : taille du backup + durée.
+    // Sert à repérer un fichier anormalement lourd (copie disque coûteuse).
+    crate::log::log_line(
+        "debug",
+        "checkpoint",
+        &format!(
+            "touch turn={turn_id} existed={existed} en {}ms → {path}",
+            t.elapsed().as_millis()
+        ),
+    );
+    res
 }
 
 /// Restaure le tour : chaque fichier snapshoté revient à son état d'origine ;
@@ -160,6 +184,7 @@ pub fn checkpoint_undo(
     turn_id: String,
     workspace_root: Option<String>,
 ) -> Result<Vec<String>, String> {
+    let t = std::time::Instant::now();
     assert_safe_turn_id(&turn_id)?;
     let root = checkpoints_root(&app)?;
     let manifest = load_manifest(&root, &turn_id);
@@ -188,15 +213,30 @@ pub fn checkpoint_undo(
     }
 
     let _ = std::fs::remove_dir_all(root.join(&turn_id));
+    crate::log::log_line(
+        "info",
+        "checkpoint",
+        &format!(
+            "undo turn={turn_id} fichiers={} en {}ms",
+            touched.len(),
+            t.elapsed().as_millis()
+        ),
+    );
     Ok(touched)
 }
 
 /// Purge le checkpoint (action « Keep all » ou fin de vie).
 #[tauri::command]
 pub fn checkpoint_discard(app: tauri::AppHandle, turn_id: String) -> Result<(), String> {
+    let t = std::time::Instant::now();
     assert_safe_turn_id(&turn_id)?;
     let root = checkpoints_root(&app)?;
     let _ = std::fs::remove_dir_all(root.join(&turn_id));
+    crate::log::log_line(
+        "info",
+        "checkpoint",
+        &format!("keep/discard turn={turn_id} en {}ms", t.elapsed().as_millis()),
+    );
     Ok(())
 }
 
@@ -259,6 +299,7 @@ fn diff_counts(before: &str, after: &str) -> (usize, usize) {
 /// Sert à peupler la liste cliquable de la bannière de checkpoint.
 #[tauri::command]
 pub fn checkpoint_summary(app: tauri::AppHandle, turn_id: String) -> Result<Vec<FileDelta>, String> {
+    let t = std::time::Instant::now();
     assert_safe_turn_id(&turn_id)?;
     let root = checkpoints_root(&app)?;
     let manifest = load_manifest(&root, &turn_id);
@@ -284,6 +325,18 @@ pub fn checkpoint_summary(app: tauri::AppHandle, turn_id: String) -> Result<Vec<
             created: !entry.existed,
         });
     }
+    // Latence de la bannière : ce delta est relu à CHAQUE rafraîchissement
+    // « live » (un par outil d'écriture). Un coût notable ici = bannière qui
+    // rame pendant le run.
+    crate::log::log_line(
+        "debug",
+        "checkpoint",
+        &format!(
+            "summary turn={turn_id} fichiers={} en {}ms",
+            out.len(),
+            t.elapsed().as_millis()
+        ),
+    );
     Ok(out)
 }
 
@@ -415,8 +468,20 @@ pub fn checkpoint_revert_preview(
     turn_ids: Vec<String>,
     workspace_root: Option<String>,
 ) -> Result<Vec<RevertPlanEntry>, String> {
+    let t = std::time::Instant::now();
     let root = checkpoints_root(&app)?;
-    collect_revert_plan(&root, &turn_ids, workspace_root.as_deref())
+    let plan = collect_revert_plan(&root, &turn_ids, workspace_root.as_deref())?;
+    crate::log::log_line(
+        "debug",
+        "checkpoint",
+        &format!(
+            "revert_preview tours={} fichiers={} en {}ms",
+            turn_ids.len(),
+            plan.len(),
+            t.elapsed().as_millis()
+        ),
+    );
+    Ok(plan)
 }
 
 /// Annule un run complet (plusieurs tours) : restaure les fichiers modifiés,
@@ -428,6 +493,7 @@ pub fn checkpoint_undo_many(
     turn_ids: Vec<String>,
     workspace_root: Option<String>,
 ) -> Result<Vec<RevertPlanEntry>, String> {
+    let t = std::time::Instant::now();
     let root = checkpoints_root(&app)?;
     let ws = workspace_root.as_deref();
     let plan = collect_revert_plan(&root, &turn_ids, ws)?;
@@ -478,6 +544,16 @@ pub fn checkpoint_undo_many(
         }
     }
 
+    crate::log::log_line(
+        "info",
+        "checkpoint",
+        &format!(
+            "revert tours={} fichiers={} en {}ms",
+            turn_ids.len(),
+            plan.len(),
+            t.elapsed().as_millis()
+        ),
+    );
     Ok(plan)
 }
 

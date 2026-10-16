@@ -66,6 +66,8 @@ interface AgentModeViewProps {
   setPinnedContext: (ctx: EditorContext | null) => void;
   setCursorPositions: (updater: (prev: Record<string, { line: number; col: number }>) => Record<string, { line: number; col: number }>) => void;
   openAiDiffTab: (data: AiDiffTabInput) => void;
+  /** Rafraîchit l'éditeur après une action externe (Undo all / revert de l'agent). */
+  onExternalFileChanges?: (paths: string[]) => Promise<void>;
   getAiCompletion?: AiCompletionFn;
   handleMissingServer?: (info: MissingServerInfo) => void;
   /** Incrémenté après l'installation d'un serveur LSP → recrée l'extension LSP. */
@@ -95,7 +97,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
     openTab, openTabAtLine, closeTab, setActiveTab, handleEditorChange,
     handleSave, handleNewFile, setPinnedContext, setCursorPositions, openAiDiffTab,
     getAiCompletion, handleMissingServer, onDefinitionJump, lspGeneration,
-    onApplyWorkspaceEdits,
+    onApplyWorkspaceEdits, onExternalFileChanges,
     terminalRef, terminalHeight, setTerminalHeight, setTerminalOpen,
   } = props;
 
@@ -170,6 +172,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
         getFileContents={() => fileContents}
         onOpenDiffTab={openAiDiffTab}
         onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
+        onExternalFileChanges={onExternalFileChanges}
       />
 
       {/* Tool panels (center) — always open */}

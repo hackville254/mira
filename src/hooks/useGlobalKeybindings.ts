@@ -3,6 +3,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCommandKeyMap, matchesEvent } from "../lib/keybindings";
 import { getCommand as getRegisteredCommand, executeCommand as runRegisteredCommand } from "../lib/extensions/registry";
 import { getCommand as getRuntimeCommand, runCommand as runRuntimeCommand } from "../lib/commands/registry";
+import { isEditorFocused, isNativeTextInputFocused, isContentEditableFocused, selectContentEditable } from "../lib/commands/editorBridge";
+
+// Commandes purement « éditeur » : leur effet n'a de sens que si le focus est
+// DANS un éditeur. Hors éditeur, on bloque l'action native (ex. le Ctrl+A du
+// navigateur qui sélectionnait toute l'UI : noms de fichiers, chat, etc.) sans
+// exécuter la commande — sinon Ctrl+A sélectionnait « tout » au lieu du fichier.
+const EDITOR_SCOPED_COMMANDS = new Set<string>([
+  "origin.editorSelectAll",
+]);
 
 export interface GlobalHandlers {
   // Always provided
@@ -80,6 +89,26 @@ export function useGlobalKeybindings(handlers: GlobalHandlers) {
       for (const [cmdId, keyStr] of Object.entries(km)) {
         if (!keyStr) continue;
         if (!matchesEvent(e, keyStr)) continue;
+
+        // Commande « éditeur » hors éditeur : on neutralise l'action native
+        // (empêche le Ctrl+A navigateur de sélectionner toute l'UI) SANS exécuter
+        // la commande ni laisser filer l'event vers un autre raccourci.
+        if (EDITOR_SCOPED_COMMANDS.has(cmdId) && !isEditorFocused()) {
+          const el = document.activeElement;
+          if (isNativeTextInputFocused()) {
+            // Champ natif (input/textarea) : le Ctrl+A natif est fiable et scopé
+            // au champ — on laisse filer sans le prévenir.
+            return;
+          }
+          // `contenteditable` (ex. composer du chat) : le natif débordait sur le
+          // document. On gère la sélection « tout » NOUS-MÊMES, confinée au contenu
+          // de la zone.
+          e.preventDefault();
+          if (isContentEditableFocused() && el instanceof HTMLElement) {
+            selectContentEditable(el);
+          }
+          return;
+        }
 
         // 1) Registry runtime (cœur IDE) — source de vérité principale.
         const runtime = getRuntimeCommand(cmdId);

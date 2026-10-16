@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pin, FileCode } from "lucide-react";
+import { Pin, FileCode, Check } from "lucide-react";
 import MarkdownMessage from "./MarkdownMessage";
 import ToolCallCard from "./ToolCallCard";
 import ToolGroupCard from "./ToolGroupCard";
@@ -8,6 +8,7 @@ import PlanCard from "./PlanCard";
 import StatusNotice from "./StatusNotice";
 import ReasoningBlock from "./ReasoningBlock";
 import MessageActionsBar, { UserMessageActions, type FeedbackVote } from "./MessageActionsBar";
+import type { TurnFileDelta } from "../../lib/turnCheckpoint";
 import { buildToolRenderers } from "../../lib/toolGroups";
 import type { DisplayMessage } from "../../lib/aiTypes";
 import type { EditorContext } from "../editor/Editor";
@@ -31,7 +32,9 @@ export default function MessageBubble({
   onRegenerate,
   onEditUserMessage,
   onDeleteUserMessage,
-  onRevertUserMessage,
+  onUndoUserMessage,
+  onKeepUserMessage,
+  reviewState,
   onInsert,
   onOpenFile,
   canRegenerate = false,
@@ -57,6 +60,12 @@ export default function MessageBubble({
   onDeleteUserMessage?: () => void;
   /** Revert : annule tout ce qui a été généré pendant ce run. */
   onRevertUserMessage?: () => void;
+  /** Undo ciblé (par message) : annule les écritures de ce message et des suivants. */
+  onUndoUserMessage?: () => void;
+  /** Keep ciblé (par message) : fige les écritures de ce message (les oublie du revert). */
+  onKeepUserMessage?: () => void;
+  /** État de revue de ce message : `kept` (déjà conservé) ou `revertable` (undo possible). */
+  reviewState?: { kept: boolean; revertable: boolean; files: TurnFileDelta[] };
   /** Insère le texte du message dans l'éditeur actif. */
   onInsert?: () => void;
   /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin). */
@@ -143,11 +152,27 @@ export default function MessageBubble({
                 survol uniquement — jamais superposées au texte. */}
             {hovered && !message.streaming && (
               <div style={{ position: "absolute", top: "0", right: "0", zIndex: 2, height: "26px", display: "flex", alignItems: "center" }}>
-                <UserMessageActions
-                  onEdit={onEditUserMessage}
-                  onDelete={onDeleteUserMessage}
-                  onRevert={onRevertUserMessage}
-                />
+                {reviewState?.kept ? (
+                  <span
+                    title={reviewState.files.length > 0 ? `${reviewState.files.length} fichier(s) conservé(s)` : "Modifications conservées"}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "4px",
+                      fontSize: "11px", fontFamily: "var(--font-mono)",
+                      color: "var(--origin-fg-subtle)",
+                    }}
+                  >
+                    <Check size={13} strokeWidth={2}
+                      style={{ color: "var(--origin-semantic-success, #22c55e)" }} />
+                    {reviewState.files.length > 0 ? `${reviewState.files.length} kept` : "Kept"}
+                  </span>
+                ) : (
+                  <UserMessageActions
+                    onEdit={onEditUserMessage}
+                    onDelete={onDeleteUserMessage}
+                    onUndo={onUndoUserMessage}
+                    onKeep={onKeepUserMessage}
+                  />
+                )}
               </div>
             )}
             <div style={{

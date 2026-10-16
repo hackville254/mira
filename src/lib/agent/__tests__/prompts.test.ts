@@ -11,6 +11,7 @@ import {
   EDIT_RULES_FULL,
   EDIT_RULES_LITE,
   DELEGATION_GUIDANCE,
+  DELEGATION_GUIDANCE_TEAMS,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_SYSTEM_PROMPT_LITE,
   DEFAULT_ASK_PROMPT,
@@ -82,6 +83,17 @@ describe("buildSystemPrompt — invariants par mode", () => {
   it("mode AGENT max inclut la délégation, l'effort normal non", () => {
     expect(buildSystemPrompt("agent", true)).toContain(DELEGATION_GUIDANCE);
     expect(buildSystemPrompt("agent", false)).not.toContain(DELEGATION_GUIDANCE);
+  });
+
+  it("mode IA (withTeams) annonce TOUJOURS les coéquipiers team_*, quel que soit l'effort", () => {
+    const lite = buildSystemPrompt("agent", false, "", true);
+    const max = buildSystemPrompt("agent", true, "", true);
+    expect(lite).toContain(DELEGATION_GUIDANCE_TEAMS);
+    expect(max).toContain(DELEGATION_GUIDANCE_TEAMS);
+    // La variante `spawn_agent` (outil absent en IA) ne doit pas s'y trouver.
+    expect(lite).not.toContain(DELEGATION_GUIDANCE);
+    // Et les outils d'équipe sont nommés explicitement.
+    expect(lite).toContain("team_spawn_teammate");
   });
 
   it("mode AGENT max utilise les règles d'édition complètes, normal les condensées", () => {

@@ -5,6 +5,440 @@
 
 ---
 
+### [2026-10-16T12:50] | Prompt système réaligné sur les outils Cline réels (+ limite editor 6000)
+
+- **Contexte :**
+  Symptôme rapporté : le modèle tente d'écrire un gros fichier (jeu Bomberman, 17802 car.) via `editor` et l'appel échoue : « Editor input too large: new_text was 17802 characters, exceeding the recommended limit of 6000 ». Analyse : ce message est émis par le SDK Cline lui-même (`@cline/core`, fonction `mk`) — `editor` REFUSE tout `old_text`/`new_text` > **6000 caractères** (limite dure, non configurable). Cause racine côté Origin : après la bascule vers le SDK, le prompt système décrivait encore les ANCIENS outils du harness front (`read_file`, `write_file`, `edit`, `multi_edit`, `bash_run`, `ask_user`) au lieu des outils Cline réellement exposés (`read_files`, `search_codebase`, `run_commands`, `fetch_web_content`, `apply_patch`, `editor`, `skills`, `ask_question`, `submit_and_exit`). Le modèle ne connaissait donc ni ses vrais noms d'outils ni la stratégie de découpage.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/toolPresentation.ts` : `FULL_TOOLS_LIST` / `READ_ONLY_TOOLS_LIST` réalignés sur les outils Cline ; `ASK_MODE_FILES_NOTE` référence `editor`/`apply_patch`.
+  - `src/lib/agent/prompts.ts` : `EDIT_RULES_FULL` / `EDIT_RULES_LITE` réécrits pour `editor`/`apply_patch` + consigne EXPLICITE de découpage (< 6000 car. par appel, création + ajouts via `insert_line` ou ancrage `old_text` court et unique) ; `ASK_USER_RULES` : `ask_user` → `ask_question`.
+
+- **Décisions Techniques :**
+  - On ne contourne PAS la limite du SDK (elle est volontaire, anti-timeout) : on aligne le prompt pour que le modèle écrive par blocs, comme Cline l'attend.
+  - Le prompt système Origin doit décrire EXACTEMENT les outils du SDK : un nom inexistant fait échouer l'agent.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `toolPresentation.ts`, `prompts.ts`. Aucune modification moteur. Les tests de prompts comptent des concepts par regex → restent verts.
+
+- **Validation :**
+  - `npm run typecheck` → EXIT 0 ; `npm test` → 478/478 ; `npm run lint` → 0 erreur sur les fichiers touchés (1 erreur préexistante `scripts/ttft-probe.ts`).
+
+- **Prochaines étapes :**
+  - Vérifier en UI réelle qu'une demande de « gros fichier » produit bien plusieurs appels `editor` enchaînés.
+
+---
+
+
+### [2026-10-16T08:25] | Cline SDK partout (plan/ask compris) + todo tools + continuité de session
+
+- **Contexte :**
+  Demande utilisateur : « utiliser Cline SDK partout, même la boucle agent », « ajouter le système de todo comme sur Trae », « la structuration des sessions et l'évolution dans la session pour avoir une continuité et une fluidité de la conversation », « envoyer tous les events de Cline à l'UI proprement ». Avant : seuls les modes IDE/IA utilisaient le SDK Cline ; `plan` et `ask` passaient encore par l'ancien harness `runAgent` (front), avec reconstruction complète des messages à chaque tour → pas de continuité, pas de todo list, divergence de comportement entre modes.
+
+- **Modifications effectuées :**
+  - **Outils todo custom** (`cline-sidecar/src/todoTool.ts`, créé) : `todo_write` / `todo_read` via `createTool` de `@cline/core` + `zod` ; `buildTodoTools(uiSessionId, emit)` renvoie `{ tools, onEmit }` (mémoire `lastTodos`).
+  - **Sidecar** (`cline-sidecar/src/index.ts`) : `buildExtraTools(specs)` résout les specs déclaratives → outils todo, câble l'émission `{ kind:"tool_event", tool:"todo", sessionId, todos }` ; `start` passe `localRuntime.extraTools` ; `TOOL_POLICIES` : `todo_write`/`todo_read` auto-approuvés.
+  - **Traduction d'events** (`src/lib/agent/clineBridge.ts`) : `content_update` texte/reasoning → `token`/`reasoning` ; `chunk` (stderr → `notice`) ; `ended` anormal → `finish` ; routage `chunk`/`ended` ajouté.
+  - **Client** (`src/lib/agent/clineClient.ts`) : `resumeSessionId`, `extraTools`, `send(prompt, mode?)`, `onToolEvent` ; `extractToolEvent` (validation stricte, statuts whitelistés) ; `updateModel` best-effort sur reprise.
+  - **Harness** (`src/lib/agent/clineHarness.ts`) : `resumeSessionId`, `extraTools`, `onToolEvent` propagés.
+  - **AiPanel** (`src/components/ai/AiPanel.tsx`) : **moteur Cline unifié** pour TOUS les modes via un helper `runCline` factorisé. `plan` → `mode:"plan"` (lecture seule), phase 2 (après approbation) rejoue sur la **même session** en `send(..., "act")` ; `ask` → `mode:"plan"` (lecture seule) ; IDE/IA → `mode:"act"`. Continuité via colonne DB `cline_session_id` (`getClineSessionId`/`setClineSessionId`). Todos branchés sur `todoStore` (`setTodos` via `onToolEvent`). Code mort supprimé : cascade de modèles + `makeFullTools` + consts `TOOL_TIMEOUT_MS`/`TTFT_BUDGET_MS` (désormais gérés par le SDK).
+
+- **Décisions Techniques :**
+  - **Un seul moteur pour tous les modes** : la boucle agent est le SDK Cline ; le front ne fait plus que router events/approbations/checkpoints. Supprime la divergence plan/ask et le coût de reconstruction d'historique.
+  - **Mode SDK = périmètre d'action** : `plan`/`ask` mappés sur `plan` (lecture seule) ; l'écriture est impossible par design, en plus du verdict `decideApproval` (défense en profondeur).
+  - **Continuité par session persistée** : on stocke l'id SDK en DB et on le repasse en `resumeSessionId` ; les outils custom ne sont injectés qu'à la CRÉATION (sur reprise, le SDK les possède déjà).
+  - **Specs d'outils déclaratives** (jamais de code exécutable venant du front) : le front n'envoie que `{ kind:"todo", sessionId }`.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `todoTool.ts` (créé), `cline-sidecar/src/index.ts`, `clineBridge.ts`, `clineClient.ts`, `clineHarness.ts`, `AiPanel.tsx`, `db.ts` (colonne `cline_session_id`, tours antérieurs).
+  - Effet : `runAgent`/`createTools` ne sont plus utilisés par AiPanel (l'ancien harness reste présent pour d'autres usages éventuels).
+
+- **Validation :**
+  - `npm run typecheck` → EXIT 0 ; `npm run build:sidecar` → OK (11.6mb) ; `npm test` → 478/478 ; `npm run lint` → 0 erreur sur les fichiers touchés (1 erreur préexistante `scripts/ttft-probe.ts`).
+
+- **Prochaines étapes :**
+  - Test bout-en-bout UI : enchaîner plusieurs tours et vérifier la continuité (même `cline_session_id`), l'apparition live de la todo list, la phase 2 du plan.
+
+---
+
+### [2026-10-16T07:45] | Undo/Keep par message + instrumentation de latence complète
+
+- **Contexte :**
+  Deux demandes : (1) « le système de keep all / undo all n'est pas encore à proprie comme sur Trae » ; (2) « pas assez de log pour voir où améliorer → ajoute tous les logs avec les latences dans le terminal ». Diagnostic des 4 problèmes Undo/Keep : bannière muette, Undo all ne restaure pas, pas de bouton par message, Keep all ne marque rien visuellement.
+
+- **Analyse (cause racine) :**
+  - **Bannière muette** : la détection d'écriture côté front était **codée en dur** sur `write_file|edit|multi_edit` (AiPanel L1038/L1088) alors que le SDK Cline émet **`editor` / `apply_patch`**. Aucune écriture n'était reconnue → `touchTurn`/`refreshReview` jamais déclenchés → ni bannière live, ni checkpoint UI.
+  - **Boutons par message absents** : aucun chemin UI ne reliait un message utilisateur à ses tours ; et `turnIdsByUserIndexRef` est une **ref** (mutation sans re-render), donc un affichage dérivé de la ref serait resté invisible.
+  - **Keep sans marqueur** : le seul retour était un toast éphémère.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/clineBridge.ts` : **source unique** `WRITE_TOOL_NAMES` (`editor`, `apply_patch`, `write_to_file`, `write_file`, `edit`, `multi_edit`) + `isWriteTool(name)`.
+  - `src/components/ai/AiPanel.tsx` : détection d'écriture unifiée via `isWriteTool()` (flux live + refresh) ; nouvel état `keptReviews` (marqueurs persistants) et **`revertableIndexes`** (state réactif, alimenté dans `beginTurn`, purgé dans `truncateFrom`/`handleConfirmRevert`/`handleKeepAll`/`handleKeepMessage`/`handleMessageAction`) ; handlers `handleKeepMessage`, `handleUndoMessage`, `messageReviewState`.
+  - `src/lib/turnCheckpoint.ts` : `keepTurnCheckpoint(turnId)` (fige le résumé puis purge).
+  - `src/components/ai/MessageBubble.tsx` + `MessageActionsBar.tsx` : `UserMessageActions` gagne `onUndo`/`onKeep` (icône `CheckCheck`) ; au survol, soit les boutons Undo/Keep, soit l'indicateur persistant « N kept ».
+  - **Logs de latence** (4 niveaux demandés) :
+    - `clineClient.ts` : `start`, contrôle bloquant, **1er événement `@+Nms` (TTFT canal)**, **un log debug par événement traduit (type + `@+Nms` + gap)**, sidecar prêt, session établie, ack `send`, bilan `dispose` (lignes/agent/contrôles/1re ligne/1er evt/silence max).
+    - `checkpoint.rs` : durées sur `begin`/`touch_file`/`undo`/`discard`/`summary`/`revert_preview`/`undo_many`.
+    - `sidecar.rs` : round-trip Rust↔Node par commande (`cmd=… id=… ok=… en Nms`).
+    - `log.rs` : helper `log_line(level, target, message)` pour instrumenter le Rust interne.
+
+- **Décisions Techniques :**
+  - **Une seule liste d'outils d'écriture** (clinBridge) consommée partout : plus de divergence front/sidecar.
+  - **Réactivité par state, pas par ref** : `revertableIndexes` en `useState` car une `Map` en `useRef` ne re-render pas — sinon le marqueur « kept » durait exactement le temps d'un toast (le bug signalé).
+  - **Logs best-effort et bornés** : buffer+flush 150 ms côté front, redaction de secrets et rotation 5 Mio côté Rust. Rien de bloquant.
+  - Le faux positif LSP `Cannot find module './RevertConfirmDialog'` est **confirmé inexistant** (`npx tsc --noEmit` → EXIT 0) : le fichier existe bien, créé par une task parallèle.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `clineBridge.ts`, `AiPanel.tsx`, `turnCheckpoint.ts`, `MessageBubble.tsx`, `MessageActionsBar.tsx`, `clineClient.ts`, `checkpoint.rs`, `sidecar.rs`, `log.rs`.
+  - Effet de bord : l'action « copier » sur un message vaut désormais « Keep all » du tour courant (le tour n'est plus revertable) — comportement voulu, aligné sur Trae.
+
+- **Validation :**
+  - `npx tsc --noEmit` → EXIT 0.
+  - `npx eslint` (fichiers touchés) → 0 erreur (warnings fast-refresh/refs préexistants).
+  - `npx vitest run` → **478/478**.
+  - `cargo test` → **114/114** (1 ignoré réseau).
+
+- **Prochaines étapes :**
+  - Vérification UI manuelle (relancer `tauri dev`) : bannière live, Undo ciblé, marqueur « kept ».
+
+---
+
+- **Contexte :**
+  Dans l'Explorer, sélectionner des fichiers puis supprimer (touche Suppr/Backspace ou menu contextuel) **supprimait réellement les fichiers avant/indépendamment** de l'acceptation de la boîte de confirmation.
+
+- **Analyse (cause racine) :**
+  `FileTree.requestDelete` utilisait `window.confirm(...)` avec un test **synchrone** : `if (!window.confirm(...)) return;`. Or **sous Tauri, `window.confirm` est asynchrone** — il renvoie une `Promise<boolean>`, pas un booléen. En JS, une `Promise` est **toujours truthy** → `!Promise` vaut toujours `false` → **la garde était court-circuitée à chaque appel**. La suppression s'exécutait donc immédiatement, la boîte native s'affichant en parallèle sans jamais conditionner l'action. Bug **invisible en dev navigateur** (où `confirm` est synchrone) mais systématique dans l'app Tauri.
+
+- **Modifications effectuées (`src/components/FileTree.tsx`) :**
+  - `requestDelete(paths)` : ne supprime plus rien — il se contente d'**ouvrir la modale** (`setPendingDelete(paths)`).
+  - Nouveau `performDelete(paths)` : contient la logique destructive (appel `deleteEntries`, gestion d'erreurs, `pruneSelection`, `refresh`) et n'est appelé **qu'après acceptation explicite**.
+  - Nouveau composant interne `DeleteConfirmDialog` : modale React in-app (fond cliquable = annuler, Échap = annuler, bouton « Delete » = confirme), bouton désactivé pendant l'opération. **Remplace entièrement `window.confirm`.**
+  - État `pendingDelete: string[] | null` portant les chemins à confirmer.
+
+- **Décisions Techniques :**
+  - **Zéro dépendance à `window.confirm`** : son comportement diffère entre navigateur (sync) et Tauri (async/Promise) — non portable par construction. Une modale React est **déterministe et cross-platform**.
+  - **Séparer « demander » et « exécuter »** : `requestDelete` (intention) vs `performDelete` (effet). Rend impossible l'exécution sans confirmation, quel que soit l'appelant (raccourci clavier, menu contextuel).
+  - **Cohérence visuelle** avec `RevertConfirmDialog` (mêmes tokens, même ergonomie).
+
+- **Impacts & Dépendances :**
+  - Fichier touché : `src/components/FileTree.tsx` uniquement. Aucune signature publique modifiée.
+  - **Dette identifiée (hors périmètre)** : `SourceTreePanel.tsx:288` (drop de stash) et `SettingsPanel.tsx:1144` (suppression de serveur MCP) utilisent le **même** `window.confirm` asynchrone → **même bug latent**. À migrer vers le même pattern de modale.
+
+- **Validation :** `tsc` OK · `eslint` 0 erreur / 8 warnings · `vitest` **478/478** · `vite build` OK.
+
+- **Prochaines étapes :**
+  - Test manuel : sélectionner un/plusieurs fichiers → Suppr → **rien** ne doit être supprimé tant que « Delete » n'est pas cliqué ; « Cancel » / Échap / clic sur le fond → aucun changement.
+  - Planifier la migration des deux autres `window.confirm` (stash, MCP) vers une modale commune.
+
+### [2026-10-16T07:20] | FIX — Mode IA : le root ne déléguait JAMAIS (0 `team_progress`) — le prompt ignorait les outils `team_*`
+
+- **Contexte :**
+  Signalement utilisateur : « les sous-agents ne marchent pas, ils ne se coordonnent pas, il n'y a rien pour le suivi en mode IA ». Le pont UI (Lot 6) traduisait déjà `team_progress`/`teamAgentId`, mais **aucun** événement d'équipe n'arrivait.
+
+- **Diagnostic (reproduction réelle au terminal) :**
+  Banc reproduisant le protocole Rust→sidecar avec un **vrai appel réseau** (`deepseek-v4-flash-0731`) en mode teams. Résultat : 8 itérations, uniquement `read_files` + `run_commands`, **0 outil `team_*`, 0 `spawn_agent`, 0 `team_progress`** — même en ordonnant explicitement au modèle de déléguer.
+  **Cause racine** : `DELEGATION_GUIDANCE` (dans `prompts.ts`) portait le titre *« only when you have the `spawn_agent` tool »* et ne mentionnait **jamais** les outils `team_*`. Or en mode IA Origin **désactive `spawn_agent`** (`enableSpawnAgent: !enableTeams` = false) et expose les outils `team_*`. La consigne était donc **inerté** (elle se référençait à un outil absent) et rien n'apprenait au modèle l'existence de ses coéquipiers. Second facteur : le bloc n'était inclus **que si `isMax`** (effort max), or l'effort par défaut est `normal` → bloc absent.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/prompts.ts`** :
+    - nouveau bloc `DELEGATION_GUIDANCE_TEAMS` : motive la délégation **en nommant explicitement** `team_spawn_teammate`, `team_task`/`team_run_task`, `team_status`/`team_await_runs`, `team_shutdown_teammate` (les outils RÉELLEMENT exposés).
+    - `buildSystemPrompt(mode, isMax, workspaceNote, withTeams)` : 4ᵉ paramètre ; quand `withTeams` est vrai, on injecte **toujours** `DELEGATION_GUIDANCE_TEAMS` (indépendamment de l'effort). Sinon comportement inchangé (variante `spawn_agent` à l'effort max uniquement).
+    - `DELEGATION_GUIDANCE` (variante `spawn_agent`) conservée pour le cas non-teams.
+  - **`src/components/ai/AiPanel.tsx`** : le prompt agent est construit avec `withTeams: isAgent` (mode IA uniquement ; IDE = 1 agent seul, pas de consigne de sous-agents).
+  - **`src/lib/agent/__tests__/prompts.test.ts`** : test d'invariant — `withTeams` annonce `DELEGATION_GUIDANCE_TEAMS` à effort normal **et** max, et n'inclut pas la variante `spawn_agent`.
+
+- **Décisions Techniques :**
+  - **Parler du mécanisme réellement exposé**, pas d'un outil désactivé : une consigne conditionnée à un outil absent est silencieusement ignorée par le modèle.
+  - **Délégation toujours annoncée en IA** : l'orchestration est la raison d'être du mode IA (gros dépôts) ; la lier à l'effort max la rendait inactive par défaut.
+  - **Fix 100 % front** (prompt) : aucune modification du sidecar ni rebuild de bundle requis — le prompt est injecté par le front via `systemPrompt`.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src/lib/agent/prompts.ts`, `src/components/ai/AiPanel.tsx`, `src/lib/agent/__tests__/prompts.test.ts`.
+  - Le mode IDE (sidebar) reste inchangé (aucun sous-agent, économie de tokens préservée).
+
+- **Validation :** banc rejoué avec le prompt IA réel → **`team_spawn_teammate` ×8, `team_run_task` ×8, `team_await_runs` ×1, `team_progress` ×97, `teamAgentId` uniques `proto-rev`/`struct-rev`, `teamRole:"teammate"` ×137** (avant : tous à 0) · `vitest` **478/478** · `tsc` 0 erreur · `eslint` 0 problème sur les fichiers touchés.
+
+- **Prochaines étapes :** observer en UI (mode IA) le rendu des cartes de coéquipiers alimentées par `team_progress`.
+
+### [2026-10-16T07:05] | FIX — « le sidecar n'a pas renvoyé de sessionId » : `cline_sidecar_send` fire-and-forget → request/response corrélé
+
+- **Contexte :**
+  Après le fix bundle, l'UI loggait `le sidecar n'a pas renvoyé de sessionId` puis `Le moteur d'agent n'a pas démarré (sidecar indisponible)`.
+
+- **Analyse (cause racine) :**
+  `startClineRun` (front) attendait `{ sessionId }` de `cline_sidecar_send`. Or la commande Rust était **fire-and-forget** : elle renvoyait l'`id` (`u64`) de la commande sans attendre la réponse du sidecar. Le `sessionId`, émis plus tard par le sidecar (`{id, ok, result:{sessionId}}`), était simplement relayé comme un event lambda, jamais corrélé → le front recevait `undefined`.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/sidecar.rs`** :
+    - `SidecarState.pending` : table `id → oneshot::Sender<Value>` pour corréler les réponses de commande.
+    - `route_command_reply` : route les lignes `{id numérique, ok bool}` vers le `oneshot` correspondant ; les events de flux (`kind:"event"`), demandes d'approbation et lignes non-JSON ne sont **pas** consommés.
+    - `cline_sidecar_send` : enregistre le résolveur **avant** d'écrire (anti-course), puis `await` la réponse sous `COMMAND_REPLY_TIMEOUT` (30 s) ; renvoie `result` (dont `sessionId`) ou une erreur structurée.
+    - `cline_sidecar_stop` : vide `pending` pour débloquer les attentes.
+    - `#[cfg(test)]` : 5 tests de routage (`#[tokio::test]`).
+  - **`src-tauri/Cargo.toml`** : `[dev-dependencies] tokio = { features = ["macros"] }` pour les tests async.
+
+- **Décisions Techniques :**
+  - **Request/response corrélé** plutôt que fire-and-forget : le contrat front (`{sessionId}`) l'exige, et c'est le seul moyen de distinguer une réponse de commande d'un event sur le même canal stdout.
+  - **Timeout borné** (30 s) + `oneshot` : pas de blocage définitif si le sidecar meurt.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src-tauri/src/sidecar.rs`, `src-tauri/Cargo.toml`.
+
+- **Validation :** banc en isolation (dossier sans `node_modules`) → `ping`→`pong`, puis `start` → `{id:"c2", ok:true, result:{sessionId:"…"}}` en **673 ms** ✅ ; run complet avec vrai réseau : `send` → TTFT 796 ms, `done` reason=completed, exit 0 ✅ · `cargo test` **114/114** (5 nouveaux) · `vitest` **477/477**.
+
+- **Prochaines étapes :** relancer `tauri dev` pour recopier la ressource après build.
+
+### [2026-10-16T06:55] | FIX — `SIDECAR_EXITED_EARLY` : bundle non autonome (imports `--external`) + erreurs de démarrage désormais explicites
+
+- **Contexte :**
+  Au lancement de l'agent, l'UI loggait `{"code":"SIDECAR_EXITED_EARLY","message":"le sidecar s'est arrêté avant d'être prêt"}` — sans cause visible.
+
+- **Analyse (cause racine) :**
+  Le bundle `dist/index.mjs` était construit avec `--external:simple-git --external:jiti`. Or `tauri.conf.json` copie ce bundle **seul** comme ressource Tauri (en dev dans `target/<profile>/cline-sidecar/dist/`, en release dans `Resources/`). Node résout les imports **relativement au fichier** : depuis `src-tauri/cline-sidecar/dist/` il trouvait `node_modules/simple-git` (d'où un démarrage OK en CLI), mais depuis la copie **isolée** de `target/debug/…` il levait `ERR_MODULE_NOT_FOUND` → crash au chargement → `SIDECAR_EXITED_EARLY`.
+  Compliqué par le fait que `resolve_sidecar_script` privilégie `resource_dir/…` (le bundle copié, cassé) avant le bundle de dev (sain). Second facteur aggravant : l'erreur ne portait **pas** la stderr du sidecar → diagnostic muet.
+
+- **Modifications effectuées :**
+  - **`src-tauri/cline-sidecar/package.json`** : suppression des flags `--external:simple-git --external:jiti` → le bundle embarque **tout** (`simple-git`, `jiti`). Taille 9.9 → 11.6 Mo.
+  - **`scripts/build-sidecar.mjs`** : **garde-fou d'autonomie**. Après build, on vérifie qu'aucune **dépendance déclarée** (`pkg.dependencies`) n'apparaît en import externe nu (`from "x"` / `require("x")`). Échec = code non nul. Cible uniquement les dépendances directes (pas les `require()` conditionnels optionnels type `@aws-sdk/…`, qui ne cassent rien s'ils sont absents).
+  - **`src-tauri/src/sidecar.rs`** :
+    - stderr est désormais lu **dès le spawn** (avant le handshake), alimentant à la fois le log central et un **tampon borné** (`STDERR_TAIL_LINES = 50`).
+    - sur échec de handshake (`SIDECAR_EXITED_EARLY`/`SIDECAR_READY_TIMEOUT`), la queue stderr est **jointe à l'erreur JSON** (champ `stderr`, lignes nettoyées + plafonnées) → l'échec devient auto-explicatif dans l'UI.
+
+- **Décisions Techniques :**
+  - **Bundle strictement autonome** plutôt que « copier aussi `node_modules` » : la ressource Tauri est un fichier unique ; garder des externes obligerait à embarquer et résoudre une arborescence `node_modules` — fragile et contraire au choix « A2 bundle esbuild single-file ».
+  - **Garde-fou ciblé sur les dépendances déclarées** : évite les faux positifs des imports conditionnels du SDK tout en verrouillant la régression réellement survenue.
+  - **Diagnostic d'échec dans l'erreur** : on ne dépend plus de la lecture du terminal `tauri dev` pour comprendre un crash de sidecar.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `cline-sidecar/package.json`, `scripts/build-sidecar.mjs`, `src-tauri/src/sidecar.rs`.
+  - **Toute modification future de `package.json` (nouvelle dép) doit rebuild** (`npm run build:sidecar`) ; le garde-fou échoue explicitement sinon.
+
+- **Validation :** reproduction en isolation (dossier sans `node_modules`) → bundle autonome : `{"kind":"ready"}` ✅ (avant : `ERR_MODULE_NOT_FOUND`) · garde-fou testé (attrape `--external:simple-git`, passe sur le bundle sain) · bundle recopié dans `target/debug/cline-sidecar/dist/` et démarré ✅ · `cargo test` **109/109** · `vitest` **477/477**.
+
+- **Prochaines étapes :**
+  - **Relancer `tauri dev`** (pour que la ressource soit recopiée) puis retester le lancement de l'agent.
+
+### [2026-10-16T06:45] | Moteur d'agent : bascule complète sur le Cline SDK (`@cline/core`) — sidecar Node supervisé par Rust, IDE + IA unifiés
+
+- **Contexte :**
+  Le harness d'agent TS maison plafonnait : TTFT irrégulier, orchestration de sous-agents inobservable en mode IA (« les sous-agents ne se coordonnent pas, rien pour le suivi »), et chaque nouveau comportement (compaction, reprise, outils) demandait de réimplémenter ce que le Cline SDK fournit déjà. Décision utilisateur : **basculer sur `@cline/core` 0.0.93** (et écarter `1jehuang/jcode-sdk` après comparaison), **sans embarquer Node** (réutiliser le Node du PC, sinon installer la version voulue), en portant **IDE + IA d'un coup**.
+
+- **Modifications effectuées (Lots 1 → 7) :**
+  - **Lot 1 — Runtime Node :** `src-tauri/src/node_runtime.rs` résout un Node ≥ 22 (PATH enrichi, gestionnaires nvm/`n`/fnm/volta/asdf) et déclenche une **installation silencieuse** si absent. `env_path.rs` construit un PATH enrichi via shell de login (script littéral figé, timeout, cache `OnceLock`).
+  - **Lot 2/3 — Sidecar :** `src-tauri/cline-sidecar/` = bundle **esbuild single-file** (`dist/index.mjs`), hébergé par un **process Node lancé par Rust**, protocole **NDJSON sur stdio**. `sidecar.rs` (Rust) : spawn, handshake `ready` sous deadline, lecture stdout → webview (`cline://event`), stderr → journal, arrêt propre puis `kill`.
+  - **Lot 4a/4c — Pont front :** `src/lib/agent/clineBridge.ts` traduit chaque `CoreSessionEvent` (`chunk`/`agent_event`/`team_progress`/`done`…) en `AgentEvent` d'UI. `clineClient.ts` gère le cycle de vie + le **canal d'approbation bloquant** (`tool_approval`/`tool_write`) ; `clineApproval.ts` route les décisions ; `onBeforeWrite` alimente le checkpoint (undo/keep).
+  - **Lot 5 — Prompts/TTFT :** module central de prompts unifié IDE/IA, cascade de modèles avec bascule auto sur rate-limit.
+  - **Lot 6 — Mode IA / équipes :** `index.ts` force **un seul chemin de sous-agents** — `enableSpawnAgent: !enableTeams` + `enableAgentTeams: enableTeams`. Raison (découverte empirique) : `spawn_agent` crée un sous-agent **détaché** qui n'émet **aucun** `TeamEvent` (donc invisible pour l'UI) ; seuls les outils `team_*` créent des coéquipiers **rattachés** qui émettent `team_progress` → seuls eux alimentent le suivi. `clineBridge.ts` traduit `team_progress` → `subagent-start/step/end` (clé `spawnId = lifecycle.agentId`) et route `teamAgentId`/`teamRole` ; le `done` d'un **coéquipier** est piégé pour **ne pas** clore le run global. `AiPanel.tsx` rattache les cartes de coéquipiers au dernier tool-call `team_*` (fallback) et enrichit la tâche au `run_started`.
+  - **Lot 7 — Durcissement (`sidecar.rs`) :** `env_clear()` + **réinjection minimale** (`PATH`, `HOME`, `CLINE_DIR`, `CLINE_DATA_DIR`) → le sidecar ne voit plus les jetons/proxys/clés cloud du process parent ; la clé API du provider passe **par commande NDJSON**, jamais par l'env. Ajout d'un plafond `MAX_EVENT_LINE_BYTES` (4 Mio) sur les lignes stdout relayées (au-delà : événement d'erreur borné `SIDECAR_EVENT_TOO_LARGE`) → fermeture d'un vecteur DoS par ligne géante.
+
+- **Décisions Techniques :**
+  - **Sidecar plutôt que portage Rust** : le SDK est un paquet Node ; le réhéberger serait une réécriture sans fin et fragile. Un process supervisé garde un **moteur unique** pour les deux modes.
+  - **NDJSON stdio, aucun port réseau** : inaccessible depuis l'extérieur, le webview ne parle jamais directement au sidecar.
+  - **Traduction des événements dans le front** (Rust relaie brut) : la logique Cline reste typée/testable en TS, Rust reste un simple transport.
+  - **Un seul chemin de sous-agents** (teams en IA, spawn en IDE) : déterministe et observable.
+  - **Approbations bloquantes sur canal dédié** : les outils sensibles (`editor`/`apply_patch`/`run_commands`/`skills`) ne sont **pas** auto-approuvés ; les outils `team_*` (contrôle, pas écriture) le sont à dessein.
+
+- **Impacts & Dépendances :**
+  - Fichiers clés : `src-tauri/src/{node_runtime,env_path,sidecar,lib}.rs`, `src-tauri/cline-sidecar/{src/index.ts,dist/index.mjs}`, `src/lib/agent/{clineBridge,clineClient,clineApproval,clineHarness,run}.ts`, `src/components/ai/{AiPanel,AgentPanel}.tsx`.
+  - **Build requis** : `npm run build:sidecar` (esbuild) avant `tauri dev`/`tauri build` — le bundle `dist/index.mjs` est la ressource embarquée.
+  - **Dépendance runtime** : un Node ≥ 22 doit être présent (ou installable sans intervention).
+
+- **Validation :** `cargo check --tests` OK · `tsc` OK (0 erreur) · `eslint` 0 erreur / 8 warnings préexistants · `vitest` **477/477** (dont 21 dans `clineBridge.test.ts`).
+  - **Banc empirique Lot 6 (run réel)** : `team_spawn_teammate ×1`, `team_run_task ×1`, `team_await_runs ×1` → `team_progress` **13 samples** / **41 `agent_event`** coéquipier, `lifecycle.agentId="explorer"`, eventTypes `[teammate_spawned:1, run_queued:1, run_started:1, task_start:1, agent_event:41, run_progress:8, team_mission_log:1]`, identités `teamRole=lead` (root) vs `teamAgentId=explorer teamRole=teammate` (coéquipier), `done` coéquipier = signal de fin. `TTFT 17 149 ms` (orchestration multi-agents).
+
+- **Prochaines étapes :**
+  - Test manuel UI : mode IA → vérifier le suivi (onglet Agents + cartes enfants), l'undo/keep par tour, et les approbations d'outils sensibles.
+  - Surveiller le TTFT en mode IDE (mono-agent) vs IA (orchestration).
+
+### [2026-10-16T02:15] | Ctrl+A macOS — menu natif « Select All » retiré (cause racine du bypass persistant) + gestion cross-OS
+
+- **Contexte :**
+  Malgré le scoping DOM, le bypass persistait : **sélection souris puis Cmd+A** sélectionnait encore toute l'UI. Utilisateur sur **MacBook** — demande explicite : gérer macOS, Windows ET Linux.
+
+- **Analyse (cause racine, spécifique macOS) :**
+  Sur macOS, Tauri ajoute **automatiquement un menu applicatif par défaut** (équivalent à `Menu.default()`). Ce menu contient **Edit ▸ Select All** lié à **Cmd+A**. Ce raccourci déclenche une action **native au niveau OS**, **avant** la webview : le `keydown` n'arrive jamais au DOM, donc **aucun `preventDefault()` JS ne peut l'empêcher**. C'est la raison pour laquelle toutes les corrections côté front étaient sans effet sur Mac. (Windows/Linux : pas de menu par défaut équivalent, le DOM voyait bien Ctrl+A — d'où une gestion par OS indispensable.)
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/lib.rs`** :
+    - Nouvelle fonction `build_app_menu(app)` + branchement via `.setup(|app| { build_app_menu(app)?; Ok(()) })`.
+    - **Menu explicite par OS**, construit avec `MenuBuilder`/`SubmenuBuilder`, **délibérément SANS l'item natif `SelectAll`** → le raccourci retombe dans la webview et repasse sous notre logique DOM.
+      - **macOS** : sous-menu applicatif (À propos / Quitter) + **Edit** (Cut/Copy/Paste) + **Window** (Minimize/Maximize/Close).
+      - **Windows/Linux** : **File** (Quit) + **Edit** (Cut/Copy/Paste).
+    - `Undo/Redo` natifs non inclus (non supportés par le menu natif sur Windows/Linux) : ils restent gérés par CodeMirror / le DOM.
+
+- **Décisions Techniques :**
+  - **Retirer l'item natif plutôt que tenter de le neutraliser** : sur macOS il n'existe aucun moyen JS de bloquer une action de menu native. La seule solution fiable est de **ne pas l'avoir**.
+  - **Menu par OS via `#[cfg(target_os = "macos")]`** : macOS exige un premier sous-menu « app », Windows/Linux non — un menu unique ne convient pas aux deux.
+  - **Conserver Cut/Copy/Paste** : utiles et sûrs ; ils agissent sur le focus, sans effet de bord global.
+  - Côté DOM (tours précédents) : `matchesEvent` traite déjà `(ctrlKey || metaKey)` → le même code couvre Cmd (mac) et Ctrl (Win/Linux).
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `src-tauri/src/lib.rs` (nouveau menu). Front inchangé depuis le tour précédent.
+  - **Redémarrage de l'app requis** (`tauri dev`) : le menu est construit au démarrage côté Rust — un simple reload de la webview ne suffit pas.
+
+- **Validation :** `cargo check` OK (Rust, exist 0) · `tsc` OK · `eslint` 0 erreur / 8 warnings · `vitest` **456/456** · `vite build` OK.
+
+- **Prochaines étapes :**
+  - **Redémarrer `tauri dev`** puis tester sur macOS : (a) sélection souris dans le chat puis Cmd+A → seule la zone chat est sélectionnée, jamais les noms de fichiers ; (b) Cmd+A hors éditeur/champ → rien de l'UI ; (c) Cmd+A dans un input natif → texte du champ ; (d) Cmd+A dans l'éditeur → fichier.
+  - Vérifier sur Windows/Linux que Ctrl+A suit le même comportement (menu File/Edit sans SelectAll).
+
+### [2026-10-16T01:45] | Ctrl+A — suite : le `contenteditable` laissait filer le Ctrl+A natif (bypass « souris puis Ctrl+A »)
+
+- **Contexte :**
+  Malgré le scoping précédent, un bypass subsistait : **sélection à la souris puis Ctrl+A** sélectionnait encore toute l'UI (noms de fichiers inclus). La sélection souris elle-même doit rester possible — ce n'est pas elle qu'il faut bloquer, c'est le Ctrl+A.
+
+- **Analyse (cause racine) :**
+  Le scoping v1 classait tout `contenteditable` comme « champ de saisie texte » et **laissait donc filer le Ctrl+A natif** (`if (!isTextInputFocused()) e.preventDefault();` → pas de `preventDefault`). Or dans le composer du chat (`contenteditable`), le Ctrl+A natif d'un moteur comme Chromium/WebKit **déborde sur le document** et sélectionne tout (chrome de l'IDE). Après une sélection souris, le focus retombe souvent sur ce `contenteditable` (ou `body`) → le natif reprenait la main.
+
+- **Modifications effectuées :**
+  - **`src/lib/commands/editorBridge.ts`** :
+    - `isTextInputFocused` **remplacé** par `isNativeTextInputFocused` — ne couvre plus que `<input>`/`<textarea>` **natifs** (Ctrl+A natif fiable et scopé). Les `contenteditable` sont **exclus**.
+    - Ajout `isContentEditableFocused()` (contenteditable hors `.cm-editor`) et `selectContentEditable(el)` (sélection **scopée** au contenu de la zone via `Range.selectNodeContents`).
+  - **`src/hooks/useGlobalKeybindings.ts`** : hors éditeur, pour une commande `EDITOR_SCOPED_COMMANDS`, on distingue désormais trois cas — (1) input natif → on laisse filer le natif ; (2) `contenteditable` → `preventDefault` **et** sélection « tout » gérée par nous, **confinée au composer** ; (3) tout le reste (focus `body` après sélection souris, arbre, chrome) → `preventDefault` pur, rien de l'UI n'est sélectionné.
+
+- **Décisions Techniques :**
+  - **Ne jamais dépendre du Ctrl+A natif hors input natif** : son périmètre varie selon le moteur et n'est pas garantissable. Pour les `contenteditable`, on **impose** la sélection nous-mêmes → résultat déterministe et strictement confiné.
+  - **Séparer « input natif » et « contenteditable »** : deux comportements distincts, deux helpers distincts — plus de classification fourre-tout.
+  - **La sélection souris reste intacte** : on n'intercepte que le clavier (keystroke), jamais le `mousedown`/drag.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `editorBridge.ts`, `useGlobalKeybindings.ts`. `isTextInputFocused` (ancien nom) n'est plus exporté — vérifié : aucun autre appelant.
+  - Comportement Ctrl+A **dans** l'éditeur et dans les `<input>`/`<textarea>` natifs : inchangé.
+
+- **Validation :** `tsc` OK (exit 0) · `eslint` 0 erreur / **8 warnings préexistants** · `vitest` **456/456** · `vite build` OK.
+
+- **Prochaines étapes :**
+  - Test manuel : (a) sélection souris dans le chat puis Ctrl+A → seule la zone chat est sélectionnée (jamais les noms de fichiers) ; (b) sélection souris sur le chrome puis Ctrl+A → rien de l'UI ; (c) Ctrl+A dans un `<input>` (renommage, recherche) → texte du champ ; (d) Ctrl+A dans l'éditeur → fichier.
+
+### [2026-10-16T01:10] | Ctrl+A : sélection limitée à l'éditeur (fin de la sélection de toute l'UI)
+
+- **Contexte :**
+  `Ctrl+A` / `Cmd+A` sélectionnait **tout le texte de l'application** — noms de fichiers, chat, chrome de l'IDE — au lieu de ne sélectionner que le contenu de l'éditeur.
+
+- **Analyse (causes racines) :**
+  1. **Listener global non scopé** — le handler `window` de `useGlobalKeybindings` intercepte `ctrl+a` → `origin.editorSelectAll` **quelle que soit la position du focus**. Quand le focus n'est pas dans l'éditeur, la commande visait une vue CodeMirror non focalisée tandis que le **Ctrl+A natif du navigateur** sélectionnait le document entier (l'app n'a aucun `user-select: none`).
+  2. **Ctrl+A « tout sélectionner » dans l'arbre** — `FileTree.handleKeyDown` avait sa propre branche `Ctrl/Cmd+A` qui sélectionnait **toutes les lignes** de l'arbre : comportement contraire à l'attente (« Ctrl+A ne doit agir que dans l'éditeur »).
+
+- **Modifications effectuées :**
+  - **`src/lib/commands/editorBridge.ts`** : deux helpers de portée clavier — `isEditorFocused()` (focus dans un `.cm-editor`) et `isTextInputFocused()` (focus dans un input texte / textarea / `contenteditable`, y compris le composer du chat) ; inputs non textuels exclus.
+  - **`src/hooks/useGlobalKeybindings.ts`** : ensemble `EDITOR_SCOPED_COMMANDS` (`origin.editorSelectAll`). Avant le dispatch, si une de ces commandes matche alors que **l'éditeur n'a pas le focus**, on **neutralise l'action native** (`preventDefault` → plus de sélection de toute l'UI) et on sort — **sauf** si le focus est dans un champ de saisie, auquel cas on laisse le Ctrl+A natif sélectionner le texte **de ce champ**.
+  - **`src/components/FileTree.tsx`** : suppression de la branche `Ctrl/Cmd+A` (et de la dépendance `setSelected` devenue inutile). La sélection multiple reste accessible au clic (Maj / Ctrl-clic).
+
+- **Décisions Techniques :**
+  - **Portée par le focus réel du DOM** (`document.activeElement.closest('.cm-editor')`) plutôt que par le registre `activeView` : ce dernier est aussi renseigné à la création de la vue, pas uniquement au focus — il ne prouve pas que l'utilisateur écrit dans l'éditeur.
+  - **Neutraliser sans exécuter** hors éditeur : on empêche le Ctrl+A natif global, mais on ne détourne pas le raccourci d'un champ de saisie (l'utilisateur doit pouvoir tout sélectionner dans un input).
+  - **Ensemble de commandes** (plutôt qu'un `if` codé en dur) : extensible si d'autres raccourcis purement éditeur doivent être scopés de la même façon.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `editorBridge.ts`, `useGlobalKeybindings.ts`, `FileTree.tsx`. Aucun changement de contrat public.
+  - Le comportement de Ctrl+A **dans** l'éditeur est inchangé (CodeMirror `selectAll`, pris en amont via `e.defaultPrevented`).
+
+- **Validation :** `tsc` OK (exit 0) · `eslint` 0 erreur / **8 warnings préexistants** (retour à la baseline) · `vitest` **456/456** · `vite build` OK.
+
+- **Prochaines étapes :**
+  - Test manuel : (a) Ctrl+A dans l'éditeur → sélectionne le fichier ; (b) Ctrl+A sur l'arbre / le chat / hors champ → **rien** de l'UI n'est sélectionné ; (c) Ctrl+A dans un input (renommage, recherche, composer) → sélectionne le texte du champ.
+
+### [2026-10-15T23:40] | Port Cline SDK — Lot 1 : résolveur du runtime Node (système → portable)
+
+- **Contexte :**
+  Bascule du harness d'agent maison vers le **Cline SDK** (`@cline/sdk` 0.0.93, JS pur). Le moteur tourne dans un **sidecar Node** lancé par Rust. Décision produit : **on n'embarque PAS Node** dans l'installeur — on utilise le Node **déjà présent** sur le PC, et seulement s'il est absent (ou < 22) on installe une version portable **silencieusement** dans l'app-data. Contrainte méthode : port **lot par lot**.
+
+- **Modifications effectuées :**
+  - **`src-tauri/src/node_runtime.rs`** (nouveau) :
+    - `MIN_MAJOR = 22` (exigence Cline SDK) et version portable épinglée **v24.21.0**.
+    - Empreintes SHA-256 **figées à la compilation** pour les 5 plateformes (darwin-arm64/x64, linux-arm64/x64, win-x64) — issues du `SHASUMS256.txt` officiel de nodejs.org.
+    - `select_artifact(os, arch)` : sélection pure de l'artefact par plateforme (`None` si non supportée → message propre, jamais de panic).
+    - `probe_node(path)` : exécute `node --version` **borné** (timeout 1500 ms) — un binaire doit **prouver** qu'il est un vrai Node avant d'être adopté.
+    - `find_system_node()` : scanne le **PATH enrichi** (`env_path`, qui couvre déjà nvm/`n`/fnm/volta/asdf) et retient le premier Node ≥ 22.
+    - `find_portable_node()` : réutilise un Node portable déjà extrait (pas de re-téléchargement aux démarrages suivants).
+    - `install_portable_node(app)` : `downloader::fetch_verified` (checksum obligatoire) → `extract_tar_gz` (Unix) / `extract_zip` (Windows) → `make_executable` → re-probe. Émet `node://install-progress` (`download`/`extract`/`done`).
+    - Commande Tauri `resolve_node_runtime` : ordre **système → portable existant → installation silencieuse**.
+  - **`src-tauri/src/lib.rs`** : `mod node_runtime;` + enregistrement de `resolve_node_runtime` dans l'`invoke_handler`.
+  - **`src-tauri/src/downloader.rs`** : retrait du `#[allow(dead_code)]` sur `extract_tar_gz` — il est désormais réellement utilisé par le runtime Node.
+
+- **Décisions Techniques :**
+  - **URL + hash figés en dur** (comme `lsp_index`) plutôt qu'un manifeste distant : supprime tout vecteur RCE/SSRF par manifeste compromis. Le webview ne fournit **jamais** d'URL.
+  - **Sonde `--version` obligatoire** : on ne fait pas confiance à la simple présence d'un fichier `node` dans le PATH (un faux binaire ne peut pas être adopté silencieusement) ; la sonde est bornée pour éviter qu'un binaire exotique gèle le démarrage.
+  - **Réutilisation de l'infra existante** (`downloader`, `env_path`) plutôt que duplication : la découverte Node de `env_path` existait déjà, `extract_tar_gz` avait été écrit en prévision de Node.
+  - **Node système prioritaire** : coût réseau nul dans le cas nominal.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `node_runtime.rs` (nouveau), `lib.rs`, `downloader.rs`.
+  - Nouvelle commande `resolve_node_runtime` + event `node://install-progress` : le frontend du sidecar (Lot 2) les consommera.
+  - **Sécurité** : aucune URL fournie par le webview ; checksum obligatoire ; extraction confinée (anti zip-slip) ; exécution vérifiée par sonde.
+
+- **Prochaines étapes :**
+  - **Lot 2** : sidecar Node lancé par Rust (`start`/`stop`/stdin/signal + pont d'events Tauri, `CLINE_DIR` dans l'app-data, `backendMode: "local"`).
+  - Lots suivants : moteur `ClineCore` (Lot 3), pont d'outils + approbations (Lot 4), mode IDE (Lot 5), mode IA/teams (Lot 6), durcissement (Lot 7), validation + mesure (Lot 8).
+
+### [2026-10-15T23:10] | Keep all / Undo all : suppression du « bypass » et de l'instabilité en éditeur
+
+- **Contexte :**
+  Le système « Keep all / Undo all » était instable : après un « Undo all » on pouvait encore « bypasser » l'annulation depuis l'éditeur, et « Undo all » déclenché **pendant un run** ne faisait rien (action silencieusement ignorée).
+
+- **Analyse (causes racines) :**
+  1. **Bypass éditeur** — après `revertTurns`, l'éditeur continuait d'afficher (et `fileContents` de mémoriser) le contenu **d'avant** l'annulation. Toute réédition puis sauvegarde **réécrivait par-dessus** le contenu annulé.
+  2. **Portée « Undo all » fragile** — la portée était **déduite** du « dernier index » connu (`turnIdsByUserIndexRef`), ce qui pouvait viser un **autre run** que celui affiché par la bannière.
+  3. **Undo all pendant un run ignoré** — `handleRevertUserMessage` gardait `if (isStreaming) return;`. Or `handleUndoAll` **avorte d'abord** le run puis appelle cette fonction ; `isStreaming` (dérivé des messages) **n'est pas encore retombé** → l'annulation était abandonnée sans rien dire.
+  4. **Undo all pendant un run défait aussitôt** — une écriture encore « en vol » recréait le fichier juste après la restauration.
+  5. **Keep all pendant un run** — purgeait le checkpoint et masquait la bannière inconditionnellement, cassant la possibilité d'annuler les écritures suivantes.
+
+- **Modifications effectuées :**
+  - **`src/hooks/useTabs.ts`** : nouvelle fonction `applyExternalFileChanges(paths)` — resynchronise l'éditeur sur l'état réel du disque après une action externe (Undo all / revert). Pour chaque chemin : relecture disque si ouvert/chargé ; fichier supprimé ou illisible → fermeture de l'onglet + purge de `fileContents`/`fileErrors` ; on **n'écrase jamais** un onglet `isDirty` ; termine par `setFileTreeVersion(v => v + 1)`.
+  - **`src/App.tsx`** : destructure `applyExternalFileChanges` et le passe en `onExternalFileChanges` au `AiPanel` (mode IDE).
+  - **`src/components/ai/AgentModeView.tsx`** : prop `onExternalFileChanges` ajoutée à l'interface et retransmise à `AiPanel`.
+  - **`src/components/ai/AiPanel.tsx`** :
+    - `reviewBanner` porte désormais `{ turnId, userIndex, files }` ; nouveau ref `activeTurnUserIndexRef` — la **portée** d'un Undo all est consignée dans la bannière, plus aucune déduction.
+    - `refreshReview` lit `activeTurnUserIndexRef` ; nouveau `refreshReviewNow` (rafraîchit sans annuler le timer de fond).
+    - `handleRevertUserMessage(userIndex, force = false)` : `force` court-circuite la garde `isStreaming` **stale** après abort ; garde `streamCleanupRef.current` conservée comme « digue » (on ne rejoue jamais un revert tant qu'un run tourne).
+    - `handleUndoAll` : abort propre du run (`runSeqRef++`, `streamCleanupRef()`, retombée du flag `streaming`, `setPendingQuestion(null)`) **puis** `handleRevertUserMessage(userIndex, true)`.
+    - `handleConfirmRevert` : après `revertTurns`, `void externalFileChangesRef.current?.(applied.map(p => p.path))` → l'éditeur est resynchronisé (fin du bypass).
+    - `handleKeepAll` : si run en cours → masque la bannière **sans purger** le checkpoint et `refreshReviewNow` (retour visuel immédiat) ; sinon purge + toast « Changes kept ».
+
+- **Décisions Techniques :**
+  - **La portée dans la bannière** (plutôt qu'une déduction sur le dernier index) : une bannière est un **fait** (ce run-là), pas une heuristique.
+  - **`force` explicite** plutôt qu'un `setTimeout` d'attente de retombée de `isStreaming` : déterministe, sans course, et l'annulation est appliquée **dans le même tick** que l'abort.
+  - **Resynchronisation disque → éditeur** (et non l'inverse) : la source de vérité après un revert est le **disque** ; l'éditeur ne doit jamais pouvoir réécrire un contenu annulé. Un onglet non sauvegardé n'est pas écrasé (pas de perte silencieuse).
+  - **Purge conditionnelle du checkpoint** dans Keep all : conserver la possibilité d'annuler les écritures **à venir** du même tour.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `useTabs.ts`, `App.tsx`, `AgentModeView.tsx`, `AiPanel.tsx`. Contrats d'events inchangés.
+  - `applyExternalFileChanges` est **réutilisable** : tout flux externe modifiant le disque (restauration, outil hors éditeur) peut le consommer via `onExternalFileChanges`.
+
+- **Validation :** `tsc` OK (exit 0) · `eslint` 0 erreur / 8 warnings préexistants · `vitest` **456/456** · `vite build` OK.
+
+- **Prochaines étapes :**
+  - Test manuel ciblé : (a) Undo all **pendant** un run → le run s'arrête, les fichiers sont restaurés/supprimés, l'éditeur se resynchronise, une sauvegarde ensuite n'écrase **jamais** le contenu annulé ; (b) Keep all **pendant** un run → la bannière réapparaît dès l'écriture suivante et reste annulable ; (c) Undo all **hors** run → confirmation + resynchronisation.
+
+### [2026-10-15T22:55] | Approbation « Run command » : boutons manquants + carte en double
+
+- **Contexte :**
+  Deux défauts bloquants sur l'approbation d'un `bash_run` :
+  1. **Aucun bouton autoriser / refuser** — le run restait bloqué indéfiniment, l'utilisateur n'avait aucun moyen de décider.
+  2. **La commande s'affichait deux fois** — une carte d'approbation en haut + une seconde carte « running » en bas.
+
+- **Analyse (causes racines) :**
+  1. `ToolCallCard`, dans la branche `approval-required`, ne rendait que le texte « Review in the diff tab → ». C'est correct pour `write_file` / `edit` (l'approbation se fait dans l'onglet diff), mais **`bash_run` n'a PAS d'onglet diff** → aucune action possible.
+  2. Le doublon venait de l'ordre **non déterministe** des events `tool-call` et `approval-required` : l'approbation démarre dès que l'appel est parsé, donc `approval-required` peut précéder le `tool-call` consommé du flux. Chaque handler **ajoutait une carte sans vérifier l'existence préalable de l'id** → deux cartes pour un seul appel. Aggravé si le `tool-call` avait été flushé de `pendingParts` vers `messages` entre-temps (le test d'unicité ne regardait qu'un seul des deux conteneurs).
+
+- **Modifications effectuées :**
+  - **`src/components/ai/ToolCallCard.tsx`** : la branche `approval-required` porte désormais, **pour `bash_run`**, les boutons **Reject** / **Approve** (câblés sur `tc.reject` / `tc.approve`). Pour `write_file` / `edit`, on conserve le renvoi vers l'onglet diff (pas de boutons redondants).
+  - **`src/components/ai/AiPanel.tsx`** :
+    - `case "tool-call"` : rendu **idempotent** — si une part avec le même id existe déjà dans `pendingParts`, on la met à jour au lieu d'en ajouter une seconde.
+    - `case "approval-required"` : le test d'existence de l'id couvre **`pendingParts` ET le dernier message** (`messagesRef`). Si la carte a déjà été flushée vers `messages`, on ne recrée pas de part pending (qui aurait produit un doublon au prochain flush).
+
+- **Décisions Techniques :**
+  - **Dédup par id sur les deux conteneurs** plutôt que sur un seul : `pendingPartsRef` (snapshot persistant du tour) et `messages` (rendu) sont mis à jour en parallèle ; un ordre d'events inversé dans l'un ne doit jamais créer une carte dans l'autre.
+  - **Boutons conditionnels au type d'action** : on ne duplique pas les actions d'écriture (déjà gérées par le diff), on ne comble le vide que là où il n'existe aucune UI d'approbation (commandes shell).
+  - **Sûreté double-clic** : les resolvers `approve`/`reject` reposent sur des `Promise` résolues une seule fois → un second clic est inoffensif.
+
+- **Impacts & Dépendances :**
+  - Aucun changement de schéma ni de contrat d'event : on exploite `tc.approve` / `tc.reject`, déjà présents dans `ToolCallDisplay`.
+  - Le rendu des approbations d'écriture est inchangé.
+
+- **Prochaines étapes :**
+  - Test manuel : provoquer un `bash_run` → la carte doit montrer Reject/Approve, **une seule** carte doit apparaître, et cliquer Approve doit exécuter la commande puis basculer la carte en « complete ».
+
 ### [2026-10-15T22:40] | Routage ADAPTATIF de la cascade — circuit breaker 429 + tri par vivacité (TTFT)
 
 - **Contexte :**

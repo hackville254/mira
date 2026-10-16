@@ -45,6 +45,21 @@ async function _initSchema(db: Database): Promise<void> {
   } catch (_e) {
     // Column already exists — ignore
   }
+  // Migration: lien vers la session SDK Cline persistée.
+  //
+  // POURQUOI
+  // --------
+  // Une session UI (ligne SQLite locale) et une session Cline Core (SQLite du
+  // sidecar) sont deux identités distinctes. Sans ce lien, chaque message
+  // ouvrait une NOUVELLE session SDK : l'agent repartait de zéro et perdait
+  // toute continuité (contexte, todos, équipes). En mémorisant l'id SDK sur la
+  // session UI, on peut REJOUER les tours suivants via `send` (voir
+  // `AiPanel.handleSend`) au lieu de recréer une session.
+  try {
+    await db.execute(`ALTER TABLE sessions ADD COLUMN cline_session_id TEXT`);
+  } catch (_e) {
+    // Column already exists — ignore
+  }
   await db.execute(
     `CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_path, updated_at DESC)`
   );
@@ -63,6 +78,8 @@ export interface DbSession {
   active_provider: string;
   created_at: number;
   updated_at: number;
+  /** Id de la session SDK Cline associée, `null` tant qu'aucun tour n'a tourné. */
+  cline_session_id?: string | null;
 }
 
 export interface DbMessage {
@@ -193,4 +210,32 @@ export async function deleteSession(id: string): Promise<void> {
   const db = await getDb();
   await db.execute(`DELETE FROM messages WHERE session_id = ?`, [id]);
   await db.execute(`DELETE FROM sessions WHERE id = ?`, [id]);
+}
+
+/**
+ * Lit l'id de la session SDK Cline rattachée à une session UI.
+ *
+ * Renvoie `null` si la session n'existe pas ou n'a encore jamais tourné (le
+ * premier `send` la crée et l'enregistre). C'est cette valeur qui décide, dans
+ * `AiPanel`, entre RÉUTILISER la session SDK (continuité) et en démarrer une.
+ */
+export async function getClineSessionId(sessionId: string): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ cline_session_id: string | null }[]>(
+    `SELECT cline_session_id FROM sessions WHERE id = ?`,
+    [sessionId],
+  );
+  return rows[0]?.cline_session_id ?? null;
+}
+
+/** Enregistre (ou efface avec `null`) le lien vers la session SDK Cline. */
+export async function setClineSessionId(
+  sessionId: string,
+  clineSessionId: string | null,
+): Promise<void> {
+  const db = await getDb();
+  await db.execute(`UPDATE sessions SET cline_session_id = ? WHERE id = ?`, [
+    clineSessionId,
+    sessionId,
+  ]);
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, Check, CornerUpRight, RefreshCw, ThumbsUp, ThumbsDown, Pencil, Trash2, Undo2 } from "lucide-react";
+import { Copy, Check, CheckCheck, CornerUpRight, RefreshCw, ThumbsUp, ThumbsDown, Pencil, Trash2, Undo2 } from "lucide-react";
 import ContextUsageBar from "./ContextUsageBar";
 
 // ── Barre d'actions d'un message ─────────────────────────────────────────────
@@ -174,9 +174,14 @@ export interface UserMessageActionsProps {
   onDelete?: () => void;
   /** Annule tout ce qui a été généré pendant ce run (revert des fichiers + historique). */
   onRevert?: () => void;
+  /** Undo ciblé : annule les écritures de ce message et des suivants. */
+  onUndo?: () => void;
+  /** Keep ciblé : valide les écritures de ce message (elles ne seront plus annulées). */
+  onKeep?: () => void;
 }
 
-export function UserMessageActions({ onEdit, onDelete, onRevert }: UserMessageActionsProps) {
+export function UserMessageActions({ onEdit, onDelete, onRevert, onUndo, onKeep }: UserMessageActionsProps) {
+  const undo = onUndo ?? onRevert;
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: "1px" }}>
       {onEdit && (
@@ -189,14 +194,24 @@ export function UserMessageActions({ onEdit, onDelete, onRevert }: UserMessageAc
           <Trash2 {...ICON} />
         </button>
       )}
-      {onRevert && (
+      {undo && (
         <button
-          onClick={onRevert}
-          title="Revenir en arrière : annuler tout ce qui a été généré pendant ce run"
+          onClick={undo}
+          title="Annuler les modifications de ce message et des suivants"
           style={actionBtnStyle()}
           {...actionHover}
         >
           <Undo2 {...ICON} />
+        </button>
+      )}
+      {onKeep && (
+        <button
+          onClick={onKeep}
+          title="Conserver les modifications de ce message"
+          style={actionBtnStyle()}
+          {...actionHover}
+        >
+          <CheckCheck {...ICON} />
         </button>
       )}
     </div>

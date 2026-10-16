@@ -199,10 +199,48 @@ export default function ToolCallCard({
               </>
             )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
-            <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", fontStyle: "italic" }}>
-              Review in the diff tab →
-            </span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            {/* Pour les écritures (write_file / edit), l'approbation se fait dans
+                l'onglet diff — pas besoin de boutons ici. Pour les actions SANS
+                diff (run command), la carte DOIT porter les boutons : sans eux le
+                run reste bloqué indéfiniment faute de moyen de décider. */}
+            {action.type === "bash_run" ? (
+              <>
+                <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)" }}>
+                  Allow this command to run?
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <button
+                    onClick={() => tc.reject?.()}
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-border-default)",
+                      background: "transparent", color: "var(--origin-fg-default)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                  >
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => tc.approve?.()}
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-semantic-warning)",
+                      background: "var(--origin-semantic-warning)", color: "#1a1205", fontWeight: 600,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.opacity = "0.9"; }}
+                    onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
+                  >
+                    Approve
+                  </button>
+                </div>
+              </>
+            ) : (
+              <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", fontStyle: "italic", marginLeft: "auto" }}>
+                Review in the diff tab →
+              </span>
+            )}
           </div>
         </div>
       </div>

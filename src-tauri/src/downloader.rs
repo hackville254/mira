@@ -217,10 +217,8 @@ pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<Vec<PathBuf>, DownloadEr
 /// Extrait une archive `.tar.gz` vers `dest`, sans écrire hors de `dest`.
 /// Renvoie la liste des fichiers extraits (chemins relatifs).
 ///
-/// Non encore branché en v1 (les composants actuels utilisent `.gz` simple ou
-/// `.zip`) mais couvert par les tests : sera utilisé par le runtime Node
-/// (archive `.tar.gz`) et d'autres composants.
-#[allow(dead_code)]
+/// Utilisé par le runtime Node portable (archive `.tar.gz` officielle) et
+/// disponible pour tout autre composant distribué en tar.gz.
 pub fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<Vec<PathBuf>, DownloadError> {
     let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
     let mut archive = tar::Archive::new(gz);

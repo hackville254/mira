@@ -41,6 +41,12 @@ tar = "0.4"
 base64 = "0.22"
 regex = "1"
 
+[dev-dependencies]
+# `macros` : nécessaire aux tests `#[tokio::test]` (routage des réponses de
+# commande). On ne l'ajoute PAS aux dépendances de production pour ne pas
+# embarquer la machinerie de macro inutilement.
+tokio = { version = "1", features = ["macros"] }
+
 [profile.release]
 opt-level   = "z"      # optimize for size (not speed)
 lto         = "thin"   # cross-crate dead-code elimination

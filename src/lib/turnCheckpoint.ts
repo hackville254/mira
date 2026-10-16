@@ -41,6 +41,28 @@ export async function discardTurnCheckpoint(turnId: string): Promise<void> {
   await invoke("checkpoint_discard", { turnId });
 }
 
+/**
+ * Marque un tour comme « gardé » (bouton Keep all / Keep).
+ *
+ * POURQUOI UNE FAÇADE DÉDIÉE
+ * --------------------------
+ * « Keep » a DEUX effets indissociables :
+ *   1. technique — oublier le checkpoint (les écritures restent sur disque) ;
+ *   2. UX — le parent doit conserver un marqueur visuel PERSISTANT pour que
+ *      l'utilisateur voie que ce tour est acté (et non un simple toast éphémère).
+ *
+ * On capture ici le RÉSUMÉ des fichiers AVANT de purger : après le discard, le
+ * manifeste n'existe plus et il serait impossible d'afficher « N fichiers
+ * conservés » sans un aller-retour disque supplémentaire. Le résumé est renvoyé
+ * pour que l'appelant le fige dans son état (marqueur « gardé »).
+ */
+export async function keepTurnCheckpoint(turnId: string): Promise<TurnFileDelta[]> {
+  // Lecture best-effort : si le résumé échoue, on garde quand même (discard).
+  const files = await summaryTurnCheckpoint(turnId).catch(() => [] as TurnFileDelta[]);
+  await discardTurnCheckpoint(turnId);
+  return files;
+}
+
 /** Nombre de fichiers capturés pour un tour. */
 export async function countTurnCheckpoint(turnId: string): Promise<number> {
   return invoke<number>("checkpoint_count", { turnId });

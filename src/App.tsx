@@ -70,6 +70,7 @@ function App() {
     openTab, openTabAtLine, closeTab,
     handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
+    applyExternalFileChanges,
   } = useTabs();
 
   // Sauvegarde automatique (parité VS Code `files.autoSave`) : lit les snapshots
@@ -954,6 +955,7 @@ function App() {
                   getFileContents={() => fileContentsRef.current}
                   onOpenDiffTab={openAiDiffTab}
                   onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
+                  onExternalFileChanges={applyExternalFileChanges}
                 />
               )}
             </div>
