@@ -557,6 +557,79 @@ pub fn checkpoint_undo_many(
     Ok(plan)
 }
 
+/// Tour présent sur disque, avec les fichiers qu'il a touchés.
+///
+/// Sert au front pour reconstruire l'état de revue (la source de vérité est le
+/// disque, pas la mémoire du process) : après un redémarrage, un reload de
+/// fenêtre ou un changement d'onglet, on relit les checkpoints existants plutôt
+/// que de se fier à un état volatile côté UI.
+#[derive(Serialize, Clone)]
+pub struct TurnInfo {
+    /// Identifiant du tour tel qu'ouvert par `checkpoint_begin`.
+    pub turn_id: String,
+    /// Nombre de fichiers snapshotés pour ce tour.
+    pub count: usize,
+    /// Chemins absolus des fichiers touchés par ce tour.
+    pub paths: Vec<String>,
+}
+
+/// Liste les tours présents sur disque, avec leurs fichiers snapshotés. Lit
+/// chaque manifeste ; ignore les dossiers sans manifeste valide (tour incomplet
+/// ou déjà purgé) et ceux au nom non conforme. Fonction PURE (pas d'`AppHandle`)
+/// pour être testable sans application Tauri.
+///
+/// Résultat trié par `turn_id` : ordre déterministe (l'UI n'en dépend pas, mais
+/// un ordre stable simplifie les tests et l'affichage).
+fn list_turns_at(root: &Path) -> Result<Vec<TurnInfo>, String> {
+    let mut out = Vec::new();
+    let read = match std::fs::read_dir(root) {
+        Ok(read) => read,
+        // Aucun checkpoint encore créé : cas normal, pas une erreur.
+        Err(_) => return Ok(out),
+    };
+    for item in read.flatten() {
+        let path = item.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(turn_id) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        // Un dossier au nom non conforme est ignoré (jamais suivi sur disque).
+        if assert_safe_turn_id(turn_id).is_err() {
+            continue;
+        }
+        // Un dossier sans manifeste valide (vide, JSON corrompu) est ignoré.
+        if !manifest_path(root, turn_id).is_file() {
+            continue;
+        }
+        let manifest = load_manifest(root, turn_id);
+        out.push(TurnInfo {
+            turn_id: turn_id.to_string(),
+            count: manifest.entries.len(),
+            paths: manifest.entries.into_iter().map(|e| e.path).collect(),
+        });
+    }
+    out.sort_by(|a, b| a.turn_id.cmp(&b.turn_id));
+    Ok(out)
+}
+
+/// Liste les tours présents sur disque (répertoires sous `<app_data_dir>/checkpoints`)
+/// avec leurs fichiers snapshotés. Source de vérité pour reconstruire l'état de
+/// revue côté front après un reload (là où l'état mémoire est perdu).
+#[tauri::command]
+pub fn checkpoint_list_turns(app: tauri::AppHandle) -> Result<Vec<TurnInfo>, String> {
+    let t = std::time::Instant::now();
+    let root = checkpoints_root(&app)?;
+    let out = list_turns_at(&root)?;
+    // Instrumentation : cette commande est appelée à chaque montage de vue ;
+    // un coût notable ici = UI qui rame à l'ouverture d'une revue.
+    crate::log::log_line(
+        "debug",
+        "checkpoint",
+        &format!("list_turns tours={} en {}ms", out.len(), t.elapsed().as_millis()),
+    );
+    Ok(out)
+}
+
 /// Contenu d'origine (avant le tour) d'un fichier snapshoté, pour afficher un
 /// diff en lecture seule. Renvoie une chaîne vide si le fichier a été créé
 /// pendant le tour (il n'avait pas d'état antérieur).
@@ -708,5 +781,50 @@ mod tests {
 
         assert!(nested.exists(), "un dossier non vide ne doit pas être supprimé");
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn list_turns_reports_each_turn_with_its_paths() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("list")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_turn(&dir, "t1", vec![entry("/ws/a.ts", true), entry("/ws/new.ts", false)]);
+        write_turn(&dir, "t2", vec![entry("/ws/b.ts", true)]);
+
+        let turns = list_turns_at(&dir).unwrap();
+        assert_eq!(turns.len(), 2);
+        // Tri déterministe par turn_id.
+        assert_eq!(turns[0].turn_id, "t1");
+        assert_eq!(turns[0].count, 2);
+        assert_eq!(turns[0].paths, vec!["/ws/a.ts", "/ws/new.ts"]);
+        assert_eq!(turns[1].turn_id, "t2");
+        assert_eq!(turns[1].count, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_turns_ignores_dirs_without_manifest_and_bad_names() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("listbad")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Dossier valide mais vide (jamais ouverte via checkpoint_begin).
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        // Dossier au nom interdit (traversée) : doit être ignoré, sans erreur.
+        std::fs::create_dir_all(dir.join("bad..name")).unwrap();
+        write_turn(&dir, "ok", vec![entry("/ws/a.ts", true)]);
+
+        let turns = list_turns_at(&dir).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_turns_on_missing_root_is_empty_not_error() {
+        let dir = std::env::temp_dir().join(format!("ckpt_test_{}", path_hash("nostore")));
+        let _ = std::fs::remove_dir_all(&dir);
+        // La racine n'existe pas : liste vide, pas d'erreur (aucun checkpoint).
+        let turns = list_turns_at(&dir).unwrap();
+        assert!(turns.is_empty());
     }
 }

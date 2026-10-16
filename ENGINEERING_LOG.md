@@ -5,6 +5,41 @@
 
 ---
 
+### [2026-10-16T19:45] | Keep all / Undo all : le DISQUE devient la source de vérité
+
+- **Contexte :**
+  Le système « Keep all / Undo all » (checkpoints par tour) existait déjà et était mûr côté Rust, mais l'**état de revue** vivait **uniquement en mémoire React** (`turnIdsByUserIndexRef`, `keptReviews`, `revertableIndexes`) alors que les checkpoints sont **persistés sur disque**. Résultat, lot de 4 symptômes signalés : (1) perte totale de la revue au rechargement, (2) « Keep all » qui ne fige pas / « Undo » qui vise la mauvaise cible, (3) bannière instable, (4) éditeur désynchronisé après un undo.
+
+- **Cause racine :**
+  1. **Persistance** — l'état React ne survivait pas au reload, les tours encore annulables disparaissaient.
+  2. **Tours fantômes** — `handleKeepAll` (hors run) et `handleMessageAction` purgaient le checkpoint sur disque mais **pas** `turnIdsByUserIndexRef` : le message restait marqué « annulable » alors que son checkpoint n'existait plus → « Undo » visait un tour inexistant.
+  3. **Mauvaise cible** — `revertableIndexes` filtrait sur l'index exact (`idx !== userIndex`) au lieu de `idx < userIndex`, laissant les index suivants « fantômes ».
+  4. **Éditeur désynchronisé** — seul `handleConfirmRevert` resynchronisait l'éditeur ; les autres chemins non.
+
+- **Modifications effectuées :**
+  - **Rust** (`src-tauri/src/checkpoint.rs`) : nouvelle commande `checkpoint_list_turns` → renvoie les tours encore présents sur disque (`TurnInfo { turn_id, count, paths }`), factorisée dans une fonction pure `list_turns_at(root)` (tri déterministe, ignore dossiers sans manifeste et noms non conformes, racine absente = vide, pas erreur). Enregistrée dans `lib.rs`. **+3 tests** (11/11).
+  - **Façade** (`src/lib/turnCheckpoint.ts`) : `listTurnCheckpoints()` + type `TurnCheckpointRecord` (mappe `turn_id` → `turnId`).
+  - **Logique pure extraite** (`src/lib/agent/reviewState.ts`, **nouveau**) : `collectTurnIdsFrom`, `keepFrom`, `revertableIndexesAfterKeep`, `hydrateTurns`, `keptReviewsBefore`. Toute l'orchestration de revue est ainsi **testable sans monter le composant**.
+  - **AiPanel** : (a) `hydrateReviews()` rejoue `listTurnCheckpoints` au montage et à chaque changement de dossier → reconstruit le suivi et les index annulables, réaffiche la bannière du dernier tour ; (b) marqueurs « gardé » **persistés** dans `localStorage` par dossier ; (c) tous les chemins Keep (`handleKeepAll`, `handleKeepMessage`, `handleMessageAction`, `handleConfirmRevert`) utilisent `keepFrom` → plus de tours fantômes ; (d) purge des marqueurs « gardé » après undo.
+  - **Tests** (`src/lib/agent/__tests__/reviewState.test.ts`, **nouveau**) : 14 cas couvrant collecte multi-messages, purge `≥ index`, immuabilité, reconstruction disque, filtrage des marqueurs.
+
+- **Décisions Techniques :**
+  - **Le disque est la source de vérité** : plutôt que de re-persister toute la corrélation tour ↔ message (coûteux et fragile), on relit l'état minimal (`checkpoint_list_turns`) et on rattache les tours survivants au **dernier message utilisateur** — seul ancrage fiable après reload. « Undo all » agit alors sur tout le run restant, ce qui reste le comportement attendu.
+  - **Extraction d'un module pur** plutôt que de tester le composant : `AiPanel` exige Tauri + DOM, intestable en isolation. Les fonctions pures couvrent précisément les cas à risque de régression.
+  - **Helpers réutilisés dans le composant** : le code testé est exactement le code qui tourne (pas de duplication).
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src-tauri/src/checkpoint.rs`, `src-tauri/src/lib.rs`, `src/lib/turnCheckpoint.ts`, `src/lib/agent/reviewState.ts`, `src/components/ai/AiPanel.tsx`, `src/lib/agent/__tests__/reviewState.test.ts`.
+  - Effet : la revue « Keep/Undo » survit au rechargement ; plus de tours fantômes ; éditeur resynchronisé après undo. Aucune surface de sécurité nouvelle (lecture locale de l'app data dir, chemins validés par `assert_safe_turn_id` et `assert_in_workspace`).
+
+- **Validation :**
+  - `tsc` front EXIT 0 ; `vitest run` → **496/496** (dont 14 nouveaux) ; `cargo test --lib checkpoint` → **11/11** ; `eslint` EXIT 0.
+
+- **Prochaines étapes :**
+  - Test UI réel : provoquer un Keep/Undo, recharger la fenêtre, vérifier que la bannière et les boutons par message réapparaissent correctement.
+
+---
+
 ### [2026-10-16T19:19] | Continuité de session RÉPARÉE : reprise par re-seed (`initialMessages`)
 
 - **Contexte :**

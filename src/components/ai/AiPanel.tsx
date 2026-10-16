@@ -9,10 +9,17 @@ import TurnReviewCard from "./TurnReviewCard";
 import PinnedTodoList from "./PinnedTodoList";
 import {
   beginTurnCheckpoint, touchTurnFile, discardTurnCheckpoint, keepTurnCheckpoint,
-  summaryTurnCheckpoint, fileBeforeTurnCheckpoint,
+  summaryTurnCheckpoint, fileBeforeTurnCheckpoint, listTurnCheckpoints,
   previewRevertTurns, revertTurns,
   type TurnFileDelta, type RevertPlanEntry,
 } from "../../lib/turnCheckpoint";
+import {
+  collectTurnIdsFrom as collectTurnIdsFromPure,
+  keepFrom,
+  revertableIndexesAfterKeep,
+  hydrateTurns,
+  keptReviewsBefore,
+} from "../../lib/agent/reviewState";
 import RevertConfirmDialog from "./RevertConfirmDialog";
 import QuestionPrompt from "./QuestionPrompt";
 import MarkdownMessage from "./MarkdownMessage";
@@ -530,6 +537,72 @@ export default function AiPanel({
   // Dialogue de confirmation de revert : affiche la liste des fichiers qui seront
   // supprimés (créés pendant le run) ou restaurés (modifiés) avant validation.
   const [revertConfirm, setRevertConfirm] = useState<{ userIndex: number; plan: RevertPlanEntry[] } | null>(null);
+
+  // ── Persistance de la revue : le DISQUE est la source de vérité ──────────
+  // `turnIdsByUserIndexRef`, `keptReviews` et `revertableIndexes` vivent en
+  // mémoire React et sont perdus au rechargement, alors que les checkpoints
+  // survivent sur disque. On rejoue donc `checkpoint_list_turns` (tours encore
+  // non consommés) pour reconstruire l'état de revue : chaque tour encore
+  // présent redevient visible (bannière réaffichée) et annulable (Undo/Keep par
+  // message), au lieu de disparaître silencieusement. Les marqueurs « gardé »
+  // sont eux aussi persistés par message, car un checkpoint gardé n'existe plus
+  // sur disque et serait sinon irrécupérable.
+  const reviewsStorageKey = useCallback(
+    (fp: string) => `origin.reviews.v1::${fp}`,
+    [],
+  );
+
+  // Reconstruit l'état de revue depuis le disque. Appelé au montage et à chaque
+  // changement de conversation : les tours encore présents redeviennent
+  // annulables, et les marqueurs « gardé » sont restaurés depuis le stockage
+  // local. On ne réaffiche la bannière QUE si des tours subsistent (sinon, une
+  // bannière vide traînerait après un Keep).
+  const hydrateReviews = useCallback(async () => {
+    const fp = folderPathRef.current ?? "";
+    // 1. Marqueurs « gardé » persistés (un checkpoint gardé n'existe plus sur
+    //    disque : c'est le seul moyen de les retrouver après un reload).
+    if (fp) {
+      try {
+        const raw = localStorage.getItem(reviewsStorageKey(fp));
+        setKeptReviews(raw ? (JSON.parse(raw) as Record<number, TurnFileDelta[]>) : {});
+      } catch { setKeptReviews({}); }
+    } else {
+      setKeptReviews({});
+    }
+    // 2. Tours encore présents sur disque → reconstruit le suivi et l'ensemble
+    //    des index annulables. On réassocie chaque tour au PLUS GRAND index de
+    //    message utilisateur dont la génération le couvre ; faute de corrélation
+    //    parfaite après reload, on rattache tous les tours orphelins au dernier
+    //    message utilisateur — c'est le seul point d'ancrage fiable, et « Undo
+    //    all » agira alors sur l'ensemble du run, ce qui reste correct.
+    const records = await listTurnCheckpoints().catch(
+      () => [] as { turnId: string; count: number; paths: string[] }[],
+    );
+    const msgs = messagesRef.current;
+    let lastUserIndex = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") { lastUserIndex = i; break; }
+    }
+    const { byUser, revertable } = hydrateTurns(records.map(r => r.turnId), lastUserIndex);
+    turnIdsByUserIndexRef.current = byUser;
+    setRevertableIndexes(revertable);
+    activeTurnIdRef.current = null;
+    activeTurnUserIndexRef.current = null;
+    if (records.length === 0 || lastUserIndex < 0) {
+      setReviewBanner(null);
+      return;
+    }
+    // Réaffiche la bannière du dernier tour encore présent (le plus récent).
+    const latest = records[records.length - 1];
+    try {
+      const files = await summaryTurnCheckpoint(latest.turnId);
+      if (files.length > 0) {
+        setReviewBanner({ turnId: latest.turnId, userIndex: lastUserIndex, files });
+      } else {
+        setReviewBanner(null);
+      }
+    } catch { setReviewBanner(null); }
+  }, [reviewsStorageKey]);
   // Question de l'agent en attente de réponse (`ask_user`). Le run est EN PAUSE
   // tant qu'elle n'est pas résolue. On la garde ici pour la dockser AU-DESSUS de
   // l'input (là où l'utilisateur regarde), plutôt que de la perdre dans le fil.
@@ -649,6 +722,24 @@ export default function AiPanel({
     setPinnedMessages(pbRead(fp));
     setNotesValue(localStorage.getItem(NOTES_KEY(fp)) ?? "");
   }, [folderPath]);
+
+  // Reconstruction de l'état de revue au démarrage et à chaque changement de
+  // dossier/projet : le disque redevient la source de vérité (cf. hydrateReviews).
+  // On attend le tick suivant le mount pour que `messagesRef` porte l'historique
+  // rechargé — sinon le dernier message utilisateur ne serait pas encore connu.
+  useEffect(() => {
+    const timer = setTimeout(() => { void hydrateReviews(); }, 0);
+    return () => clearTimeout(timer);
+  }, [folderPath, hydrateReviews]);
+
+  // Persiste les marqueurs « gardé » (par message) : sans cela, un Keep
+  // disparaîtrait de l'UI après un rechargement, car son checkpoint n'existe
+  // plus sur disque.
+  useEffect(() => {
+    const fp = folderPathRef.current ?? "";
+    if (!fp) return;
+    try { localStorage.setItem(reviewsStorageKey(fp), JSON.stringify(keptReviews)); } catch { /* quota */ }
+  }, [keptReviews, reviewsStorageKey, folderPath]);
 
   useEffect(() => {
     if (!folderPath) { originMdRef.current = ""; return; }
@@ -1813,11 +1904,7 @@ export default function AiPanel({
   // est destructif, il doit être confirmé en connaissance de cause.
   /** Rassemble tous les turnIds ouverts depuis `userIndex` (inclus). */
   const collectTurnIdsFrom = useCallback((userIndex: number): string[] => {
-    const ids: string[] = [];
-    for (const [idx, turns] of turnIdsByUserIndexRef.current) {
-      if (idx >= userIndex) ids.push(...turns);
-    }
-    return ids;
+    return collectTurnIdsFromPure(turnIdsByUserIndexRef.current, userIndex);
   }, []);
 
   // `force` court-circuite la garde `isStreaming` : « Undo all » appelle cette
@@ -1866,12 +1953,12 @@ export default function AiPanel({
     try {
       const applied = await revertTurns(turnIds, fp || null);
       // Les checkpoints consommés ne sont plus valides : purge de l'état local.
-      for (const idx of [...turnIdsByUserIndexRef.current.keys()]) {
-        if (idx >= userIndex) turnIdsByUserIndexRef.current.delete(idx);
-      }
+      turnIdsByUserIndexRef.current = keepFrom(turnIdsByUserIndexRef.current, userIndex);
       activeTurnIdRef.current = null;
       activeTurnUserIndexRef.current = null;
-      setRevertableIndexes(prev => prev.filter(idx => idx < userIndex));
+      setRevertableIndexes(prev => revertableIndexesAfterKeep(prev, userIndex));
+      // Les messages annulés disparaissent : leurs marqueurs « gardé » aussi.
+      setKeptReviews(prev => keptReviewsBefore(prev, userIndex));
       setReviewBanner(null);
       setRevertConfirm(null);
       const deletes = plan.filter(p => p.action === "delete").length;
@@ -1900,8 +1987,14 @@ export default function AiPanel({
       activeTurnIdRef.current = null;
       discardTurnCheckpoint(prevTurn).catch(() => {});
     }
-    // L'action vaut « keep » du tour courant : il n'est plus revertable.
-    if (prevIdx !== null) setRevertableIndexes(prev => prev.filter(idx => idx !== prevIdx));
+    // L'action vaut « keep » du tour courant : tous les tours couverts par ce
+    // message sont actés, on les oublie pour ne pas laisser de tours fantômes.
+    if (prevIdx !== null) {
+      turnIdsByUserIndexRef.current = keepFrom(turnIdsByUserIndexRef.current, prevIdx);
+      setRevertableIndexes(prev => revertableIndexesAfterKeep(prev, prevIdx));
+      // On fige aussi le marqueur visuel « gardé » pour ce message.
+      setKeptReviews(prev => (prev[prevIdx] ? prev : { ...prev, [prevIdx]: [] }));
+    }
     setReviewBanner(null);
   }, []);
 
@@ -2037,8 +2130,12 @@ export default function AiPanel({
     }
     // Hors run : on fige le résumé AVANT de purger, pour le marqueur « gardé ».
     const files = await keepTurnCheckpoint(banner.turnId).catch(() => banner.files);
+    // TOUS les tours couverts par ce message sont actés : on les oublie, sinon
+    // ils resteraient « fantômes » (encore annulables alors que leur checkpoint
+    // n'existe plus sur disque) et « Undo » viserait une mauvaise cible.
+    turnIdsByUserIndexRef.current = keepFrom(turnIdsByUserIndexRef.current, banner.userIndex);
     setKeptReviews(prev => ({ ...prev, [banner.userIndex]: files.length > 0 ? files : banner.files }));
-    setRevertableIndexes(prev => prev.filter(idx => idx !== banner.userIndex));
+    setRevertableIndexes(prev => revertableIndexesAfterKeep(prev, banner.userIndex));
     setReviewBanner(null);
     showToast("Changes kept", "success");
   }, [reviewBanner, showToast, refreshReviewNow]);
@@ -2085,11 +2182,9 @@ export default function AiPanel({
       if (summary.length > 0) files = summary;
     }
     // Tous les tours de ce message sont actés : on les oublie (plus d'Undo ciblé).
-    for (const idx of [...turnIdsByUserIndexRef.current.keys()]) {
-      if (idx >= userIndex) turnIdsByUserIndexRef.current.delete(idx);
-    }
+    turnIdsByUserIndexRef.current = keepFrom(turnIdsByUserIndexRef.current, userIndex);
     if (reviewBanner && reviewBanner.userIndex >= userIndex) setReviewBanner(null);
-    setRevertableIndexes(prev => prev.filter(idx => idx < userIndex));
+    setRevertableIndexes(prev => revertableIndexesAfterKeep(prev, userIndex));
     setKeptReviews(prev => ({ ...prev, [userIndex]: files }));
     showToast("Changes kept", "success");
   }, [collectTurnIdsFrom, reviewBanner, showToast]);

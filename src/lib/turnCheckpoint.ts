@@ -68,6 +68,38 @@ export async function countTurnCheckpoint(turnId: string): Promise<number> {
   return invoke<number>("checkpoint_count", { turnId });
 }
 
+/**
+ * Tour de checkpoint encore présent sur disque, avec les fichiers qu'il a
+ * touchés. Renvoyé par `listTurnCheckpoints`.
+ */
+export interface TurnCheckpointRecord {
+  /** Identifiant du tour (sert à l'annuler ou à le garder). */
+  turnId: string;
+  /** Nombre de fichiers capturés pour ce tour. */
+  count: number;
+  /** Chemins absolus des fichiers touchés par le tour. */
+  paths: string[];
+}
+
+/**
+ * Liste les tours de checkpoint NON CONSOMMÉS, du plus ancien au plus récent.
+ *
+ * POURQUOI CETTE LECTURE DISQUE
+ * -----------------------------
+ * Les checkpoints vivent sur disque (source de vérité) tandis que l'état de
+ * revue du panneau IA vit en mémoire React. Au rechargement, ou après toute
+ * divergence, c'est le disque qui dit la vérité : cette commande permet de
+ * reconstruire l'état de revue (« quels tours sont encore annulables ? ») au
+ * lieu de le perdre. Un tour gardé (Keep) ou annulé (Undo) a son manifeste
+ * supprimé : il ne figure donc plus ici, ce qui empêche tout « tour fantôme ».
+ */
+export async function listTurnCheckpoints(): Promise<TurnCheckpointRecord[]> {
+  const raw = await invoke<{ turn_id: string; count: number; paths: string[] }[]>(
+    "checkpoint_list_turns",
+  );
+  return raw.map((t) => ({ turnId: t.turn_id, count: t.count, paths: t.paths }));
+}
+
 /** Delta de lignes d'un fichier modifié pendant le tour. */
 export interface TurnFileDelta {
   /** Chemin absolu du fichier. */

@@ -303,6 +303,7 @@ pub fn run() {
             checkpoint::checkpoint_discard,
             checkpoint::checkpoint_count,
             checkpoint::checkpoint_summary,
+            checkpoint::checkpoint_list_turns,
             checkpoint::checkpoint_file_before,
             checkpoint::checkpoint_revert_preview,
             checkpoint::checkpoint_undo_many,
