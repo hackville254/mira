@@ -239,46 +239,6 @@ function PinLabelPopover({ onConfirm, onCancel }: {
   );
 }
 
-function RecentSessions({ sessions, onSelect, onShowAll }: {
-  sessions: DbSession[]; onSelect: (id: string) => void; onShowAll?: () => void;
-}) {
-  if (sessions.length === 0) return null;
-  return (
-    <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--origin-border-default)" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
-        <span style={{ fontSize: "11px", fontWeight: 500, color: "var(--origin-fg-subtle)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          Recent
-        </span>
-        {sessions.length > 5 && (
-          <button onClick={onShowAll} style={{ marginLeft: "auto", fontSize: "11px", color: "var(--origin-fg-muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-            Show all
-          </button>
-        )}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-        {sessions.slice(0, 5).map(s => (
-          <button
-            key={s.id}
-            onClick={() => onSelect(s.id)}
-            style={{
-              display: "flex", alignItems: "center", width: "100%",
-              padding: "7px 8px", borderRadius: "6px",
-              background: "none", border: "none", cursor: "pointer", gap: "8px",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
-            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
-          >
-            <span style={{ flex: 1, fontSize: "12px", color: "var(--origin-fg-default)", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {s.title}
-            </span>
-            <Icon icon="lucide:chevron-right" width={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
 function formatRelativeTime(timestamp: number): string {
@@ -2682,11 +2642,6 @@ export default function AiPanel({
         {/* New chat view — Agent empty state */}
         {chatView === "new" && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <RecentSessions
-              sessions={sessions}
-              onSelect={handleSessionSelect}
-              onShowAll={() => { setSessions(lsForPath(folderPath ?? "")); setChatView("history"); }}
-            />
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 24px", gap: "18px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <img src={logoCode} alt="Origin" style={{ width: 32, height: 32, flexShrink: 0 }} />
@@ -2823,14 +2778,11 @@ export default function AiPanel({
         {/* History view */}
         {chatView === "history" && (
           <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "14px 14px 10px", borderBottom: "1px solid var(--origin-border-default)" }}>
-              <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)" }}>Chat History</div>
-              {folderPath && (
-                <div style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {folderPath.split(/[/\\]/).pop()}
-                </div>
-              )}
-            </div>
+            {folderPath && (
+              <div style={{ padding: "12px 14px 8px", fontSize: "11px", color: "var(--origin-fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {folderPath.split(/[/\\]/).pop()}
+              </div>
+            )}
             {sessions.length === 0 ? (
               <div style={{ padding: "20px 14px", fontSize: "12px", color: "var(--origin-fg-subtle)" }}>
                 No chat history for this project yet.
