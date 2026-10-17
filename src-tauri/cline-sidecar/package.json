@@ -2,7 +2,7 @@
   "name": "origin-cline-sidecar",
   "version": "0.1.0",
   "private": true,
-  "description": "Sidecar Node exposant le moteur d'agent Cline SDK (Origin) via un protocole NDJSON sur stdin/stdout.",
+  "description": "Sidecar Node exposant le moteur d'agent Mira via un protocole NDJSON sur stdin/stdout.",
   "type": "module",
   "engines": {
     "node": ">=22"

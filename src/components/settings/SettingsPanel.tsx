@@ -31,7 +31,7 @@ const LOCAL_IDS = new Set(["ollama", "lmstudio", "vllm"]);
 const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
 type Section =
-  | "account" | "general" | "trae-mobile" | "dev-env" | "permission"
+  | "account" | "general" | "mira-mobile" | "dev-env" | "permission"
   | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "notifications" | "browser"
   | "indexing" | "skills" | "rules" | "hooks" | "languages" | "beta" | "about";
 
@@ -47,7 +47,7 @@ interface NavDef {
 const NAV_ITEMS: NavDef[] = [
   { id: "account",      label: "Account",                 icon: <User size={14} />,               keywords: "account profile user" },
   { id: "general",      label: "General",                 icon: <SlidersHorizontal size={14} />,   keywords: "general settings" },
-  { id: "trae-mobile",  label: "TRAE Mobile",             icon: <Smartphone size={14} />,          keywords: "mobile phone", dividerAfter: true },
+  { id: "mira-mobile",  label: "Mira Mobile",             icon: <Smartphone size={14} />,          keywords: "mobile phone", dividerAfter: true },
   { id: "dev-env",      label: "Development Environment", icon: <Code2 size={14} />,              keywords: "python node interpreter environment" },
   { id: "permission",   label: "Permission Approval",      icon: <ShieldCheck size={14} />,         keywords: "permission approval security" },
   { id: "agent",        label: "Agent",                   icon: <Wrench size={14} />,              keywords: "agent tools" },
@@ -64,7 +64,7 @@ const NAV_ITEMS: NavDef[] = [
   { id: "hooks",        label: "Hooks",                   icon: <Anchor size={14} />,              keywords: "hooks" },
   { id: "languages",    label: "Languages & LSP",         icon: <Code2 size={14} />,               keywords: "languages lsp language server intellisense diagnostics completion hover", dividerAfter: true },
   { id: "beta",         label: "Beta",                    icon: <FlaskConical size={14} />,        keywords: "beta experimental", dividerAfter: true },
-  { id: "about",        label: "About TraeCode",          icon: <Info size={14} />,                keywords: "about" },
+  { id: "about",        label: "About Mira",              icon: <Info size={14} />,                keywords: "about" },
 ];
 
 // ── Nav ──────────────────────────────────────────────────────────────────────

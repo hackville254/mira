@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/wordmark.svg" width="300" alt="Origin IDE" />
+  <img src="media/wordmark.svg" width="300" alt="Mira" />
 </p>
 <p align="center">
   A fast, agentic code editor built for AI-first development.<br/>
@@ -30,20 +30,20 @@
 
 ## Screenshots
 
-<img src="media/origin-1-ss.png" alt="Origin IDE - Welcome screen with AI panel" width="100%" />
+<img src="media/mira-1-ss.png" alt="Mira - Welcome screen with AI panel" width="100%" />
 <p align="center"><em>Welcome screen</em></p>
 <details>
 <summary>More screenshots</summary>
 <br/>
-<img src="media/origin-2-ss.png" alt="Origin IDE - Code editor" width="100%" />
+<img src="media/mira-2-ss.png" alt="Mira - Code editor" width="100%" />
 <p align="center"><em>Code editor with syntax highlighting and integrated terminal</em></p>
-<img src="media/origin-3-ss.png" alt="Origin IDE - Command palette" width="100%" />
+<img src="media/mira-3-ss.png" alt="Mira - Command palette" width="100%" />
 <p align="center"><em>Command palette with fuzzy file search and AI panel</em></p>
 </details>
 
-## What is Origin?
+## What is Mira?
 
-Origin is a native desktop IDE built on Tauri 2 and React. It combines a full code editor, real terminal, and a deeply integrated AI panel into a single lightweight app. No subscriptions, no telemetry, no cloud lock-in. You bring your API keys; Origin does the rest.
+Mira is a native desktop IDE built on Tauri 2 and React. It combines a full code editor, real terminal, and a deeply integrated AI panel into a single lightweight app. No subscriptions, no telemetry, no cloud lock-in. You bring your API keys; Mira does the rest.
 
 The AI is not a sidebar afterthought. It has full agentic capabilities: it can read files, write code, run shell commands, and propose structured multi-step plans, all with your approval before anything touches disk.
 
@@ -118,21 +118,21 @@ Download the latest release from the [Releases](https://github.com/Origin-AI-IDE
 
 | Artifact                      | Description                                                                    |
 | ----------------------------- | ------------------------------------------------------------------------------ |
-| `Origin_x.x.x_x64-setup.exe` | NSIS installer (~5.8 MB)                                                       |
-| `Origin_x.x.x_x64_en-US.msi` | MSI installer (~7.5 MB)                                                        |
-| `origin.exe`                  | Portable standalone binary (requires WebView2, pre-installed on Windows 10/11) |
+| `Mira_x.x.x_x64-setup.exe` | NSIS installer (~5.8 MB)                                                       |
+| `Mira_x.x.x_x64_en-US.msi` | MSI installer (~7.5 MB)                                                        |
+| `mira.exe`                  | Portable standalone binary (requires WebView2, pre-installed on Windows 10/11) |
 
 **macOS**
 
 | Artifact                  | Description      |
 | ------------------------- | ---------------- |
-| `Origin_x.x.x_x64.dmg`   | macOS disk image |
+| `Mira_x.x.x_x64.dmg`   | macOS disk image |
 
 **Linux**
 
 | Artifact                    | Description           |
 | --------------------------- | --------------------- |
-| `Origin_x.x.x_amd64.deb`   | Debian/Ubuntu package |
+| `Mira_x.x.x_amd64.deb`   | Debian/Ubuntu package |
 
 ## Building from Source
 
@@ -148,7 +148,7 @@ npm run build      # full release build + installers
 
 ## AI Providers
 
-Origin supports any provider that speaks OpenAI-compatible SSE. Add your API key in Settings (`Ctrl+,`) → AI Providers. Keys are stored in the OS keychain.
+Mira supports any provider that speaks OpenAI-compatible SSE. Add your API key in Settings (`Ctrl+,`) → AI Providers. Keys are stored in the OS keychain.
 
 | Provider | Type | Notable Models |
 |----------|------|----------------|
@@ -169,7 +169,7 @@ Origin supports any provider that speaks OpenAI-compatible SSE. Add your API key
 
 - All AI requests route through a local Rust HTTP proxy, no third-party relay
 - API keys live in your OS keychain
-- Chat history is stored in a local SQLite database (`AppData\Roaming\com.originide.ide\`)
+- Chat history is stored in a local SQLite database (app data directory, e.g. `~/Library/Application Support/com.mira.ide/` on macOS)
 - No telemetry, no analytics, no accounts
 
 ## License

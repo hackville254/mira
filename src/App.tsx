@@ -1006,6 +1006,7 @@ function App() {
         warnings={diagnostics.warnings}
         mobileFrameworks={mobileFrameworks}
         onShowProblems={() => { setTerminalOpen(true); requestAnimationFrame(() => terminalRef.current?.showProblems()); }}
+        onOpenLaunchpad={() => { setPaletteMode('command'); setPaletteOpen(true); }}
         debugStatus={
           debugCtx.session.status === 'paused' ? 'paused' :
           debugCtx.session.status === 'running' ? 'running' : null

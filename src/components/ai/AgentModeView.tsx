@@ -573,7 +573,9 @@ export default function AgentModeView(props: AgentModeViewProps) {
 
           {activeToolTab === "settings" && (
             <div className="flex-1 overflow-auto" style={{ backgroundColor: "var(--origin-bg-editor)" }}>
-              <SettingsPanel onClose={() => {}} />
+              {/* En mode IA, Settings est un onglet : « fermer » = fermer l'onglet,
+                  ce qui laisse la place à l'onglet suivant ou à l'état vide. */}
+              <SettingsPanel onClose={() => closeToolTab("settings")} />
             </div>
           )}
 

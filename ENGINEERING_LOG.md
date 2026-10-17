@@ -5,6 +5,109 @@
 
 ---
 
+### [2026-10-17T22:05] | Poursuite du renommage : README + manifeste sidecar
+
+- **Contexte :** après la purge des libellés UI, il restait des occurrences de la
+  marque « Origin » visibles au client (documentation publique du dépôt,
+  métadonnée de package).
+
+- **Modifications effectuées :**
+  - `README.md` : `alt` du wordmark, titres d'écran (`Origin IDE` → `Mira`),
+    section « What is Mira? » et sa description, noms d'artefacts d'installation
+    (`Mira_x.x.x_*.exe/.msi/.dmg/.deb`, `mira.exe`), phrase « Mira supports any
+    provider… », chemin AppData **corrigé** en `~/Library/Application Support/
+    com.mira.ide/` (l'ancien `AppData\Roaming\com.originide.ide\` ne
+    correspondait plus à l'`identifier` réel `com.mira.ide`).
+  - `media/origin-{1,2,3}-ss.png` → `media/mira-{1,2,3}-ss.png` (+ références
+    README), pour que l'URL publique de l'image porte la marque.
+  - `src-tauri/cline-sidecar/package.json` : description → « moteur d'agent
+    Mira » (retrait de « Cline SDK (Origin) », conforme à la règle de marque).
+
+- **Décisions techniques :** **ne pas** renommer l'infrastructure de distribution
+  — URLs `https://github.com/Origin-AI-IDE/origin*` (badges, releases, star
+  history), `git clone …/origin.git`, `cd origin`, `"name": "origin"` du
+  `package.json`, `origin-cline-sidecar`. Ce sont des identifiants réels :
+  les renommer casserait les liens/téléchargements et la CI. À traiter le jour
+  où le **dépôt distant** est renommé (lot DevOps distinct).
+
+- **Impacts & Dépendances :** documentation désormais cohérente avec
+  l'`identifier` réel ; aucun impact runtime. `tsc --noEmit` 0 erreur.
+
+- **Prochaines étapes :** renommage du dépôt GitHub + mise à jour groupée des
+  URLs ; éventuellement régénérer `media/wordmark.svg` si le logotype dessiné
+  contient encore « Origin » (à vérifier visuellement — le SVG n'expose aucun
+  texte détectable).
+
+---
+
+### [2026-10-17T21:52] | Correctif : impossible de fermer Settings en mode IA
+
+- **Contexte :** en mode IA, Settings s'ouvre comme **onglet** de la barre d'outils
+  (browser/terminal/settings/…). Le bouton « fermer » et la touche Échap ne
+  faisaient rien : l'utilisateur restait bloqué sur l'onglet Settings.
+
+- **Cause racine :** `AgentModeView` montait `<SettingsPanel onClose={() => {}} />`
+  avec un callback **no-op**. `SettingsPanel` est conçu en surcouche plein écran :
+  il déclenche `onClose` au clic sur le bouton, sur le fond, et sur Échap. Ici il
+  est intégré comme panneau d'un onglet, donc `onClose` doit **fermer l'onglet**.
+
+- **Modifications effectuées :**
+  - `src/components/ai/AgentModeView.tsx` (l.578) : `onClose={() => {}}` →
+    `onClose={() => closeToolTab("settings")}`. `closeToolTab` est déjà défini
+    dans le même composant (l.162).
+
+- **Décisions techniques :** ne pas toucher à `SettingsPanel` (réutilisé tel quel
+  en mode IDE via `settingsOpen` dans App.tsx) ; la différence de comportement
+  (surcouche vs onglet) est portée par le **callback** de l'appelant — le
+  composant reste agnostique.
+
+- **Impacts & Dépendances :** le mode IDE (surcouche) est inchangé. Fermer
+  l'onglet Settings retombe sur l'état vide ou l'onglet suivant, comme les autres
+  onglets. `tsc --noEmit` 0 erreur.
+
+- **Prochaines étapes :** envisager de remplacer le montage « plein écran dans un
+  onglet » par un rendu « encarté » (le `position: fixed; inset: 0` du panneau
+  sort du flux de l'onglet) lors d'un lot de finition visuelle.
+
+---
+
+### [2026-10-17T21:40] | Launchpad actif + purge des dernières marques « Trae » visibles
+
+- **Contexte :** deux retours client :
+  1. le bouton **Launchpad** de la barre de statut ne faisait rien (élément inerte) ;
+  2. le panneau **Settings** affichait encore des libellés de marque « Trae ».
+
+- **Modifications effectuées :**
+  - `src/components/StatusBar.tsx` : nouvelle prop `onOpenLaunchpad` ; le
+    `StatusItem` « Launchpad » devient cliquable (curseur + hover gérés par le
+    composant existant).
+  - `src/App.tsx` : `onOpenLaunchpad` câblé sur l'ouverture de la **palette de
+    commandes** (`setPaletteMode('command')` + `setPaletteOpen(true)`).
+  - `src/components/settings/SettingsPanel.tsx` : `TRAE Mobile` → `Mira Mobile`
+    (id technique `trae-mobile` → `mira-mobile`, union `Section` mise à jour) ;
+    `About TraeCode` → `About Mira`.
+
+- **Décisions techniques :** comportement « à la VS Code » = barre de statut
+  cliquable ouvrant un sélecteur rapide ; ici la palette de commandes est
+  l'équivalent le plus proche de la fonctionnalité déjà présente. Le renommage
+  d'`id` (en plus du `label`) évite une dette d'identifiant trompeur.
+
+- **Audit de marque (résultat) :** un balayage exhaustif confirme qu'il ne
+  restait que ces **2 chaînes affichées** contenant « Trae ». Tout le reste
+  (« Trae » dans ~60 commentaires, tokens CSS `--origin-*`, clés de stockage,
+  identifiants techniques) est **non visible par l'utilisateur** et
+  volontairement conservé. `productName`, titre de fenêtre, menu macOS et
+  textes d'onboarding sont déjà en « Mira ».
+
+- **Impacts & Dépendances :** `StatusBar` gagne une prop optionnelle (aucun
+  impact sur les autres appelants). Tests inchangés verts, `tsc --noEmit`
+  0 erreur.
+
+- **Prochaines étapes :** la section « Mira Mobile » reste un placeholder
+  (ComingSoon), comme les autres sections non implémentées.
+
+---
+
 ### [2026-10-17T21:25] | Correctif boucle infinie `useSyncExternalStore` (taskRuntime + swarmStore)
 
 - **Contexte :** retour du runtime « Maximum update depth exceeded » avec une
