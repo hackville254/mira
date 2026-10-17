@@ -52,9 +52,13 @@ let seqCounter = 0;
 // Snapshot stable tant qu'aucune mutation n'a eu lieu (contrat useSyncExternalStore).
 let cachedAll: TaskRunSnapshot[] = [];
 let cacheValid = true;
+// Snapshot stable des tâches actives (même contrat) : invalidé à chaque `emit`.
+let cachedActive: TaskRunSnapshot[] = [];
+let activeCacheValid = true;
 
 function emit(): void {
   cacheValid = false;
+  activeCacheValid = false;
   for (const cb of listeners) cb();
 }
 
@@ -200,7 +204,28 @@ export function useTaskSnapshots(): TaskRunSnapshot[] {
   return useSyncExternalStore(subscribe, listTaskSnapshots, listTaskSnapshots);
 }
 
+// Snapshot stable des tâches actives : même tableau tant que la composition
+// (identités + statuts) n'a pas changé, afin de respecter le contrat
+// `useSyncExternalStore` et d'éviter toute boucle de rendu infinie.
+function computeActiveTasks(): TaskRunSnapshot[] {
+  const active = listActiveTasks();
+  // On réutilise la référence précédente si le contenu est identique.
+  if (
+    active.length === cachedActive.length &&
+    active.every((t, i) => t === cachedActive[i])
+  ) {
+    return cachedActive;
+  }
+  return active;
+}
+
 /** Abonnement réactif aux tâches actives (running | waiting). */
 export function useActiveTasks(): TaskRunSnapshot[] {
-  return useSyncExternalStore(subscribe, listActiveTasks, listActiveTasks);
+  return useSyncExternalStore(subscribe, () => {
+    if (!activeCacheValid) {
+      cachedActive = computeActiveTasks();
+      activeCacheValid = true;
+    }
+    return cachedActive;
+  }, () => cachedActive);
 }

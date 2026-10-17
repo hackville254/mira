@@ -1,4 +1,4 @@
-// Journalisation centralisée d'Origin.
+// Journalisation centralisée de Mira.
 //
 // ── Pourquoi ──────────────────────────────────────────────────────────────────
 // Sans DevTools ouvertes, `console.info` du front est invisible en usage normal :
@@ -7,7 +7,7 @@
 //   1. écrit sur stderr du process → VISIBLE dans le terminal `tauri dev`
 //      (c'est là que l'utilisateur regarde) ;
 //   2. append dans un fichier de log persistant (utile en release, où il n'y a
-//      aucun terminal) sous `~/.origin/logs/origin.log`.
+//      aucun terminal) sous `~/.mira/logs/mira.log`.
 //
 // ── Sécurité ──────────────────────────────────────────────────────────────────
 //   - Le fichier est ouvert en APPEND, jamais tronqué ; on ne supprime rien.
@@ -30,10 +30,10 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// jamais finir sur disque, même si un appelant en glisse une par mégarde).
 const SECRET_MARKERS: [&str; 5] = ["oryx_", "sk-", "sk_", "Bearer ", "api_key="];
 
-/// Dossier de logs : `~/.origin/logs`. `None` si le home est introuvable.
+/// Dossier de logs : `~/.mira/logs`. `None` si le home est introuvable.
 fn log_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".origin").join("logs"))
+    Some(PathBuf::from(home).join(".mira").join("logs"))
 }
 
 /// Remplace toute occurrence d'un motif de secret par `***`.
@@ -91,7 +91,7 @@ fn write_line(level: &str, target: &str, message: &str) -> bool {
     if fs::create_dir_all(&dir).is_err() {
         return false;
     }
-    let path = dir.join("origin.log");
+    let path = dir.join("mira.log");
     rotate_if_needed(&path);
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
         return false;

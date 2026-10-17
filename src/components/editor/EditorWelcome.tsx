@@ -23,7 +23,7 @@ export default function EditorWelcome() {
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "2px", width: "100%", maxWidth: "320px", padding: "0 24px" }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "18px" }}>
-          <img src={logoCode} alt="Origin" style={{ height: "64px", width: "auto" }} />
+          <img src={logoCode} alt="Mira" style={{ height: "64px", width: "auto" }} />
         </div>
         {rows.map(r => (
           <div

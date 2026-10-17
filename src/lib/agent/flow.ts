@@ -32,6 +32,18 @@ const TOOL_TO_TAB: Record<string, FlowTabId> = {
   read_files:         "editor",
   run_commands:       "terminal",
   fetch_web_content:  "browser",
+  // Navigateur piloté par l'agent (parité Trae SOLO) : toute action sur la
+  // prévisualisation ramène l'utilisateur sur l'onglet Browser pour qu'il
+  // voie ce que l'agent fait.
+  browser_navigate:    "browser",
+  browser_reload:      "browser",
+  browser_read_text:   "browser",
+  browser_read_dom:    "browser",
+  browser_query:       "browser",
+  browser_click:       "browser",
+  browser_type:        "browser",
+  browser_press_key:   "browser",
+  browser_screenshot:  "browser",
 };
 
 /**

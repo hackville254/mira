@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square, Clock, Pencil, Trash2 } from "lucide-react";
 import PreferencesDropdown from "./PreferencesDropdown";
@@ -13,10 +13,15 @@ import {
   AGENTS as AGENT_DESCRIPTORS,
   type Mode,
   type AgentIcon,
+  type SlashCommand,
   readStoredMode,
   writeStoredMode,
   parseSlashCommand,
+  filterSlashCommands,
+  getSlashQuery,
+  mergeSlashCommands,
 } from "../../lib/inputCommands";
+import type { ClineSkillInfo, ClineRuntimeCommand } from "../../lib/agent/clineClient";
 
 // ── Agent selector ────────────────────────────────────────────────────────────
 
@@ -155,8 +160,12 @@ const COMMAND_ITEMS = [
   { id: "goal", label: "Goal", Icon: Target },
 ];
 
-function AttachMenu({ anchorEl, onAddContext, onClose }: {
+function AttachMenu({ anchorEl, onAddContext, onClose, skills, onSkill }: {
   anchorEl: HTMLElement | null; onAddContext: () => void; onClose: () => void;
+  /** Skills réellement découvertes (dossier `.cline/skills`, etc.). */
+  skills: ClineSkillInfo[];
+  /** Insère `/skillName ` dans l'input quand une skill est choisie. */
+  onSkill?: (name: string) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -226,17 +235,50 @@ function AttachMenu({ anchorEl, onAddContext, onClose }: {
           </div>
         )}
       </div>
-      <button style={rowStyle("skills")} onMouseEnter={() => setHovered("skills")} onMouseLeave={() => setHovered(null)} onClick={onClose}>
-        <span style={iconStyle}><BookOpen size={15} /></span>
-        <span style={{ flex:1 }}>Skills</span>
-        <ChevronRight size={14} style={{ color:"var(--origin-fg-subtle)", flexShrink:0 }} />
-      </button>
+      <div style={{ position:"relative" }}
+        onMouseEnter={() => setHovered("skills")} onMouseLeave={() => setHovered(null)}>
+        <button style={rowStyle("skills")} onClick={() => { onClose(); }}>
+          <span style={iconStyle}><BookOpen size={15} /></span>
+          <span style={{ flex:1 }}>Skills</span>
+          <ChevronRight size={14} style={{ color:"var(--origin-fg-subtle)", flexShrink:0 }} />
+        </button>
+        {hovered === "skills" && (
+          <div style={{ position:"absolute", right:"100%", top:0, minWidth:"260px", maxWidth:"320px",
+            maxHeight:"320px", overflowY:"auto",
+            background:"color-mix(in srgb, var(--origin-bg-base) 90%, transparent)", backdropFilter:"blur(16px)",
+            WebkitBackdropFilter:"blur(16px)", border:"1px solid var(--origin-border-default)", borderRadius:"10px",
+            boxShadow:"0 8px 32px rgba(0,0,0,0.35)", padding:"6px" }}>
+            {skills.length === 0 ? (
+              // Surface VIDE et honnête : on explique où déposer une skill plutôt
+              // que d'afficher des entrées décoratives qui ne feraient rien.
+              <div style={{ padding:"8px 10px", fontSize:"12px", color:"var(--origin-fg-muted)", lineHeight:"1.5" }}>
+                No skills found. Add a <code>SKILL.md</code> under <code>.mira/skills/&lt;name&gt;/</code>.
+              </div>
+            ) : (
+              skills.map((s) => (
+                <button key={s.name} onClick={() => { onSkill?.(s.name); onClose(); }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "var(--origin-bg-hover)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                  style={{ width:"100%", display:"flex", flexDirection:"column", gap:"2px", padding:"8px 10px",
+                    borderRadius:"7px", border:"none", cursor:"pointer", background:"transparent",
+                    textAlign:"left" }}>
+                  <span style={{ fontSize:"13px", color:"var(--origin-fg-default)" }}>{s.name}</span>
+                  {s.description && (
+                    <span style={{ fontSize:"11px", color:"var(--origin-fg-muted)", lineHeight:"1.4" }}>
+                      {s.description}
+                    </span>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>, document.body
   );
 }
 
 // ── Badge helpers ─────────────────────────────────────────────────────────────
-
 function createBadgeElement(filepath: string, filename: string): HTMLSpanElement {
   const badge = document.createElement('span');
   badge.contentEditable = 'false';
@@ -401,9 +443,23 @@ interface ChatBoxProps {
    * Renvoie `true` si le message a bien été pris en charge par la file.
    */
   onQueue?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode) => boolean;
+  /**
+   * Skills RÉELLEMENT découvertes par le sidecar Cline (dossier `.cline/skills`,
+   * etc.). Alimente le sous-menu « Skills » du bouton `+` et l'autocomplétion
+   * des slash-commands `/skill`. Vide tant qu'aucune session n'a démarré.
+   */
+  skills?: ClineSkillInfo[];
+  /** Slash-commands runtime (`/skill`, `/workflow`) proposées par le SDK. */
+  commands?: ClineRuntimeCommand[];
+  /**
+   * Ouvre le sélecteur de répertoire natif. Appelé quand l'utilisateur tente
+   * d'envoyer un message ALORS qu'aucun dossier de travail n'est ouvert :
+   * l'agent ne doit jamais démarrer sans workspace.
+   */
+  onSelectFolder?: () => void;
 }
 
-export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue }: ChatBoxProps) {
+export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
@@ -421,6 +477,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => loadPermissionMode());
   const [mentionActive, setMentionActive] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
+  const [slashActive, setSlashActive] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
+  const [slashIndex, setSlashIndex] = useState(0);
   const [attachOpen, setAttachOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [contextSnap, setContextSnap] = useState<EditorContext | null>(null);
@@ -497,6 +556,24 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     if (!el) return;
     setIsEmpty(el.textContent?.trim() === "" && !el.querySelector('[data-filepath]'));
 
+    // Autocomplétion des slash-commands : on détecte `/foo` en fin de texte
+    // (modèle texte simple pour rester compatible avec contentEditable).
+    const text = el.textContent ?? "";
+    const slashQ = getSlashQuery(text);
+    if (slashQ !== null) {
+      setSlashActive(true);
+      setSlashQuery(slashQ);
+      setSlashIndex(0);
+      setMentionActive(false);
+      setMentionQuery('');
+      mentionRangeRef.current = null;
+      return;
+    }
+    if (slashActive) {
+      setSlashActive(false);
+      setSlashQuery('');
+    }
+
     if (folderPath) {
       const query = getMentionQuery(el);
       if (query !== null) {
@@ -526,6 +603,16 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     if (!el) return;
     const { displayText, fileMentions } = parseContent(el);
     if (!displayText && fileMentions.length === 0) return;
+
+    // GARDE-FOU WORKSPACE : l'agent a besoin d'un dossier de travail pour lire et
+    // écrire. Sans dossier, on n'envoie RIEN et on ouvre le sélecteur natif : le
+    // message reste dans l'input, l'utilisateur choisit son répertoire puis
+    // renvoie. On couvre ainsi tout l'outil (modes IDE et IA) sans toucher au
+    // reste de l'UI.
+    if (!folderPath) {
+      onSelectFolder?.();
+      return;
+    }
 
     // Slash-command pilotée depuis l'input : `/plan …`, `/agent …`, `/ask …`.
     // On change le mode puis on envoie le reste comme texte (le défaut garde
@@ -576,6 +663,32 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Autocomplétion slash-commands active : on intercepte les flèches, Tab,
+    // Enter (sélection) et Échap (dismiss) avant le reste.
+    if (slashActive && slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex(i => (i + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex(i => (i - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        applySlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashActive(false);
+        setSlashQuery("");
+        return;
+      }
+    }
+
     if (e.key === "Escape" && mentionActive) {
       e.stopPropagation();
       setMentionActive(false);
@@ -627,8 +740,62 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     mentionRangeRef.current = null;
   };
 
+  /**
+   * Insère `/skillName ` en fin d'input quand une skill est choisie depuis le
+   * menu `+`. On NE lance PAS l'envoi : l'utilisateur complète son intention
+   * (args) avant d'envoyer, conformément au flux `/skill args` du SDK.
+   */
+  const handleSkillSelect = (name: string) => {
+    const el = editableRef.current;
+    if (!el) return;
+    const prefix = el.textContent && !el.textContent.endsWith(" ") ? " " : "";
+    el.textContent = `${el.textContent ?? ""}${prefix}/${name} `;
+    // Curseur en fin de contenu.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = document.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    el.focus();
+    handleInput();
+  };
+
   const activeAgent = AGENTS.find(a => a.id === mode);
   const agentLabel = activeAgent?.label ?? "Agent";
+
+  // Catalogue fusionné : commandes intégrées (/agent, /plan, /ask, /skill) +
+  // commandes RÉELLES du runtime Cline (/skill, /workflow découvertes par le SDK).
+  const slashCatalog = useMemo<SlashCommand[]>(
+    () => mergeSlashCommands(commands),
+    [commands],
+  );
+  const slashMatches = slashActive ? filterSlashCommands(slashQuery, slashCatalog) : [];
+
+  /** Applique une commande choisie dans l'autocomplétion. */
+  const applySlashCommand = useCallback((cmd: SlashCommand) => {
+    const el = editableRef.current;
+    if (!el) return;
+    if (cmd.action.kind === "set-mode") {
+      setMode(cmd.action.mode);
+      writeStoredMode(cmd.action.mode);
+      el.textContent = "";
+      setIsEmpty(true);
+    } else if (cmd.action.kind === "insert") {
+      el.textContent = cmd.action.text;
+      setIsEmpty(false);
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = document.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      el.focus();
+    }
+    setSlashActive(false);
+    setSlashQuery("");
+    setSlashIndex(0);
+  }, []);
   const showContextBadge = contextSnap && !contextDismissed;
   const activeProvider = PROVIDERS.find(p => p.models.some(m => m.id === selectedModelId));
   const activeModel = activeProvider?.models.find(m => m.id === selectedModelId);
@@ -671,6 +838,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           anchorEl={containerRef.current}
           onAddContext={() => setFilePickerOpen(true)}
           onClose={() => setAttachOpen(false)}
+          skills={skills}
+          onSkill={handleSkillSelect}
         />
       )}
 
@@ -806,6 +975,41 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
       {/* Editable area */}
       <div style={{ position: "relative" }}>
+        {/* Slash-command autocomplete — catalogue intégré + commandes runtime */}
+        {slashActive && slashMatches.length > 0 && (
+          <div style={{
+            position: "absolute", left: "8px", right: "8px", bottom: "100%", marginBottom: "4px",
+            maxHeight: "260px", overflowY: "auto", zIndex: 40,
+            background: "color-mix(in srgb, var(--origin-bg-base) 92%, transparent)", backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)", border: "1px solid var(--origin-border-default)", borderRadius: "8px",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.35)", padding: "4px",
+          }}>
+            {slashMatches.map((cmd, i) => (
+              <button key={cmd.name}
+                onMouseDown={e => { e.preventDefault(); applySlashCommand(cmd); }}
+                onMouseEnter={() => setSlashIndex(i)}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px",
+                  borderRadius: "6px", border: "none", cursor: "pointer", textAlign: "left",
+                  background: i === slashIndex ? "var(--origin-bg-hover)" : "transparent",
+                }}>
+                <SquareSlash size={13} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
+                <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--origin-fg-default)", flexShrink: 0 }}>
+                  /{cmd.name}
+                </span>
+                <span style={{ fontSize: "11px", color: "var(--origin-fg-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {cmd.description}
+                </span>
+                {cmd.source === "runtime" && (
+                  <span style={{ marginLeft: "auto", fontSize: "10px", padding: "0 4px", borderRadius: "3px",
+                    background: "var(--origin-bg-active)", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>
+                    runtime
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         <div
           ref={editableRef}
           contentEditable
@@ -968,7 +1172,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
         <button
           onClick={isStreaming ? onStop : handleSend}
-          title={isStreaming ? "Stop generating" : "Send"}
+          title={isStreaming ? "Stop generating" : !folderPath ? "Select a working directory to start" : "Send"}
           style={{
             display: "flex",
             alignItems: "center",
@@ -979,6 +1183,10 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             border: "none",
             cursor: "pointer",
             backgroundColor: isStreaming ? "var(--origin-bg-active)" : "var(--origin-accent-blue)",
+            // Sans dossier : le bouton reste cliquable (le clic ouvre le sélecteur
+            // de répertoire) mais s'estompe pour signaler que l'agent ne partira
+            // pas tant qu'aucun workspace n'est choisi.
+            opacity: !folderPath && !isStreaming ? 0.5 : 1,
             color: isStreaming ? "var(--origin-fg-default)" : "#fff",
           }}
         >

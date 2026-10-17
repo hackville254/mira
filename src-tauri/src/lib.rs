@@ -1,5 +1,6 @@
 mod ai;
 mod ai_env;
+mod browser;
 mod checkpoint;
 mod dap;
 // `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
@@ -15,6 +16,7 @@ mod keychain;
 mod log;
 mod lsp;
 pub mod lsp_index;
+mod migration;
 mod node_runtime;
 mod search;
 mod sidecar;
@@ -36,7 +38,7 @@ use dpi::{LogicalPosition, LogicalSize};
 /// chargement initial. Ce state est la source de vérité, alimenté à l'embed et
 /// mis à jour par le handler de navigation.
 #[derive(Default)]
-struct PanelUrlState(Mutex<HashMap<String, String>>);
+pub(crate) struct PanelUrlState(pub(crate) Mutex<HashMap<String, String>>);
 
 // IMPORTANT: these commands MUST be `async fn`.
 //
@@ -169,7 +171,7 @@ fn build_app_menu(app: &tauri::App) -> tauri::Result<()> {
 
     #[cfg(target_os = "macos")]
     let menu = {
-        let app_menu = SubmenuBuilder::new(app, "Origin")
+        let app_menu = SubmenuBuilder::new(app, "Mira")
             .about(None)
             .separator()
             .quit()
@@ -214,7 +216,12 @@ pub fn run() {
         .manage(dap::DapState::new())
         .manage(sidecar::SidecarState::new())
         .manage(PanelUrlState::default())
+        .manage(browser::BrowserState::default())
         .setup(|app| {
+            // Migration de marque : `~/.origin` → `~/.mira` (idempotent, best-effort).
+            // AVANT toute lecture d'état, pour que le reste de l'app voie déjà le
+            // dossier courant. Une erreur ne bloque jamais le démarrage.
+            migration::migrate_legacy_data_dir();
             // Menu applicatif EXPLICITE, par OS. Raison : sur macOS, Tauri ajoute
             // sinon un menu par défaut dont l'item « Edit ▸ Select All » est lié à
             // Cmd+A au niveau de l'OS — cet item déclenche un « tout sélectionner »
@@ -266,6 +273,7 @@ pub fn run() {
             git::git_pull,
             git::git_push,
             git::git_fetch,
+            git::git_clone,
             git::git_list_branches,
             git::git_checkout,
             git::git_create_branch,
@@ -334,6 +342,18 @@ pub fn run() {
             resize_ide_panel,
             destroy_ide_panel,
             get_ide_panel_url,
+            // Navigateur piloté par l'agent (parité Trae SOLO). Voir `browser.rs`.
+            browser::browser_navigate,
+            browser::browser_reload,
+            browser::browser_status,
+            browser::browser_read_text,
+            browser::browser_read_dom,
+            browser::browser_query,
+            browser::browser_click,
+            browser::browser_type,
+            browser::browser_press_key,
+            browser::browser_register,
+            browser::browser_screenshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

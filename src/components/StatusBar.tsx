@@ -17,6 +17,8 @@ interface Props {
   mobileFrameworks?: MobileFramework[];
   /** Ouvre le panneau Problems au clic sur le compteur. */
   onShowProblems?: () => void;
+  /** Ouvre le Launchpad (palette de commandes) — équivalent VS Code. */
+  onOpenLaunchpad?: () => void;
 }
 
 function StatusItem({ children, onClick, title }: { children: React.ReactNode; onClick?: () => void; title?: string }) {
@@ -49,6 +51,7 @@ export default function StatusBar({
   errors = 0, warnings = 0, spaces = 2, lineEnding = 'LF',
   mobileFrameworks = [],
   onShowProblems,
+  onOpenLaunchpad,
 }: Props) {
   const { theme, themes, setTheme } = useTheme();
   const isDark = theme.type === 'dark';
@@ -98,8 +101,8 @@ export default function StatusBar({
           </StatusItem>
         )}
 
-        {/* Launchpad */}
-        <StatusItem title="Launchpad">
+        {/* Launchpad — clic = palette de commandes (comme VS Code) */}
+        <StatusItem title="Launchpad" onClick={onOpenLaunchpad}>
           <Icon icon="lucide:rocket" width={11} />
           <span>Launchpad</span>
         </StatusItem>

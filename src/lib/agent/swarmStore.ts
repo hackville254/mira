@@ -45,8 +45,16 @@ const listeners = new Set<() => void>();
 // Une entrée par clé demandée (y compris la clé globale agrégée).
 const cache = new Map<string, SubAgentSnapshot[]>();
 
+// Cache séparé pour la vue « actifs » : `listActiveSubAgents` filtre la liste,
+// ce qui produirait un NOUVEAU tableau à chaque appel → `useSyncExternalStore`
+// boucle à l'infini. On met donc le résultat filtré en cache, invalidé à chaque
+// `emit` comme le cache principal.
+const activeCache = new Map<string, SubAgentSnapshot[]>();
+const ACTIVE_CACHE_PREFIX = "active::";
+
 function emit(): void {
   cache.clear();
+  activeCache.clear();
   for (const cb of listeners) cb();
 }
 
@@ -122,7 +130,12 @@ export function listSubAgents(sessionKey?: string): SubAgentSnapshot[] {
 
 /** Seuls les sous-agents encore en cours (status non renseigné). */
 export function listActiveSubAgents(sessionKey?: string): SubAgentSnapshot[] {
-  return listSubAgents(sessionKey).filter(s => s.status === undefined);
+  const key = ACTIVE_CACHE_PREFIX + (sessionKey ?? GLOBAL_SESSION_KEY);
+  const hit = activeCache.get(key);
+  if (hit) return hit;
+  const list = listSubAgents(sessionKey).filter(s => s.status === undefined);
+  activeCache.set(key, list);
+  return list;
 }
 
 /** Purge les sous-agents d'UNE session à la fin d'un tour parent (les cartes du

@@ -25,6 +25,7 @@ import {
   parseSlashCommand,
   filterSlashCommands,
   getSlashQuery,
+  mergeSlashCommands,
 } from "../inputCommands";
 
 describe("inputCommands — modes d'agent", () => {
@@ -161,5 +162,47 @@ describe("inputCommands — autocomplétion slash", () => {
   it("chaque slash-command a un nom unique", () => {
     const names = SLASH_COMMANDS.map(c => c.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("inputCommands — fusion avec les commandes runtime Cline", () => {
+  it("sans runtime, renvoie le catalogue intégré tel quel", () => {
+    expect(mergeSlashCommands().map(c => c.name)).toEqual(SLASH_COMMANDS.map(c => c.name));
+  });
+
+  it("ajoute les commandes runtime en action `insert`", () => {
+    const merged = mergeSlashCommands([
+      { id: "commit", name: "commit", description: "Fait un commit", kind: "workflow" },
+    ]);
+    const cmd = merged.find(c => c.name === "commit");
+    expect(cmd).toBeDefined();
+    expect(cmd!.action).toEqual({ kind: "insert", text: "/commit " });
+    expect(cmd!.source).toBe("runtime");
+  });
+
+  it("les commandes intégrées gardent la priorité en cas de collision", () => {
+    const merged = mergeSlashCommands([{ id: "plan", name: "plan", kind: "skill" }]);
+    const plan = merged.filter(c => c.name === "plan");
+    expect(plan).toHaveLength(1);
+    expect(plan[0].source).toBe("builtin");
+  });
+
+  it("ignore les entrées runtime sans nom exploitable", () => {
+    const base = SLASH_COMMANDS.length;
+    expect(mergeSlashCommands([{ id: "", name: "", kind: "skill" }]).length).toBe(base);
+  });
+
+  it("normalise un nom préfixé par un slash", () => {
+    const merged = mergeSlashCommands([{ id: "/release", name: "/release", kind: "workflow" }]);
+    const cmd = merged.find(c => c.name === "release");
+    expect(cmd).toBeDefined();
+    expect(cmd!.action).toEqual({ kind: "insert", text: "/release " });
+  });
+
+  it("la description runtime est conservée quand fournie", () => {
+    const merged = mergeSlashCommands([
+      { id: "rev", name: "rev", description: "Revue de code", kind: "skill" },
+    ]);
+    expect(merged.find(c => c.name === "rev")!.description).toBe("Revue de code");
   });
 });

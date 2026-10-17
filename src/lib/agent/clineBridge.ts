@@ -88,10 +88,25 @@ export interface ClineWriteRequest {
   paths: string[];
 }
 
+/**
+ * Demande d'exécution d'une commande Tauri, émise par un outil custom du
+ * sidecar (navigateur piloté `browser_*`). Le front appelle la commande puis
+ * renvoie le résultat par `tool_invoke_response`.
+ *
+ * `command` est une chaîne fermée : le front ne doit relayer QUE les commandes
+ * qu'il connaît (allowlist), jamais un nom arbitraire venu du sidecar.
+ */
+export interface ClineInvokeRequest {
+  requestId: string;
+  command: string;
+  args: Record<string, unknown>;
+}
+
 /** Ligne de contrôle reconnue, ou `null` si ce n'est pas une de ces demandes. */
 export type ClineControlLine =
   | { kind: "tool_approval"; request: ClineApprovalRequest }
-  | { kind: "tool_write"; request: ClineWriteRequest };
+  | { kind: "tool_write"; request: ClineWriteRequest }
+  | { kind: "tool_invoke"; request: ClineInvokeRequest };
 
 // ── Traduction principale ─────────────────────────────────────────────────────
 
@@ -535,6 +550,19 @@ export function translateClineControlLine(raw: unknown): ClineControlLine | null
     return { kind: "tool_write", request: { requestId, paths } };
   }
 
+  if (o.kind === "tool_invoke") {
+    const requestId = typeof o.requestId === "string" ? o.requestId : "";
+    const command = typeof o.command === "string" ? o.command : "";
+    if (!requestId || !command) return null;
+    // `args` est TOUJOURS un objet (jamais `null`/tableau) : un conteneur
+    // malformé ne doit pas se propager sous une forme inattendue à l'invoke.
+    const args =
+      o.args && typeof o.args === "object" && !Array.isArray(o.args)
+        ? (o.args as Record<string, unknown>)
+        : {};
+    return { kind: "tool_invoke", request: { requestId, command, args } };
+  }
+
   return null;
 }
 
@@ -591,15 +619,25 @@ function translateContentStart(
 }
 
 /**
- * Traduit un `chunk` de flux outil. Seul `stderr` est remonté (sous forme de
- * `notice`) : un outil qui écrit sur la sortie d'erreur est un signal utile
- * pendant un long silence. Les flux `stdout`/`agent` sont du bruit (le résultat
- * structuré arrive par `content_end`) : on les ignore.
+ * Traduit un `chunk` de flux outil en un événement de terminal en DIRECT.
+ *
+ * POURQUOI TOUT REMONTER (et plus seulement `stderr`)
+ * ---------------------------------------------------
+ * Le SDK streame la sortie d'une commande shell (`run_commands`) sur deux flux
+ * (`stdout`/`stderr`) AVANT que le `tool-result` final n'arrive. Historiquement
+ * on ne remontait que `stderr` (comme un `notice`) et on jetait `stdout` — la
+ * commande semblait donc « figée » jusqu'à sa fin.
+ *
+ * Pour la parité SOLO, on remonte les DEUX, sous forme d'un `terminal-output`
+ * que l'onglet « Agent » (lecture seule) affiche en temps réel. Le mapping vers
+ * l'UI est mécanique : `stdout`→`stdout`, tout le reste (`stderr`, `agent`…) →
+ * `stderr`, ce qui garantit qu'aucune sortie n'est perdue.
  */
 function translateChunk(envelope: ClineSessionEventEnvelope): AgentEvent[] {
   const chunk = envelope.payload?.chunk;
-  if (envelope.payload?.stream !== "stderr" || !chunk) return [];
-  return [{ type: "notice", kind: "retry", detail: chunk }];
+  if (!chunk) return [];
+  const stream = envelope.payload?.stream === "stdout" ? "stdout" : "stderr";
+  return [{ type: "terminal-output", chunk, stream }];
 }
 
 /**

@@ -7,8 +7,8 @@
  * `requestToolApproval`, avec les **noms d'outils réels du SDK** — vérifiés
  * dans le bundle `@cline/core` (`DefaultToolNames`) : `read_files`,
  * `editor` / `apply_patch`, `run_commands`, `search_codebase`,
- * `fetch_web_content`, `web_search`, `skills`, `ask_question`,
- * `submit_and_exit`, plus les outils d'équipe `team_*` / `spawn_agent`.
+ * `fetch_web_content`, `skills`, `ask_question`, `tasks`, `spawn_agent`,
+ * `teams`.
  *
  * La politique d'Origin, elle, raisonne sur des `PendingAction` typées
  * (`write_file`, `edit`, `bash_run`, `ask_user`) — c'est ce que consomme
@@ -72,6 +72,11 @@ const READ_TOOLS = new Set([
 
 /** Noms d'outils Cline qui posent une question à l'utilisateur. */
 const ASK_TOOLS = new Set(["ask_question", "ask_followup_question", "ask_user", "ask"]);
+
+// NB : l'outil `skills` (chargement d'une skill) n'est volontairement placé dans
+// AUCUN set : il n'est pas de la lecture pure (il peut injecter des instructions
+// arbitraires dans le contexte) et il doit rester soumis à la confirmation
+// conservatrice par défaut (cf. « Outil inconnu » en fin de `toPendingAction`).
 
 /**
  * Convertit une demande d'approbation Cline en `PendingAction` d'Origin, ou

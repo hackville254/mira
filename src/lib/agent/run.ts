@@ -31,6 +31,12 @@ export type AgentEvent =
   | { type: "reasoning";         delta: string; spawnId?: string }
   | { type: "tool-call";         id: string; toolName: string; args: unknown; spawnId?: string }
   | { type: "tool-result";       id: string; toolName: string; result: unknown; spawnId?: string }
+  // ── Sortie shell en DIRECT (miroir du « terminal agent », parité SOLO) ─────
+  // Pendant qu'un outil shell (`run_commands`) tourne, le SDK streame sa sortie
+  // sur `stdout`/`stderr` (`CoreSessionEvent` de type `chunk`). On la remonte ici
+  // pour alimenter l'onglet « Agent » du panneau bas en temps réel, AVANT que le
+  // `tool-result` final n'arrive. `stream` distingue les deux flux (colorisation).
+  | { type: "terminal-output";    chunk: string; stream: "stdout" | "stderr" }
   | { type: "approval-required"; id: string; action: PendingAction; approve: () => void; reject: (answer?: string) => void }
   | { type: "approval-resolved"; id: string; status: "approved" | "rejected" }
   | { type: "notice";            kind: "compaction" | "retry"; detail: string; savedTokens?: number }

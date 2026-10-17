@@ -44,7 +44,7 @@ export interface ThemeOption {
 export const THEMES: ThemeOption[] = [
   {
     id: 'dark',
-    label: 'Origin Dark',
+    label: 'Mira Dark',
     previewBg: '#0a0a0a',
     lines: [
       { color: '#62a6ff', width: '85%' },
@@ -55,7 +55,7 @@ export const THEMES: ThemeOption[] = [
   },
   {
     id: 'light',
-    label: 'Origin Light',
+    label: 'Mira Light',
     previewBg: '#f5f5f5',
     lines: [
       { color: '#005ee9', width: '85%' },

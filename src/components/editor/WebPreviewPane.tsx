@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, ExternalLink, ArrowLeft, ArrowRight, Globe, PictureInPicture2, X, Smartphone, Tablet, Monitor, Loader2 } from 'lucide-react';
+import { RefreshCw, ExternalLink, ArrowLeft, ArrowRight, Globe, PictureInPicture2, X, Smartphone, Tablet, Monitor, Loader2, Bot } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Tooltip } from '../ui/Tooltip';
 
 // Stable label for the single embedded preview webview.
-const PREVIEW_PANEL_ID = 'origin-web-preview';
+// Exporté : l'agent (AiPanel) cible cette même webview pour la piloter.
+export const PREVIEW_PANEL_ID = 'origin-web-preview';
 
 const COMMON_PORTS = [
   { port: 5173, label: 'Vite' },
@@ -179,6 +181,9 @@ function NavBtn({
 }
 
 const LS_PREVIEW_URL = 'origin-preview-url';
+// Persiste l'état « piloté par l'agent » pour que le badge survive à un
+// remontage du panneau (changement d'onglet, rechargement du webview).
+const LS_AGENT_ACTIVE = 'origin-preview-agent-active';
 
 type PresetKey = 'mobile' | 'tablet' | 'desktop';
 
@@ -280,6 +285,10 @@ export default function WebPreviewPane() {
   const [viewW, setViewW] = useState<number | null>(null);
   const [viewH, setViewH] = useState<number | null>(null);
   const [iframeLoading, setIframeLoading] = useState(false);
+  // Vrai quand un agent (mode IA/plan) a ciblé cette prévisualisation : on
+  // affiche un badge « agent » sur la barre d'URL (parité Trae SOLO) et on
+  // répond aux demandes de capture émises par le backend.
+  const [agentActive, setAgentActive] = useState<boolean>(() => localStorage.getItem(LS_AGENT_ACTIVE) === '1');
 
   // Container that reserves layout space for the native embedded webview.
   const containerRef    = useRef<HTMLDivElement | null>(null);
@@ -480,6 +489,25 @@ export default function WebPreviewPane() {
     return () => clearInterval(id);
   }, [url]); // only restart when an explicit navigation changes the base URL
 
+  // ── Indicateur « piloté par l'agent » ──────────────────────────────────────
+  // La capture d'écran de la prévisualisation est désormais produite DANS la
+  // page par le backend (`browser.rs::browser_screenshot`) : le front n'a plus
+  // à relayer de PNG. Il ne lui reste qu'à refléter l'activité de l'agent.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<{ active?: boolean }>('browser-agent-active', (event) => {
+      const active = event.payload?.active === true;
+      setAgentActive(active);
+      if (active) localStorage.setItem(LS_AGENT_ACTIVE, '1');
+      else localStorage.removeItem(LS_AGENT_ACTIVE);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
   // No URL yet — show picker
   if (url === null) {
     return (
@@ -543,6 +571,24 @@ export default function WebPreviewPane() {
         </div>
 
         <div style={{ width: 1, height: 16, background: 'var(--origin-border-default)', flexShrink: 0, margin: '0 2px' }} />
+
+        {/* Badge « agent » : visible quand un agent pilote la prévisualisation. */}
+        {agentActive && (
+          <Tooltip content="Cet aperçu est piloté par l'agent" side="bottom">
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '4px',
+              padding: '2px 8px', flexShrink: 0,
+              borderRadius: '10px',
+              border: '1px solid var(--origin-accent, #4f8cff)',
+              background: 'color-mix(in srgb, var(--origin-accent, #4f8cff) 14%, transparent)',
+              color: 'var(--origin-accent, #4f8cff)',
+              fontSize: '11px', fontWeight: 500, userSelect: 'none',
+            }}>
+              <Bot size={12} />
+              <span>Agent</span>
+            </div>
+          </Tooltip>
+        )}
 
         {/* Viewport preset toggles */}
         {([

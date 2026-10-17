@@ -37,8 +37,9 @@ import {
   startClineRun,
   type ClineRunHandle,
   type ClineStartParams,
-  type ClineExtraToolSpec,
+  type ClineExtraToolSpecAny,
   type ClineToolEvent,
+  type ClineSessionExtensions,
 } from "./clineClient";
 import { decideApproval, loadPermissionMode } from "./permissions";
 import type { AgentEvent } from "./run";
@@ -83,12 +84,18 @@ export interface ClineHarnessOptions {
    * `todo_read`). Uniquement appliqués à la CRÉATION d'une session (un `start`) :
    * sur une reprise, les outils existent déjà côté SDK.
    */
-  extraTools?: ClineExtraToolSpec[];
+  extraTools?: ClineExtraToolSpecAny[];
   /**
    * Reçoit les EFFETS d'outils custom (ex. mise à jour de la todo list) pour
    * que le front les applique dans son store réactif. Optionnel.
    */
   onToolEvent?: (event: ClineToolEvent) => void;
+  /**
+   * Reçoit les EXTENSIONS réellement résolues au démarrage d'une session NEUVE
+   * (skills découvertes, slash-commands runtime, diagnostics non fatals). Sur
+   * une reprise, le sidecar ne rescanne pas : le callback n'est pas appelé.
+   */
+  onExtensions?: (extensions: ClineSessionExtensions) => void;
   /** Callback du flux d'événements traduits (même contrat que `runAgent`). */
   onEvent: (event: AgentEvent) => void;
   /**
@@ -151,9 +158,22 @@ export async function startClineHarness(
 
   const decider = makeApprovalDecider(options.workspace, options.onBlocked);
 
-  return startClineRun(params, options.onEvent, {
+  const handle = await startClineRun(params, options.onEvent, {
     decideApproval: (action) => decider(action),
     ...(options.onBeforeWrite ? { onBeforeWrite: options.onBeforeWrite } : {}),
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
   });
+
+  // Remonte les extensions résolues (session neuve uniquement). On le fait ici
+  // — au plus près du handshake — pour que l'UI dispose des skills/commands dès
+  // l'acquittement de `start`, sans attendre le premier événement d'agent.
+  if (handle?.extensions && options.onExtensions) {
+    try {
+      options.onExtensions(handle.extensions);
+    } catch {
+      // Un callback d'UI défaillant ne doit jamais faire échouer le run.
+    }
+  }
+
+  return handle;
 }

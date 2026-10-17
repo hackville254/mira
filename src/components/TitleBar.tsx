@@ -3,8 +3,10 @@ import { Icon } from "@iconify/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Tooltip } from "./ui/Tooltip";
 import DropdownMenu, { type MenuEntry } from "./ui/DropdownMenu";
+import ProjectMenu from "./ui/ProjectMenu";
 import { useCommands } from "../context/CommandContext";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { useToast } from "./ui/Toast";
 import { formatShortcut } from "../lib/platform";
 import logoSrc from "../assets/logo-code.svg";
 
@@ -97,7 +99,7 @@ function ModeSwitch({
           transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
         }}
       >
-        <img src={logoSrc} alt="Origin" style={{ height: "14px", width: "auto" }} />
+        <img src={logoSrc} alt="Mira" style={{ height: "14px", width: "auto" }} />
       </span>
 
       <Tooltip content={aiMode ? "Switch to IDE Mode" : ""} side="bottom">
@@ -131,6 +133,7 @@ function ModeSwitch({
 
 export default function TitleBar() {
   const { folderPath } = useWorkspace();
+  const { showToast } = useToast();
   const {
     sidebarOpen, terminalOpen, aiPanelOpen,
     appMode, onSetAppMode,
@@ -142,10 +145,13 @@ export default function TitleBar() {
     onZoomIn, onZoomOut, onZoomReset,
     onNewTerminalTab, onClearTerminal, onKillTerminal,
     onStartDebugging, onStopDebugging, isDebugActive,
+    onOpenProject, onCloneRepo,
   } = useCommands();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const projectBtnRef = useRef<HTMLButtonElement>(null);
 
   const close = () => { setMenuOpen(false); setMenuAnchor(null); };
   const toggleMenu = () => {
@@ -249,7 +255,8 @@ export default function TitleBar() {
 
         {/* Project selector */}
         <button
-          onClick={onOpenPalette}
+          ref={projectBtnRef}
+          onClick={() => setProjectMenuOpen(open => !open)}
           className="flex items-center gap-1.5 px-2 py-1 rounded transition-colors text-xs"
           style={{ color: "var(--origin-fg-default)", backgroundColor: "transparent" }}
           onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
@@ -259,6 +266,17 @@ export default function TitleBar() {
           <span className="font-medium">{projectName}</span>
           <Icon icon="lucide:chevron-down" width={12} style={{ color: "var(--origin-fg-subtle)" }} />
         </button>
+        {projectMenuOpen && (
+          <ProjectMenu
+            anchorEl={projectBtnRef.current}
+            currentPath={folderPath}
+            onClose={() => setProjectMenuOpen(false)}
+            onOpenFolder={() => { void onOpenFolder(); }}
+            onCloneRepo={() => onCloneRepo()}
+            onConnectRemote={() => showToast("Remote host connections are coming soon.", "info")}
+            onOpenProject={onOpenProject}
+          />
+        )}
       </div>
 
       {/* Center — Search */}

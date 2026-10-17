@@ -2500,6 +2500,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "mira"
+version = "0.1.4"
+dependencies = [
+ "base64 0.22.1",
+ "dpi",
+ "flate2",
+ "keyring",
+ "portable-pty",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-sql",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tokio",
+ "url",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "muda"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2954,35 +2983,6 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
-]
-
-[[package]]
-name = "origin"
-version = "0.1.4"
-dependencies = [
- "base64 0.22.1",
- "dpi",
- "flate2",
- "keyring",
- "portable-pty",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "sysinfo",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-sql",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tokio",
- "url",
- "zip 2.4.2",
 ]
 
 [[package]]

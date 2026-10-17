@@ -92,17 +92,17 @@ export default function PersonalizePage({ onBack, onComplete, onSkip }: Props) {
 
   function handleThemeSelect(id: 'dark' | 'light') {
     setSelectedTheme(id);
-    const name = id === 'dark' ? 'Origin Dark' : 'Origin Light';
+    const name = id === 'dark' ? 'Mira Dark' : 'Mira Light';
     const t = themes.find(t => t.name === name);
     if (t) setTheme(t);
   }
 
   // Persist the keymap preference so Settings can read it later
   function persistKeymap(id: string) {
-    localStorage.setItem('origin-keymap', id);
+    localStorage.setItem('mira-keymap', id);
   }
 
-  async function handleEnterOrigin() {
+  async function handleEnterMira() {
     persistKeymap(selectedKeymap);
 
     if (selectedImport) {
@@ -187,7 +187,7 @@ export default function PersonalizePage({ onBack, onComplete, onSkip }: Props) {
                 <ArrowLeft size={16} />Back
               </button>
               <button
-                onClick={handleEnterOrigin}
+                onClick={handleEnterMira}
                 disabled={importing}
                 style={{ ...navBtn(), opacity: importing ? 0.7 : 1 }}
                 onMouseEnter={e => { if (!importing) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
@@ -196,7 +196,7 @@ export default function PersonalizePage({ onBack, onComplete, onSkip }: Props) {
                 {importing ? (
                   <><Loader2 size={15} className="animate-spin" />Importing…</>
                 ) : (
-                  <>Enter Origin<ArrowRight size={16} /></>
+                  <>Enter Mira<ArrowRight size={16} /></>
                 )}
               </button>
             </div>

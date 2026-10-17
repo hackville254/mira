@@ -74,16 +74,58 @@ export interface SlashCommand {
   label: string;
   /** Description courte. */
   description: string;
-  /** L'action à appliquer, résolue par l'UI (pas d'effet ici). */
-  action: { kind: "set-mode"; mode: Mode } | { kind: "noop" };
+  /**
+   * L'action à appliquer, résolue par l'UI (pas d'effet ici).
+   * - `set-mode` : bascule de mode côté UI.
+   * - `insert`   : insère le texte (ex. `/skill `) dans l'input sans envoyer.
+   * - `noop`     : commande purement informative (documentation).
+   */
+  action: { kind: "set-mode"; mode: Mode } | { kind: "insert"; text: string } | { kind: "noop" };
+  /** Origine de la commande : intégrée ou fournie par le runtime Cline. */
+  source?: "builtin" | "runtime";
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "agent", label: "Agent", description: "Reads, edits and runs tools", action: { kind: "set-mode", mode: "agent" } },
-  { name: "plan",  label: "Plan",  description: "Read-only, proposes a plan",  action: { kind: "set-mode", mode: "plan" } },
-  { name: "ask",   label: "Chat",  description: "Answers about the code",      action: { kind: "set-mode", mode: "ask" } },
-  { name: "chat",  label: "Chat",  description: "Alias de /ask",               action: { kind: "set-mode", mode: "ask" } },
+  { name: "agent", label: "Agent", description: "Reads, edits and runs tools", action: { kind: "set-mode", mode: "agent" }, source: "builtin" },
+  { name: "plan",  label: "Plan",  description: "Read-only, proposes a plan",  action: { kind: "set-mode", mode: "plan" },  source: "builtin" },
+  { name: "ask",   label: "Chat",  description: "Answers about the code",      action: { kind: "set-mode", mode: "ask" },   source: "builtin" },
+  { name: "chat",  label: "Chat",  description: "Alias de /ask",               action: { kind: "set-mode", mode: "ask" },   source: "builtin" },
+  { name: "skill", label: "Skill", description: "Charge une skill (skills du projet)", action: { kind: "insert", text: "/skill " }, source: "builtin" },
 ] as const;
+
+/** Forme minimale d'une commande runtime telle que renvoyée par le sidecar. */
+export interface RuntimeCommandLike {
+  id: string;
+  name: string;
+  description?: string;
+  kind: "skill" | "workflow";
+}
+
+/**
+ * Fusionne les slash-commands intégrées avec celles RÉELLEMENT fournies par le
+ * runtime Cline (`listRuntimeCommands()`). Les intégrées gardent la priorité en
+ * cas de collision de nom ; les commandes runtime sont préfixées par `/` et
+ * insérées dans l'input (l'expansion réelle est faite côté SDK).
+ */
+export function mergeSlashCommands(runtime: RuntimeCommandLike[] = []): SlashCommand[] {
+  const merged: SlashCommand[] = [...SLASH_COMMANDS];
+  const seen = new Set(merged.map(c => c.name));
+  for (const cmd of runtime) {
+    const raw = (cmd.name || cmd.id || "").replace(/^\/+/, "").trim();
+    if (!raw) continue;
+    const name = raw.toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    merged.push({
+      name,
+      label: cmd.name || raw,
+      description: cmd.description ?? (cmd.kind === "workflow" ? "Workflow" : "Skill"),
+      action: { kind: "insert", text: `/${raw} ` },
+      source: "runtime",
+    });
+  }
+  return merged;
+}
 
 export interface ParsedSlash {
   /** La commande reconnue, ou null si le nom est inconnu. */
@@ -96,21 +138,22 @@ export interface ParsedSlash {
  * Détecte un slash-command en *tête* de message.
  * Ne reconnaît que `/nom` en début (après espaces). `/foo` inconnu → `command: null`.
  * Un texte sans `/` initial → `command: null, rest: texte d'origine`.
+ * `catalog` permet de prendre en compte les commandes runtime du SDK.
  */
-export function parseSlashCommand(text: string): ParsedSlash {
+export function parseSlashCommand(text: string, catalog: readonly SlashCommand[] = SLASH_COMMANDS): ParsedSlash {
   const match = text.match(/^\s*\/(\S+)(?:\s+([\s\S]*))?$/);
   if (!match) return { command: null, rest: text };
   const name = match[1].toLowerCase().replace(/^\/+/, "");
   const rest = (match[2] ?? "").trim();
-  const command = SLASH_COMMANDS.find(c => c.name === name) ?? null;
+  const command = catalog.find(c => c.name === name) ?? null;
   return { command, rest };
 }
 
 /** Filtre le catalogue slash pour l'autocomplétion (query après le `/`). */
-export function filterSlashCommands(query: string): SlashCommand[] {
+export function filterSlashCommands(query: string, catalog: readonly SlashCommand[] = SLASH_COMMANDS): SlashCommand[] {
   const q = query.toLowerCase();
-  if (!q) return [...SLASH_COMMANDS];
-  return SLASH_COMMANDS.filter(c => c.name.startsWith(q));
+  if (!q) return [...catalog];
+  return catalog.filter(c => c.name.startsWith(q));
 }
 
 /** Détecte la requête slash active : `/foo` en fin de texte → "foo", sinon null. */

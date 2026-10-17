@@ -22,6 +22,10 @@ export interface AppCommands {
   onNewWindow: () => void;
   onOpenPalette: () => void;
   onOpenSettings: () => void;
+  /** Ouvre un projet (dossier) déjà connu — entrées « Recent » du menu projet. */
+  onOpenProject: (path: string) => void;
+  /** Ouvre la boîte de dialogue « Clone Git Repository ». */
+  onCloneRepo: () => void;
   // Status
   gitBranch: string | null;
   dirtyCount: number;
@@ -67,6 +71,7 @@ const defaults: AppCommands = {
   onToggleSidebar: noop, onToggleTerminal: noop, onToggleAiPanel: noop, onSetAiPanel: noop,
   isFullscreen: false, onToggleFullscreen: noop,
   onOpenFolder: noop, onOpenFile: noop, onNewFile: noop, onNewWindow: noop, onOpenPalette: noop, onOpenSettings: noop,
+  onOpenProject: noop, onCloneRepo: noop,
   gitBranch: null, dirtyCount: 0, hasActiveTab: false, hasFolderOpen: false,
   onSave: noop, onSaveAs: noop, onSaveAll: noop, onCloseEditor: noop, onCloseFolder: noop,
   onEditorUndo: noop, onEditorRedo: noop, onEditorPrevFile: noop, onEditorNextFile: noop, onEditorCut: noop, onEditorCopy: noop,

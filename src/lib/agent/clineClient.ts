@@ -57,6 +57,25 @@ import { log } from "../logger";
 /** Nom du canal d'événements émis par Rust (cf. `sidecar.rs::EVENT_CLINE`). */
 const EVENT_CLINE = "cline://event";
 
+/**
+ * Canal UI signalant qu'un agent pilote la prévisualisation (badge « Agent »
+ * sur `WebPreviewPane`). Un COMPTEUR module-level évite qu'un run qui se
+ * termine éteigne le badge alors qu'un autre run a encore la main : on
+ * n'émet `active:true` qu'au passage 0→1 et `active:false` qu'au retour 1→0.
+ */
+const EVENT_BROWSER_AGENT = "browser-agent-active";
+let browserAgentRuns = 0;
+function setBrowserAgentActive(active: boolean): void {
+  const before = browserAgentRuns;
+  browserAgentRuns = Math.max(0, browserAgentRuns + (active ? 1 : -1));
+  const nowActive = browserAgentRuns > 0;
+  const wasActive = before > 0;
+  if (nowActive === wasActive) return;
+  void import("@tauri-apps/api/event")
+    .then(({ emit }) => emit(EVENT_BROWSER_AGENT, { active: nowActive }))
+    .catch(() => {});
+}
+
 /** Statut renvoyé par `cline_sidecar_start`/`cline_sidecar_status`. */
 export interface ClineSidecarStatus {
   running: boolean;
@@ -102,7 +121,7 @@ export interface ClineStartParams {
    * Outils CUSTOM déclaratifs à injecter (ex. `todo_write`/`todo_read`). On ne
    * transporte qu'un `kind` fermé — jamais de code exécutable (voir le sidecar).
    */
-  extraTools?: ClineExtraToolSpec[];
+  extraTools?: ClineExtraToolSpecAny[];
 }
 
 /** Spécification déclarative d'un outil custom attendu par le sidecar. */
@@ -112,11 +131,64 @@ export interface ClineExtraToolSpec {
   sessionId: string;
 }
 
+/**
+ * Spécification d'un outil custom. Aujourd'hui : la todo list (`todo`) et le
+ * navigateur piloté (`browser`). On ne transporte qu'un `kind` fermé — jamais de
+ * code exécutable (voir le sidecar).
+ */
+export type ClineExtraToolSpecAny =
+  | ClineExtraToolSpec
+  | { kind: "browser"; sessionId: string; panelId: string };
+
 /** Effet d'un outil custom, relayé par le sidecar (`kind:"tool_event"`). */
 export interface ClineToolEvent {
   tool: string;
   sessionId: string;
   todos?: { id: string; content: string; status: "pending" | "in_progress" | "done" | "cancelled" }[];
+}
+
+/**
+ * Extension NON fatale remontée par le sidecar (`extensionIssues`). Une skill
+ * illisible ou un serveur MCP en échec n'empêche PAS le run : on les affiche
+ * pour que l'utilisateur sache que sa surface d'extension est incomplète.
+ */
+export interface ClineExtensionIssue {
+  scope: "skills" | "plugins" | "mcp" | "hooks";
+  message: string;
+}
+
+/** Skill réellement découverte par le sidecar (nom + description). */
+export interface ClineSkillInfo {
+  name: string;
+  description: string;
+}
+
+/**
+ * Commande runtime exposée par le service d'instructions Cline (`/skill`,
+ * `/workflow`). Miroir de `AvailableRuntimeCommand` du SDK : on ne transporte
+ * que des champs sérialisables et sûrs — le front les propose dans la palette
+ * d'input. `instructions` (le corps de la skill) n'est JAMAIS transporté : le
+ * modèle le charge via l'outil `skills`, pas via l'UI.
+ */
+export interface ClineRuntimeCommand {
+  /** Identifiant interne du SDK. */
+  id: string;
+  /** Nom de la commande sans le `/` initial (ex. `hello`). */
+  name: string;
+  /** Description courte, si le SDK en fournit une. */
+  description?: string;
+  /** Nature de l'instruction : `skill` ou `workflow`. */
+  kind: "skill" | "workflow";
+}
+
+/** Surface d'extension résolue au démarrage d'une session (par le sidecar). */
+export interface ClineSessionExtensions {
+  /** Skills réellement découvertes et opérationnelles. */
+  skills: ClineSkillInfo[];
+  /** Slash-commands runtime (`/skill`, `/workflow`) proposables dans l'input. */
+  commands: ClineRuntimeCommand[];
+  /** Problèmes NON fatals (skills illisibles, plugins/MCP en échec). */
+  issues: ClineExtensionIssue[];
 }
 
 /** Handle d'un run actif : permet d'envoyer les messages suivants et d'annuler. */
@@ -127,6 +199,12 @@ export interface ClineRunHandle {
   send(prompt: string, mode?: string): Promise<void>;
   /** Annule le tour en cours (best-effort : l'erreur est journalisée, jamais jetée). */
   abort(): Promise<void>;
+  /**
+   * Extensions RÉELLEMENT résolues au `start` (skills/commands/plugins/MCP).
+   * Présent seulement sur une session NEUVE (un `start`) : sur une reprise, les
+   * extensions existent déjà côté SDK et le sidecar ne les re-scanne pas.
+   */
+  extensions?: ClineSessionExtensions;
   /** Détache l'écouteur d'événements (obligatoire en fin de run). */
   dispose(): void;
 }
@@ -205,6 +283,7 @@ export async function startClineRun(
   let maxGapMs = 0;          // plus grand silence entre deux lignes consécutives
   let firstLineAt = 0;       // horodatage de la 1re ligne reçue du sidecar
   let firstEventAt = 0;      // horodatage du 1er événement d'UI émis
+  let browserTouched = false; // ce run a-t-il déjà sollicité la prévisualisation ?
   log.info("agent/clineClient", `start → model=${params.modelId} provider=${params.providerId} teams=${params.enableTeams === true}`);
 
   // L'écouteur est posé AVANT l'envoi de `start` : aucun événement du premier
@@ -228,6 +307,12 @@ export async function startClineRun(
       // La latence « bloquante » = temps écoulé depuis le start jusqu'à la
       // demande ; un écart anormal trahit un goulot côté outil/politique.
       log.debug("agent/clineClient", `← contrôle #${controlCount} kind=${control.kind} @+${waited}ms`);
+      // Un `tool_invoke` = l'agent pilote activement la prévisualisation : on
+      // allume le badge « Agent » (une seule fois par run).
+      if (control.kind === "tool_invoke" && !browserTouched) {
+        browserTouched = true;
+        setBrowserAgentActive(true);
+      }
       void handleControlLine(control, handlers, params.cwd);
       return;
     }
@@ -270,6 +355,11 @@ export async function startClineRun(
     if (unlisten) {
       unlisten();
       unlisten = null;
+    }
+    // Badge « Agent » : si ce run pilotait la prévisualisation, on rend la main.
+    if (browserTouched) {
+      browserTouched = false;
+      setBrowserAgentActive(false);
     }
     // Bilan de latence du run : émis à la fermeture, il résume ce qui s'est
     // passé sur le canal sans exiger de suivre chaque ligne en direct.
@@ -317,6 +407,7 @@ export async function startClineRun(
   // (qui le repersiste), donc rien à remapper ici.
   let initialMessages: unknown[] | undefined;
   let sessionId: string;
+  let extensions: ClineSessionExtensions | undefined;
   if (params.resumeSessionId) {
     try {
       const res = await invoke<{ messages?: unknown[] }>("cline_sidecar_send", {
@@ -338,7 +429,12 @@ export async function startClineRun(
 
   {
     const tHandshake = performance.now();
-    const result = await invoke<{ sessionId: string }>("cline_sidecar_send", {
+    const result = await invoke<{
+      sessionId: string;
+      skills?: ClineSkillInfo[];
+      commands?: ClineRuntimeCommand[];
+      extensionIssues?: ClineExtensionIssue[];
+    }>("cline_sidecar_send", {
       command: {
         type: "start",
         cwd: params.cwd,
@@ -361,6 +457,21 @@ export async function startClineRun(
       return null;
     }
     sessionId = newId;
+    // Extensions résolues côté sidecar (skills, slash-commands, diagnostics).
+    // On les NORMALISE défensivement : une réponse partielle/ancienne ne doit
+    // jamais faire tomber l'UI (tableaux vides = surface absente, pas une erreur).
+    const resolved = normalizeExtensions(result);
+    extensions = resolved;
+    if (resolved.skills.length > 0 || resolved.commands.length > 0) {
+      log.info(
+        "agent/clineClient",
+        `extensions: ${resolved.skills.length} skill(s), ${resolved.commands.length} commande(s)` +
+        (resolved.issues.length > 0 ? `, ${resolved.issues.length} problème(s)` : ""),
+      );
+    }
+    for (const issue of resolved.issues) {
+      log.warn("agent/clineClient", `extension [${issue.scope}] ${issue.message}`);
+    }
     // Latence d'établissement de session : c'est le coût fixe payé AVANT tout
     // appel modèle. Un chiffre élevé ici n'est PAS imputable au modèle.
     log.info(
@@ -372,6 +483,7 @@ export async function startClineRun(
 
   return {
     sessionId,
+    ...(extensions ? { extensions } : {}),
     async send(prompt: string, mode?: string): Promise<void> {
       const tSend = performance.now();
       await invoke("cline_sidecar_send", {
@@ -413,11 +525,78 @@ async function handleControlLine(
   try {
     if (control.kind === "tool_approval") {
       await respondToApproval(control.request, handlers, workspaceRoot);
+    } else if (control.kind === "tool_invoke") {
+      await respondToInvoke(control.request);
     } else {
       await handleWriteRequest(control.request.paths, control.request.requestId, handlers, workspaceRoot);
     }
   } catch (error) {
     log.error("agent/clineClient", `échec du traitement d'une demande bloquante: ${describeError(error)}`);
+  }
+}
+
+/**
+ * Allowlist des commandes Tauri que le sidecar peut demander via `tool_invoke`.
+ *
+ * POURQUOI UNE ALLOWLIST CÔTÉ FRONT (et pas seulement côté sidecar)
+ * ---------------------------------------------------------------
+ * Le sidecar restreint DÉJÀ ses `browser_*` à une table fermée, mais le front
+ * est le dernier maillon avant `invoke` : il doit donc revérifier. Une ligne
+ * `tool_invoke` forgée (bug de sérialisation, sidecar compromis) ne doit pas
+ * pouvoir déclencher une commande arbitraire (ex. `fs::delete_path`). Tout nom
+ * hors liste est refusé et renvoyé au sidecar comme erreur d'outil.
+ */
+const INVOKE_ALLOWLIST = new Set<string>([
+  "browser_navigate",
+  "browser_reload",
+  "browser_status",
+  "browser_read_text",
+  "browser_read_dom",
+  "browser_query",
+  "browser_click",
+  "browser_type",
+  "browser_press_key",
+  "browser_screenshot",
+]);
+
+/**
+ * Exécute une commande navigateur demandée par un outil custom et renvoie son
+ * résultat au sidecar. TOUTE issue (succès, refus, exception) produit une
+ * réponse `tool_invoke_response` : sans elle, l'outil resterait bloqué jusqu'à
+ * son timeout et le modèle verrait un échec opaque.
+ *
+ * Le résultat de `BrowserResult` est aplati en texte (le modèle lit du texte) ;
+ * un `ok:false` devient une ERREUR d'outil, pas une réussite silencieuse.
+ */
+async function respondToInvoke(request: { requestId: string; command: string; args: Record<string, unknown> }): Promise<void> {
+  const reply = (payload: { output?: string; error?: string }) =>
+    invoke("cline_sidecar_send", {
+      command: { type: "tool_invoke_response", requestId: request.requestId, ...payload },
+    });
+
+  if (!INVOKE_ALLOWLIST.has(request.command)) {
+    log.warn("agent/clineClient", `tool_invoke refusé (hors allowlist): ${request.command}`);
+    await reply({ error: `command not allowed: ${request.command}` });
+    return;
+  }
+  try {
+    const result = await invoke<{ ok?: boolean; value?: string; url?: string | null; truncated?: boolean }>(
+      request.command,
+      request.args,
+    );
+    if (result && result.ok === false) {
+      await reply({ error: result.value || "browser command failed" });
+      return;
+    }
+    // On concatène l'URL courante (contexte utile) et le signal de troncature,
+    // pour que le modèle sache que la sortie n'est pas exhaustive.
+    const parts: string[] = [];
+    if (result?.value) parts.push(result.value);
+    if (result?.url) parts.push(`(url: ${result.url})`);
+    if (result?.truncated) parts.push("(output truncated)");
+    await reply({ output: parts.join("\n") });
+  } catch (error) {
+    await reply({ error: describeError(error) });
   }
 }
 
@@ -485,6 +664,65 @@ function describeError(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Normalise la surface d'extension renvoyée par `start` en `ClineSessionExtensions`.
+ *
+ * POURQUOI VALIDER ICI : la réponse vient du sidecar (processus distinct), donc
+ * d'une frontière de confiance. On ne veut jamais qu'un champ malformé casse le
+ * rendu de l'UI ni qu'un `instructions` (corps de skill, potentiellement
+ * volumineux/sensible) se retrouve propagé. On filtre donc CHAMP PAR CHAMP vers
+ * la forme stricte attendue, en ignorant tout le reste.
+ */
+function normalizeExtensions(result: unknown): ClineSessionExtensions {
+  const o = (result ?? {}) as Record<string, unknown>;
+
+  const skills: ClineSkillInfo[] = Array.isArray(o.skills)
+    ? o.skills
+        .filter(
+          (s): s is { name: string; description?: unknown } =>
+            !!s && typeof s === "object" && typeof (s as { name?: unknown }).name === "string",
+        )
+        .map((s) => ({
+          name: s.name,
+          description: typeof s.description === "string" ? s.description : "",
+        }))
+    : [];
+
+  const commands: ClineRuntimeCommand[] = Array.isArray(o.commands)
+    ? o.commands
+        .filter(
+          (c): c is { id: string; name: string; kind: "skill" | "workflow"; description?: unknown } =>
+            !!c &&
+            typeof c === "object" &&
+            typeof (c as { name?: unknown }).name === "string" &&
+            ((c as { kind?: unknown }).kind === "skill" || (c as { kind?: unknown }).kind === "workflow"),
+        )
+        .map((c) => ({
+          id: typeof c.id === "string" ? c.id : c.name,
+          name: c.name,
+          kind: c.kind,
+          ...(typeof c.description === "string" ? { description: c.description } : {}),
+        }))
+    : [];
+
+  const issues: ClineExtensionIssue[] = Array.isArray(o.extensionIssues)
+    ? o.extensionIssues
+        .filter(
+          (i): i is { scope: ClineExtensionIssue["scope"]; message: string } =>
+            !!i &&
+            typeof i === "object" &&
+            typeof (i as { message?: unknown }).message === "string" &&
+            ((i as { scope?: unknown }).scope === "skills" ||
+              (i as { scope?: unknown }).scope === "plugins" ||
+              (i as { scope?: unknown }).scope === "mcp" ||
+              (i as { scope?: unknown }).scope === "hooks"),
+        )
+        .map((i) => ({ scope: i.scope, message: i.message }))
+    : [];
+
+  return { skills, commands, issues };
 }
 
 /**

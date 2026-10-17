@@ -237,14 +237,14 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-/// Dossier de données du sidecar, **confiné** dans `<app_data>/cline`. On ne
+/// Dossier de données du sidecar, **confiné** dans `<app_data>/mira`. On ne
 /// laisse jamais le sidecar écrire dans le home brut ni ailleurs.
 fn resolve_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|e| sidecar_error("SIDECAR_NO_APP_DATA", &e.to_string()))?;
-    let dir = base.join("cline");
+    let dir = base.join("mira");
     std::fs::create_dir_all(&dir).map_err(|e| sidecar_error("SIDECAR_DATA_DIR", &e.to_string()))?;
     Ok(dir)
 }

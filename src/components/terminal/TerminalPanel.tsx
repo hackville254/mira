@@ -4,6 +4,8 @@ import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
 import { terminalShellName } from "../../lib/terminal";
 import { formatShortcut } from "../../lib/platform";
 import TerminalInstance from "./Terminal";
+import AgentTerminalView from "./AgentTerminalView";
+import { useAgentTerminal } from "../../lib/agent/agentTerminalStore";
 import ProblemsPanel from "../problems/ProblemsPanel";
 import OutputPanel from "../output/OutputPanel";
 
@@ -11,6 +13,8 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 600;
 const LS_TABS = "origin-terminal-tabs";
 const LS_ACTIVE = "origin-terminal-active-index";
+/** Onglet réservé au terminal de l'agent (clé négative : jamais un tab utilisateur). */
+const AGENT_TAB_ID = -1;
 
 interface TermTab {
   id: number;
@@ -46,6 +50,13 @@ interface Props {
   rootPath?: string | null;
   /** Ouverture d'un fichier à une ligne (clic sur un diagnostic). */
   onOpenFile?: (path: string, line: number, col: number) => void;
+  /**
+   * Session d'agent dont on veut suivre le terminal (mode IA/IDE). Quand elle est
+   * fournie, un onglet « Agent » en LECTURE SEULE apparaît dans la liste : il
+   * affiche, en direct, les commandes shell que l'agent exécute. Le client ne
+   * peut rien y taper — c'est un miroir, pas un shell.
+   */
+  agentSessionId?: string | null;
 }
 
 type BottomView = 'terminal' | 'problems' | 'output';
@@ -146,6 +157,23 @@ function PanelBtn({
   );
 }
 
+/** Pastille « live » du terminal agent : bleue pulsée tant que la commande tourne. */
+function AgentLiveBadge({ sessionId }: { sessionId: string }) {
+  const { running } = useAgentTerminal(sessionId);
+  if (!running) return null;
+  return (
+    <span
+      title="Commande en cours"
+      style={{
+        width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+        backgroundColor: "var(--origin-accent-blue)",
+        animation: "pulse 1.2s ease-in-out infinite",
+        display: "inline-block",
+      }}
+    />
+  );
+}
+
 function ShellDot({ info }: { info: TabShellInfo | undefined }) {
   if (!info) return null;
   if (info.state === 'running') {
@@ -172,7 +200,7 @@ function ShellDot({ info }: { info: TabShellInfo | undefined }) {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile }, ref) {
+const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile, agentSessionId = null }, ref) {
   const [view, setView] = useState<BottomView>('terminal');
   const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd, "bash"));
   const [activeId, setActiveId] = useState<number>(() => {
@@ -290,6 +318,14 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     setTabs(fresh);
     setActiveId(newId);
   }, [cwd]);
+
+  // ── Onglet effectivement affiché ─────────────────────────────────────────
+  // Si l'onglet « Agent » était sélectionné mais que le terminal de l'agent
+  // n'existe plus (fin de run), on retombe sur le premier onglet utilisateur —
+  // sans setState dans un effet (simple dérivation au rendu).
+  const effectiveActiveId = (!agentSessionId && activeId === AGENT_TAB_ID)
+    ? (tabs[0]?.id ?? activeId)
+    : activeId;
 
   // ── Tab management ───────────────────────────────────────────────────────
   function addTab() {
@@ -434,14 +470,28 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         {/* Terminal instances — all mounted, only active is visible */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
 
+          {/* Terminal de l'agent (lecture seule) — monté uniquement pendant un run */}
+          {agentSessionId && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                opacity: effectiveActiveId === AGENT_TAB_ID ? 1 : 0,
+                pointerEvents: effectiveActiveId === AGENT_TAB_ID ? "auto" : "none",
+              }}
+            >
+              <AgentTerminalView sessionId={agentSessionId} active={effectiveActiveId === AGENT_TAB_ID} />
+            </div>
+          )}
+
           {tabs.map((tab) => (
             <div
               key={tab.id}
               style={{
                 position: "absolute",
                 inset: 0,
-                opacity: tab.id === activeId ? 1 : 0,
-                pointerEvents: tab.id === activeId ? "auto" : "none",
+                opacity: tab.id === effectiveActiveId ? 1 : 0,
+                pointerEvents: tab.id === effectiveActiveId ? "auto" : "none",
               }}
             >
               <TerminalInstance
@@ -469,8 +519,40 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
             gap: 1,
           }}
         >
+          {agentSessionId && (
+            <div
+              onClick={() => setActiveId(AGENT_TAB_ID)}
+              title="Terminal de l'agent (lecture seule)"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                height: 28,
+                paddingLeft: 12,
+                paddingRight: 8,
+                cursor: "pointer",
+                fontSize: 12,
+                fontFamily: "var(--font-mono)",
+                color: effectiveActiveId === AGENT_TAB_ID ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                backgroundColor: effectiveActiveId === AGENT_TAB_ID
+                  ? "var(--origin-bg-active)"
+                  : hoveredTab === AGENT_TAB_ID
+                    ? "var(--origin-bg-hover)"
+                    : "transparent",
+              }}
+              onMouseEnter={() => setHoveredTab(AGENT_TAB_ID)}
+              onMouseLeave={() => setHoveredTab((h) => (h === AGENT_TAB_ID ? null : h))}
+            >
+              <img src="/logo-code.svg" width={13} height={13} alt="" style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Agent
+              </span>
+              <AgentLiveBadge sessionId={agentSessionId} />
+            </div>
+          )}
+
           {tabs.map((tab) => {
-            const isActive = tab.id === activeId;
+            const isActive = tab.id === effectiveActiveId;
             return (
               <div
                 key={tab.id}

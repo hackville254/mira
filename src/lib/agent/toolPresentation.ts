@@ -47,11 +47,27 @@ const TODO_STATUSES: TodoStatus[] = ["pending", "in_progress", "done", "cancelle
 
 /** Outils exposés en mode Agent (act), dans l'ordre de présentation. */
 export const FULL_TOOL_NAMES =
-  "read_files, search_codebase, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read";
+  "read_files, search_codebase, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload";
 
 /** Outils exposés en mode Plan / ASK (read-only) : aucune écriture possible. */
 export const READ_ONLY_TOOL_NAMES =
-  "read_files, search_codebase, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read";
+  "read_files, search_codebase, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_status/read_text/read_dom/query/screenshot";
+
+/**
+ * Bloc du contrat décrivant le NAVIGATEUR PILOTÉ (parité Trae SOLO). Mutualisé
+ * entre les deux modes : la navigation est une lecture du monde extérieur, mais
+ * certaines actions (clic, saisie) modifient la page — elles restent donc
+ * cantonnées au mode Agent.
+ */
+const BROWSER_CONTRACT_ACT = [
+  "- Embedded preview (parity with Trae SOLO). `browser_navigate`: open an absolute http(s) URL (dev server, e.g. http://localhost:5173); external hosts may need user confirmation.",
+  "- `browser_query` lists interactive elements with a stable `ref` (`e0`, `e1`…): call it BEFORE `browser_click`/`browser_type` and target by `ref`, not CSS. `browser_press_key` sends `Enter`/`Tab`. Inspect with `browser_read_text`/`read_dom`/`screenshot`/`status`/`reload`.",
+].join("\n");
+
+/** Variante lecture seule du contrat navigateur (mode Plan / ASK). */
+const BROWSER_CONTRACT_READ_ONLY = [
+  "- Inspect the embedded preview only: `browser_status`, `browser_read_text`, `browser_read_dom`, `browser_query` (elements with `ref`), `browser_screenshot`. No `browser_navigate`/`click`/`type` here.",
+].join("\n");
 
 /**
  * Contrat d'outils du mode Agent. Chaque puce documente UN outil : son rôle et
@@ -66,7 +82,7 @@ export const TOOL_CONTRACT_FULL = [
   "  - CREATE a file: `path` + `new_text`, and NO `old_text`.",
   "  - REPLACE in an existing file: `path` + `old_text` + `new_text` (omitting `old_text` on an existing file fails).",
   "  - APPEND at end: `path` + `new_text` + `insert_line = line_count + 1`.",
-  "  - `insert_line` is a one-based boundary (1 to `line_count + 1`); `new_text` is inserted BEFORE that line.",
+  "  - `insert_line` is one-based (1 to `line_count + 1`); `new_text` is inserted BEFORE that line.",
   "  - HARD LIMIT: `old_text` and `new_text` are each capped at 6000 characters. Never send a whole large file at once: create it with a first chunk, then append the rest via `insert_line = line_count + 1`.",
   "  - `old_text` must be copied VERBATIM (indentation included) and match EXACTLY ONE location (3 to 5 lines of unique context): 0 matches fail with \"text not found\", more than 1 with \"multiple occurrences\".",
   "- `run_commands`: run shell commands in the workspace (builds, tests, git, package managers).",
@@ -74,6 +90,7 @@ export const TOOL_CONTRACT_FULL = [
   "- `skills`: invoke a configured skill by name when it matches the task.",
   `- \`todo_write\`: publish the live task checklist. Call it with the FULL list; each item has an \`id\`, a \`content\` (one line), and a \`status\` (${TODO_STATUSES.join(" | ")}).`,
   "- `todo_read`: re-read the current checklist (rarely needed: the list is shown to the user).",
+  BROWSER_CONTRACT_ACT,
 ].join("\n");
 
 /** Contrat d'outils du mode Plan / ASK : lecture seule, aucune écriture. */
@@ -86,6 +103,7 @@ export const TOOL_CONTRACT_READ_ONLY = [
   "- `skills`: invoke a configured skill by name when it matches the task.",
   `- \`todo_write\`: publish the live task checklist (items have \`id\`, \`content\`, \`status\` = ${TODO_STATUSES.join(" | ")}).`,
   "- `todo_read`: re-read the current checklist.",
+  BROWSER_CONTRACT_READ_ONLY,
   "- There is NO file-editing tool in this mode: do not attempt to write, create, or modify files. Produce an answer or a plan instead.",
 ].join("\n");
 

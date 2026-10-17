@@ -359,6 +359,116 @@ pub fn git_fetch(path: String) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+// ── Clone ─────────────────────────────────────────────────────────────────────
+
+/// Refuse les URL de dépôt qui pourraient être interprétées comme des options
+/// git (commencent par `-`) ou qui exploitent les transports `ext::` / `file::`
+/// (exécution de commande locale via le remote helper). N'autorise que des
+/// transports réseau explicites : https, http, ssh, git, git+ssh, ou les
+/// notations raccourcies `user@host:path` (scp-like).
+fn validate_clone_url(url: &str) -> Result<(), String> {
+    reject_unsafe_arg(url, "repository URL")?;
+    if url.len() > 2048 {
+        return Err("repository URL too long".to_string());
+    }
+    // Les espaces autorisent le découpage en arguments supplémentaires côté git.
+    if url.contains(' ') || url.contains('\t') {
+        return Err("repository URL cannot contain whitespace".to_string());
+    }
+    // Transports explicites : on impose une allowlist stricte.
+    let explicit_ok = ["https://", "http://", "ssh://", "git://", "git+ssh://"]
+        .iter()
+        .any(|p| url.starts_with(p));
+    // Notation scp-like `user@host:path` (pas de schéma). On exige un `@` et
+    // un `:` séparateur, sans `://` pour ne pas confondre avec un schéma.
+    let scp_like = !url.contains("://")
+        && url.contains('@')
+        && url.contains(':')
+        && !url.contains('\\');
+    if !explicit_ok && !scp_like {
+        return Err("unsupported repository URL (use https, ssh or git)".to_string());
+    }
+    // On refuse explicitement les schémas à exécution locale.
+    let lowered = url.to_ascii_lowercase();
+    for bad in ["ext::", "file://", "fd::", "transport::"] {
+        if lowered.contains(bad) {
+            return Err(format!("unsupported repository URL scheme: {bad}"));
+        }
+    }
+    Ok(())
+}
+
+/// Valide le dossier de destination : chemin absolu, sans composant `..`, et
+/// qui n'écrase pas un dossier existant non vide (protection anti-destruction).
+fn validate_clone_dest(dest: &str) -> Result<std::path::PathBuf, String> {
+    reject_unsafe_arg(dest, "destination")?;
+    let p = std::path::PathBuf::from(dest);
+    if !p.is_absolute() {
+        return Err("destination must be an absolute path".to_string());
+    }
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("destination cannot contain '..'".to_string());
+    }
+    // Refuse d'écraser : si le dossier existe et contient des entrées, on rejette.
+    if let Ok(mut rd) = std::fs::read_dir(&p) {
+        if rd.next().is_some() {
+            return Err("destination folder already exists and is not empty".to_string());
+        }
+    }
+    Ok(p)
+}
+
+/// Clone un dépôt distant dans `dest`. Le clone se fait dans un dossier
+/// temporaire voisin (suffixe aléatoire) puis est déplacé vers `dest`, afin de
+/// ne jamais laisser un clone partiel dans le dossier cible si git échoue.
+#[tauri::command]
+pub fn git_clone(url: String, dest: String) -> Result<String, String> {
+    validate_clone_url(&url)?;
+    let dest_path = validate_clone_dest(&dest)?;
+
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    // Dossier de travail temporaire dans le même parent (déplacement atomique).
+    let tmp_name = format!(
+        ".mira-clone-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let tmp = dest_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(&tmp_name);
+
+    let out = git_cmd()
+        .args(["clone", "--", &url])
+        .arg(&tmp)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+
+    // Déplace le clone vers la destination finale. `rename` échoue si `dest`
+    // existe déjà (dossier vide autorisé) : on tente alors de retirer un dossier
+    // vide puis de rejouer le déplacement.
+    if let Err(_e) = std::fs::rename(&tmp, &dest_path) {
+        if dest_path.exists() {
+            let _ = std::fs::remove_dir(&dest_path); // ne réussit que si vide
+        }
+        if let Err(e) = std::fs::rename(&tmp, &dest_path) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("failed to move clone into place: {e}"));
+        }
+    }
+    Ok(dest_path.to_string_lossy().into_owned())
+}
+
 // ── Branches ──────────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]

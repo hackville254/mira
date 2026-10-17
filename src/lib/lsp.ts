@@ -90,7 +90,7 @@ function buildInitializeParams(rootPath: string) {
   const rootUri = pathToUri(rootPath);
   return {
     processId: null,
-    clientInfo: { name: 'Origin IDE', version: '0.1.0' },
+    clientInfo: { name: 'Mira', version: '0.1.0' },
     rootUri,
     rootPath,
     capabilities: {

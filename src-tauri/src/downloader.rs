@@ -59,7 +59,7 @@ pub const ERR_UNSAFE_ARCHIVE_PATH: &str = "UNSAFE_ARCHIVE_PATH";
 fn client() -> Result<reqwest::Client, DownloadError> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
-        .user_agent("Origin-IDE/0.1")
+        .user_agent("Mira/0.1")
         .build()
         .map_err(|e| DownloadError::new(ERR_DOWNLOAD_FAILED, format!("http client: {e}")))
 }

@@ -31,13 +31,13 @@ function resolveDefaultTheme(): OriginTheme {
   }
   // 2. Fall back to OS preference
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const fallbackName = prefersDark ? "Origin Dark" : "Origin Light";
+  const fallbackName = prefersDark ? "Mira Dark" : "Mira Light";
   return builtinThemes.find((t) => t.name === fallbackName) ?? builtinThemes[0];
 }
 
 /** Built-in theme used to fill tokens a VS Code theme does not define. */
 function fallbackFor(type: "dark" | "light"): OriginTheme {
-  const name = type === "light" ? "Origin Light" : "Origin Dark";
+  const name = type === "light" ? "Mira Light" : "Mira Dark";
   return builtinThemes.find((t) => t.name === name) ?? builtinThemes[0];
 }
 

@@ -29,6 +29,7 @@
  *     { kind: "ready", pid, dataDir, node }          // canal prêt (1 fois)
  *     { kind: "event", event: CoreSessionEvent }     // flux de session
  *     { kind: "tool_event", tool, sessionId, ... }   // effet d'un outil custom
+ *     { kind: "tool_invoke", requestId, command, args }  // appel commande Tauri (bloquant)
  *     { id, ok: true,  result }                      // réponse de commande
  *     { id, ok: false, error: { code, message } }    // échec de commande
  *
@@ -62,9 +63,13 @@ import { mkdirSync } from "node:fs";
 
 import { ClineCore } from "@cline/core";
 import type { CoreSessionEvent } from "@cline/core";
+import type { SkillConfig } from "@cline/core";
 import type { ToolApprovalRequest, ToolApprovalResult } from "@cline/shared";
 import { buildToolExecutors, type ApprovalTransport } from "./approval";
 import { buildTodoTools } from "./todoTool";
+import { buildBrowserTools, type BrowserInvokeRequest } from "./browserTool";
+import { resolveSessionExtensions, type SessionExtensions } from "./instructions";
+import { neutralizeForClient } from "./brand";
 
 // ── Types du protocole (miroir de `src-tauri/src/sidecar.rs`) ────────────────
 
@@ -128,9 +133,17 @@ interface StartCommand {
 
 /** Spécification déclarative d'un outil custom (pas de code exécutable). */
 interface ExtraToolSpec {
-  kind: "todo";
+  kind: "todo" | "browser";
   /** Id de session UI, pour attribuer les todos côté front. */
   sessionId: string;
+  /**
+   * Nom du panel navigateur pilotable (ex. `origin-web-preview`).
+   *
+   * Requis pour `kind:"browser"` : le sidecar ne peut pas deviner QUEL webview
+   * l'UI expose à l'agent (plusieurs panels peuvent coexister). Le front, qui
+   * connaît le label réel, le déclare ici.
+   */
+  panelId?: string;
 }
 
 interface SendCommand {
@@ -208,6 +221,20 @@ interface WriteResponseCommand {
   requestId: string;
 }
 
+/**
+ * Réponse du front à un `tool_invoke` (outil navigateur). Porte le RÉSULTAT de
+ * la commande Tauri — une chaîne (texte/DOM/statut/data-URL), jamais un objet
+ * vivant, pour rester sérialisable sur le canal NDJSON.
+ */
+interface InvokeResponseCommand {
+  type: "tool_invoke_response";
+  requestId: string;
+  /** Résultat de la commande (déjà sérialisé en texte par Rust). */
+  output?: string;
+  /** Message d'erreur, si la commande a échoué. */
+  error?: string;
+}
+
 type IncomingCommand = { id: string | number } & (
   | StartCommand
   | SendCommand
@@ -219,6 +246,7 @@ type IncomingCommand = { id: string | number } & (
   | SimpleCommand
   | ApprovalResponseCommand
   | WriteResponseCommand
+  | InvokeResponseCommand
 );
 
 // ── Écriture NDJSON bornée ───────────────────────────────────────────────────
@@ -242,18 +270,20 @@ function emit(payload: unknown): void {
 
 /** Normalise une erreur inconnue en `{ code, message }` toujours sérialisable. */
 function serializeError(error: unknown): { code: string; message: string } {
+  // TOUT message d'erreur qui remonte au front passe ici : c'est le point unique
+  // où l'on neutralise la marque interne (« cline ») — règle produit.
   if (error instanceof Error) {
     const code =
       typeof (error as unknown as { code?: unknown }).code === "string"
         ? (error as unknown as { code: string }).code
         : error.name || "SIDECAR_ERROR";
-    return { code, message: error.message };
+    return { code, message: neutralizeForClient(error.message) };
   }
   if (typeof error === "string") {
-    return { code: "SIDECAR_ERROR", message: error };
+    return { code: "SIDECAR_ERROR", message: neutralizeForClient(error) };
   }
   try {
-    return { code: "SIDECAR_ERROR", message: JSON.stringify(error) };
+    return { code: "SIDECAR_ERROR", message: neutralizeForClient(JSON.stringify(error)) };
   } catch {
     return { code: "SIDECAR_ERROR", message: "erreur non sérialisable" };
   }
@@ -284,6 +314,16 @@ function resolveDataDir(): string {
 let core: ClineCore | null = null;
 let unsubscribe: (() => void) | null = null;
 
+/**
+ * Extensions Cline résolues POUR la session courante (skills/rules/workflows,
+ * chemins de plugins, outils MCP). Résolues au `start` (elles dépendent du
+ * `cwd` du workspace) et conservées ici jusqu'au `dispose` : le gestionnaire MCP
+ * doit être fermé explicitement, sinon les serveurs stdio restent attachés.
+ *
+ * `null` tant qu'aucune session n'a démarré.
+ */
+let sessionExtensions: SessionExtensions | null = null;
+
 // ── Demandes bloquantes (approbations d'outils, écritures) ────────────────────
 //
 // Le moteur Cline, au moment d'exécuter un outil sensible, appelle une fonction
@@ -299,6 +339,18 @@ type PendingResolver<T> = (value: T) => void;
 
 const pendingApprovals = new Map<string, PendingResolver<ToolApprovalResult>>();
 const pendingWrites = new Map<string, PendingResolver<void>>();
+/**
+ * Appels de commandes Tauri demandés par un outil custom (navigateur piloté).
+ *
+ * POURQUOI UNE TABLE DÉDIÉE
+ * -------------------------
+ * Les outils `browser_*` s'exécutent ICI (dans le moteur Node) mais leur effet
+ * réel — piloter une webview — n'existe que côté Rust. Le sidecar émet donc un
+ * `tool_invoke` vers le front, qui appelle la commande Tauri et renvoie le
+ * résultat sous forme de chaîne. Un résolveur par `requestId` évite que deux
+ * appels concurrents ne mélangent leurs réponses.
+ */
+const pendingInvokes = new Map<string, PendingResolver<string>>();
 
 let requestSeq = 0;
 /** Identifiant unique de demande, préfixé pour rester lisible dans les logs. */
@@ -356,6 +408,49 @@ const transport: ApprovalTransport = {
   },
 };
 
+/**
+ * Pont d'INVOKE pour les outils navigateur (`browserTool.ts`).
+ *
+ * Émet `{ kind: "tool_invoke", requestId, command, args }` : le front appelle la
+ * commande Tauri correspondante (le côté Rust qui, LUI SEUL, touche à la
+ * webview) puis renvoie le résultat par `tool_invoke_response`.
+ *
+ * Le `command` est contraint à `BROWSER_COMMANDS` (table fermée, cf.
+ * `browserTool.ts`) : le sidecar ne peut pas faire exécuter une commande Tauri
+ * arbitraire. `panelId` est injecté ICI (le modèle ne le connaît pas et ne doit
+ * pas pouvoir le choisir).
+ *
+ * En cas de non-réponse (front fermé), on échoue EXPLICITEMENT : un outil
+ * navigateur qui « réussirait » sans rien faire tromperait le modèle.
+ */
+const INVOKE_TIMEOUT_MS = 30_000;
+
+function browserInvoke(panelId: string): (req: BrowserInvokeRequest) => Promise<string> {
+  return (req) => {
+    const requestId = nextRequestId("invoke");
+    const promise = new Promise<string>((resolve) => {
+      pendingInvokes.set(requestId, resolve);
+    });
+    emit({
+      kind: "tool_invoke",
+      requestId,
+      command: req.command,
+      args: { ...req.args, panelId },
+    });
+    return withTimeout(promise, "__origin_invoke_timeout__").then((value) => {
+      if (value === "__origin_invoke_timeout__") {
+        // Le résolveur peut encore être en table : on le retire pour ne pas
+        // fuiter si une réponse tardive arrivait.
+        pendingInvokes.delete(requestId);
+        throw Object.assign(new Error("browser command timed out"), {
+          code: "BROWSER_TIMEOUT",
+        });
+      }
+      return value;
+    });
+  };
+}
+
 // ── Construction du moteur ───────────────────────────────────────────────────
 
 /**
@@ -387,6 +482,15 @@ function buildExtraTools(specs: ExtraToolSpec[] | undefined) {
       // `emit` ci-dessus. Le garder référencé évite un avertissement d'inutilité.
       void onEmit;
       tools.push(...todoTools);
+    } else if (spec.kind === "browser") {
+      // Navigateur piloté : chaque outil relaie sa commande Tauri via
+      // `browserInvoke` (émission `tool_invoke` → front → Rust). Sans `panelId`,
+      // on n'injecte RIEN : un outil navigateur sans cible est inutilisable, et
+      // en injecter un laisserait le modèle appeler un outil qui échoue toujours.
+      if (spec.panelId && spec.panelId.trim().length > 0) {
+        const { tools: browserTools } = buildBrowserTools(browserInvoke(spec.panelId));
+        tools.push(...browserTools);
+      }
     }
   }
   return tools;
@@ -447,6 +551,21 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
 
     case "start": {
       const engine = await ensureCore();
+      // Résolution des extensions AVANT le démarrage : skills/rules/workflows,
+      // chemins de plugins, outils MCP. Déduite du `cwd` de session (jamais du
+      // front) et NON fatale — une extension cassée ne bloque pas la session.
+      const extensions = await resolveSessionExtensions(cmd.cwd);
+      sessionExtensions?.mcpManager?.dispose().catch(() => {
+        /* un dispose en échec ne doit pas empêcher le nouveau démarrage */
+      });
+      sessionExtensions = extensions;
+      // Outils MCP : s'ajoutent aux outils custom déclaratifs du front. On les
+      // expose au modèle comme n'importe quel outil — donc soumis au joker non
+      // auto-approuvé de `TOOL_POLICIES` (chaque appel MCP passe par la
+      // politique d'approbation d'Origin).
+      const mcpTools = extensions.mcpTools;
+      // Outils custom déclaratifs du front (todo, navigateur), résolus UNE fois.
+      const customTools = buildExtraTools(cmd.extraTools);
       // IMPORTANT : on ne passe **jamais** `prompt` à `start()`.
       //
       // POURQUOI
@@ -462,7 +581,7 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
       // (aucun appel réseau provider). Le premier message part ensuite via
       // `send`, dont le tour est streamé en événements `core://event`.
       const started = await engine.start({
-        config: buildStartConfig(cmd),
+        config: buildStartConfig(cmd, extensions),
         // Identifie la surface qui démarre la session dans les métadonnées.
         source: "origin" as never,
         mode: (cmd.mode ?? "act") as never,
@@ -473,19 +592,27 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
         ...(cmd.initialMessages && cmd.initialMessages.length > 0
           ? { initialMessages: cmd.initialMessages }
           : {}),
-        // Outils CUSTOM de la session (ex. todo list type Trae). Résolus depuis
-        // les specs déclaratives du front ; leurs effets remontent par
-        // `emit({ kind: "tool_event", ... })`.
-        ...(cmd.extraTools && cmd.extraTools.length > 0
-          ? { localRuntime: { extraTools: buildExtraTools(cmd.extraTools) } }
-          : {}),
+        // Outils CUSTOM de la session (todo list type Trae, navigateur piloté),
+        // OUTILS MCP et EXTENSIONS (skills + hooks). Le `localRuntime` doit être
+        // fourni dès qu'UNE de ces briques existe : les skills ne dépendent pas
+        // des outils custom, et les hooks non plus.
+        localRuntime: {
+          extraTools: [...customTools, ...mcpTools],
+          // Le service d'instructions fournit l'outil `skills` + l'expansion des
+          // slash-commands `/skill`. Sans lui, les skills découvertes ne sont
+          // jamais visibles du modèle.
+          userInstructionService: extensions.userInstructionService,
+          // Hooks `.cline/hooks` (scripts d'événements). Absent = aucun hook
+          // configuré : on n'enregistre pas d'extension inerte.
+          ...(extensions.hooks ? { hooks: extensions.hooks } : {}),
+        },
       } as never);
       const sessionId = started.sessionId;
       // Le premier message, s'il existe, est envoyé **après** l'acquittement de
       // `start` : on répond d'abord à Rust, puis on lance le tour en tâche de
       // fond (les événements du tour arrivent par le canal `event`).
       if (cmd.prompt && cmd.prompt.trim().length > 0) {
-        const firstPrompt = cmd.prompt;
+        const firstPrompt = expandRuntimeSlashCommand(cmd.prompt);
         const firstMode = cmd.mode;
         void engine
           .send({
@@ -501,7 +628,36 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
         sessionId,
         manifestPath: started.manifestPath,
         messagesPath: started.messagesPath,
-        pluginIssues: started.pluginIssues ?? [],
+        // Skills RÉELLEMENT découvertes (nom + description), pour que l'UI
+        // liste des skills opérationnelles et non une surface décorative.
+        skills: extensions.userInstructionService
+          .listRecords<SkillConfig>("skill")
+          .map((record) => ({ name: record.item.name, description: record.item.description ?? "" })),
+        // Slash-commands disponibles (`/skill`, `/workflow`) : le front les
+        // propose dans la palette d'input, sans les coder en dur. On ne
+        // transporte PAS `instructions` (le corps de la skill) : le modèle le
+        // charge via l'outil `skills`, jamais via l'UI.
+        commands: extensions.userInstructionService.listRuntimeCommands().map((c) => ({
+          id: c.id,
+          name: c.name,
+          kind: c.kind,
+          description: c.description,
+        })),
+        // Problèmes d'extensions NON fatals (skills illisibles, MCP en échec,
+        // plugins invalides). On UNIFIE les diagnostics de plugins du SDK dans
+        // cette même liste : le front n'a ainsi qu'une seule forme à afficher.
+        // RÈGLE PRODUIT : on NEUTRALISE la marque interne dans TOUT message qui
+        // part vers le front (le client ne doit jamais voir « cline »).
+        extensionIssues: [
+          ...extensions.issues.map((issue) => ({
+            scope: issue.scope,
+            message: neutralizeForClient(issue.message),
+          })),
+          ...(started.pluginIssues ?? []).map((issue) => ({
+            scope: "plugins" as const,
+            message: neutralizeForClient(issue),
+          })),
+        ],
       };
     }
 
@@ -509,7 +665,7 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
       const engine = await ensureCore();
       await engine.send({
         sessionId: cmd.sessionId,
-        prompt: cmd.prompt,
+        prompt: expandRuntimeSlashCommand(cmd.prompt),
         mode: cmd.mode as never,
       });
       return { accepted: true };
@@ -570,7 +726,7 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
         ...(cmd.start
           ? {
               start: {
-                config: buildStartConfig(cmd.start),
+                config: buildStartConfig(cmd.start, sessionExtensions),
                 source: "origin" as never,
                 mode: (cmd.start.mode ?? "act") as never,
               },
@@ -621,6 +777,21 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
       if (resolve) {
         pendingWrites.delete(cmd.requestId);
         resolve();
+      }
+      return { accepted: true };
+    }
+
+    case "tool_invoke_response": {
+      // Résultat d'une commande navigateur : on débloque l'outil `browser_*` en
+      // attente. Une erreur est re-jetée pour que le modèle la voie (elle devient
+      // la sortie de l'outil) plutôt que d'être avalée silencieusement.
+      const resolve = pendingInvokes.get(cmd.requestId);
+      if (resolve) {
+        pendingInvokes.delete(cmd.requestId);
+        if (cmd.error) {
+          throw Object.assign(new Error(cmd.error), { code: "BROWSER_ERROR" });
+        }
+        resolve(cmd.output ?? "");
       }
       return { accepted: true };
     }
@@ -699,6 +870,12 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
   search_codebase: { autoApprove: true },
   fetch_web_content: { autoApprove: true },
   web_search: { autoApprove: true },
+  // `ask_question` POSE une question à l'utilisateur : c'est une lecture (elle
+  // ne modifie rien). Sans cette entrée, le joker `"*"` la ferait passer par
+  // l'approbation → une carte de confirmation POUR DEMANDER, absurde. On
+  // l'auto-approuve explicitement. Note : `submit_and_exit` n'existe PAS dans
+  // les noms d'outils du SDK (vérifié dans `DefaultToolNames`) — rien à ajouter.
+  ask_question: { autoApprove: true },
   // Outils CUSTOM (voir `./todoTool`) : la todo list ne touche PAS au disque ni
   // au système, c'est un état de raisonnement remonté à l'UI. Les faire passer
   // par l'approbation ajouterait une carte de confirmation à CHAQUE mise à jour
@@ -706,6 +883,23 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
   // entrée, le joker `"*"` les refuserait (autoApprove: false).
   todo_write: { autoApprove: true },
   todo_read: { autoApprove: true },
+  // Outils NAVIGATEUR (voir `./browserTool`). On distingue LECTURE et ACTION :
+  //   - `browser_status`/`browser_read_text`/`browser_read_dom`/`browser_query`
+  //     et `browser_screenshot` n'ont aucun effet de bord : auto-approuvés, comme
+  //     les autres lectures (sinon une carte de confirmation à chaque coup d'œil).
+  //   - `browser_navigate`/`browser_click`/`browser_type`/`browser_press_key`
+  //     MODIFIENT l'état de la page (et peuvent déclencher des effets externes) :
+  //     NON auto-approuvés → le front applique la politique (navigation
+  //     hors-loopback = confirmation explicite de l'utilisateur).
+  browser_status: { autoApprove: true },
+  browser_read_text: { autoApprove: true },
+  browser_read_dom: { autoApprove: true },
+  browser_query: { autoApprove: true },
+  browser_screenshot: { autoApprove: true },
+  browser_navigate: SENSITIVE_TOOL_POLICY,
+  browser_click: SENSITIVE_TOOL_POLICY,
+  browser_type: SENSITIVE_TOOL_POLICY,
+  browser_press_key: SENSITIVE_TOOL_POLICY,
   // Outils d'ORCHESTRATION d'équipe (mode IA). Ce sont des outils de contrôle
   // (créer/lister/piloter des coéquipiers et des tâches), PAS des écritures :
   // les faire passer par l'approbation ajouterait de la friction à chaque
@@ -722,7 +916,7 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
  * (même `baseUrl`/`apiKey`/`modelId` que le harness actuel), donc aucune
  * adaptation de transport n'est nécessaire.
  */
-function buildStartConfig(cmd: StartCommand) {
+function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | null) {
   const enableTeams = cmd.enableTeams === true;
   return {
     providerId: cmd.providerId ?? "openai-compatible",
@@ -763,16 +957,64 @@ function buildStartConfig(cmd: StartCommand) {
     // (sans elle, `requestToolApproval` n'est jamais appelé — voir le commentaire
     // de `TOOL_POLICIES`).
     toolPolicies: TOOL_POLICIES,
+    // ── EXTENSIONS DE SESSION (skills, plugins) ────────────────────────────
+    //
+    // POURQUOI ICI
+    // ------------
+    // Les dossiers de plugins sont DÉDUITS du workspace par le SDK (jamais
+    // fournis par le front) : on injecte donc leurs chemins dans la config, et
+    // `start()` renvoie ses diagnostics dans `pluginIssues` (exposés plus bas).
+    // Les SKILLS, eux, passent par `localRuntime.userInstructionService` (voir
+    // `handle("start")`) : leur allowlist est ici pour ne publier au modèle que
+    // les skills réellement découvertes (aucune annonce fantôme).
+    ...(extensions && extensions.pluginPaths.length > 0
+      ? { pluginPaths: extensions.pluginPaths }
+      : {}),
     ...(typeof cmd.maxIterations === "number"
       ? { maxIterations: cmd.maxIterations }
       : {}),
   } as never;
 }
 
+/**
+ * Étend une slash-command `/skill args` vers sa charge utile avant envoi.
+ *
+ * POURQUOI `expandSkillCommands: false`
+ * -------------------------------------
+ * La session enregistre l'outil `skills` (via `userInstructionService`) : le
+ * SDK recommande alors de LAISSER la commande TELLE QUE TAPÉE et de laisser le
+ * modèle charger les instructions via l'outil. Le transcript persisté garde
+ * donc `/skill args` (lisible) au lieu du corps complet de la skill (verbeux).
+ * Les workflows, eux, n'ont pas d'outil dédié : ils s'étendent toujours.
+ *
+ * Les RULES ne sont pas des commandes : elles sont injectées par le SDK.
+ */
+function expandRuntimeSlashCommand(prompt: string): string {
+  const trimmed = prompt.trimStart();
+  if (!trimmed.startsWith("/")) return prompt;
+  const service = sessionExtensions?.userInstructionService;
+  if (!service) return prompt;
+  try {
+    return service.resolveRuntimeSlashCommand(prompt, { expandSkillCommands: false });
+  } catch {
+    // Une commande inconnue reste inchangée : le modèle la recevra littéralement.
+    return prompt;
+  }
+}
+
 /** Arrête proprement le moteur et libère l'abonnement aux événements. */
 async function disposeCore(): Promise<void> {
   unsubscribe?.();
-  unsubscribe = null;
+  // Les serveurs MCP (transport stdio surtout) sont des PROCESSUS enfants : sans
+  // `dispose`, ils resteraient attachés après l'arrêt du sidecar. On les ferme
+  // AVANT le moteur, et une erreur ici ne doit jamais empêcher l'arrêt.
+  try {
+    await sessionExtensions?.mcpManager?.dispose();
+  } catch {
+    /* idem : un dispose en échec n'empêche pas l'arrêt */
+  }
+  sessionExtensions?.userInstructionService.stop();
+  sessionExtensions = null;
   if (core) {
     try {
       await core.dispose("sidecar_shutdown");
@@ -809,6 +1051,7 @@ const CONTROL_COMMANDS = new Set([
   // réponse qui attend le tour).
   "tool_approval_response",
   "tool_write_response",
+  "tool_invoke_response",
 ]);
 
 async function main(): Promise<void> {

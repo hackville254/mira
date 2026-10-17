@@ -6,7 +6,7 @@
 //! dans la suite de tests normale. À lancer explicitement :
 //!
 //! ```sh
-//! cargo test -p origin --test lsp_install_e2e -- --ignored --nocapture
+//! cargo test -p mira --test lsp_install_e2e -- --ignored --nocapture
 //! ```
 //!
 //! Ce test est la preuve « conditions réelles » demandée par la politique
@@ -18,9 +18,9 @@ use std::path::PathBuf;
 #[tokio::test]
 #[ignore = "réseau : lancer avec --ignored"]
 async fn downloads_and_extracts_rust_analyzer_for_current_platform() {
-    let (os, arch) = origin_lib::lsp_index::platform_key();
-    let comp = origin_lib::lsp_index::component_for("rust-analyzer").expect("composant présent");
-    let artifact = match origin_lib::lsp_index::select_artifact(comp, os, arch) {
+    let (os, arch) = mira_lib::lsp_index::platform_key();
+    let comp = mira_lib::lsp_index::component_for("rust-analyzer").expect("composant présent");
+    let artifact = match mira_lib::lsp_index::select_artifact(comp, os, arch) {
         Some(a) => a,
         None => {
             eprintln!("plateforme {os}/{arch} non couverte — test ignoré");
@@ -29,26 +29,26 @@ async fn downloads_and_extracts_rust_analyzer_for_current_platform() {
     };
 
     eprintln!("téléchargement: {}", artifact.url);
-    let bytes = origin_lib::downloader::fetch_verified(artifact.url, artifact.sha256)
+    let bytes = mira_lib::downloader::fetch_verified(artifact.url, artifact.sha256)
         .await
         .expect("téléchargement + vérification SHA-256 doivent réussir");
     eprintln!("reçu {} octets (empreinte OK)", bytes.len());
 
-    let dir: PathBuf = std::env::temp_dir().join(format!("origin_ra_e2e_{}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("mira_ra_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let exe_name = if cfg!(windows) { "rust-analyzer.exe" } else { "rust-analyzer" };
     let out = match artifact.archive {
-        "gz" => origin_lib::downloader::extract_single_gz(&bytes, &dir, exe_name)
+        "gz" => mira_lib::downloader::extract_single_gz(&bytes, &dir, exe_name)
             .expect("extraction gz"),
         "zip" => {
-            let files = origin_lib::downloader::extract_zip(&bytes, &dir).expect("extraction zip");
+            let files = mira_lib::downloader::extract_zip(&bytes, &dir).expect("extraction zip");
             let f = files
                 .iter()
                 .find(|p| p.file_name().map(|n| n == artifact.exe_hint).unwrap_or(false))
                 .map(|p| dir.join(p))
                 .expect("exe attendu présent dans le zip");
-            origin_lib::downloader::make_executable(&f);
+            mira_lib::downloader::make_executable(&f);
             f
         }
         other => panic!("archive inconnue: {other}"),

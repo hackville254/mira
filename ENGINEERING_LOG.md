@@ -1,7 +1,312 @@
-# ENGINEERING LOG — Origin IDE
+# ENGINEERING LOG — Mira
 
 > Journal technique chronologique (la plus récente entrée en haut).
 > Format : `[ISO-DATE-HEURE] | [Titre]` → Contexte / Modifications / Décisions / Impacts / Prochaines étapes.
+
+---
+
+### [2026-10-17T21:25] | Correctif boucle infinie `useSyncExternalStore` (taskRuntime + swarmStore)
+
+- **Contexte :** retour du runtime « Maximum update depth exceeded » avec une
+  stack passant par `useSyncExternalStore` (`updateStoreInstance` →
+  `forceStoreRerender`). Le garde-fou sur `onAgentSurface` (AiPanel) ne
+  s'appliquait pas : le déclencheur est un **snapshot non stable** renvoyé par un
+  store abonné.
+
+- **Cause racine :** deux sélecteurs fabriquaient un **nouveau tableau à chaque
+  appel** au lieu de réutiliser une référence stable :
+  - `taskRuntime.listActiveTasks()` → `.filter(...)` ;
+  - `swarmStore.listActiveSubAgents()` → `.filter(...)`.
+  React compare le snapshot par identité à chaque rendu : une nouvelle
+  référence ⇒ re-rendu ⇒ nouvel appel ⇒ nouvelle référence ⇒ boucle infinie.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/taskRuntime.ts` : cache `cachedActive` + `activeCacheValid`,
+    invalidés dans `emit()` ; `useActiveTasks` renvoie la **même référence**
+    tant que la composition (identités + statuts) n'a pas changé.
+  - `src/lib/agent/swarmStore.ts` : second cache `activeCache` (préfixe
+    `active::`), vidé dans `emit()` ; `listActiveSubAgents` sert désormais une
+    liste mémorisée.
+
+- **Décisions techniques :** conserver le contrat « une nouvelle instance
+  uniquement quand le contenu change » — déjà appliqué aux caches principaux
+  (`cachedAll`, `cache`) et documenté dans les deux modules. La comparaison
+  d'identité élément par élément suffit (snapshots immuables, taille courte).
+
+- **Impacts & Dépendances :** `TaskProgressBar` (via `useActiveTasks`) et
+  l'onglet Agents (via `useActiveSubAgents`) ne boucleront plus. Tests inchangés
+  verts (`swarmStore` 11, `taskRuntime` 17), `tsc --noEmit` 0 erreur.
+
+- **Prochaines étapes :** auditer au besoin les sélecteurs dérivés futurs
+  (règle : tout `filter`/`map` exposé à `useSyncExternalStore` doit être mémorisé).
+
+---
+
+### [2026-10-17T21:10] | Menu projet dédié + clone Git + onglets mode IA « pro »
+
+- **Contexte :**
+  1. Le sélecteur « No project » de la TitleBar ouvrait la **palette de commandes**
+     au lieu d'un menu projet. Attendu : un menu dédié fidèle à la capture
+     (Open Folder / Clone Git Repository / Connect Remote Host + section
+     « Recent » avec pastille à initiales, nom, chemin `~` et **coche verte** sur
+     le projet courant).
+  2. Le clone Git n'existait **pas** côté backend (aucune commande `git_clone`).
+  3. En mode IA, la barre d'onglets (browser/terminal/…) manquait de finition :
+     fond noir uni + onglet actif « légèrement éclairci ».
+
+- **Modifications effectuées :**
+  - **Rust — `src-tauri/src/git.rs` :** ajout de `git_clone(url, dest)` +
+    helpers `validate_clone_url` (allowlist de transports http/https/ssh/git/
+    git+ssh + notation scp-like ; rejet des schémas à exécution locale `ext::`,
+    `file://`, `fd::`, `transport::` et des URL commençant par `-`) et
+    `validate_clone_dest` (chemin absolu, sans `..`, refus d'écraser un dossier
+    non vide). Le clone s'effectue dans un dossier temporaire voisin puis est
+    **déplacé atomiquement** vers la destination (pas de clone partiel).
+  - **Rust — `src-tauri/src/lib.rs` :** enregistrement de `git::git_clone` dans
+    `generate_handler!`.
+  - **Front — `src/components/ui/ProjectMenu.tsx` (nouveau) :** menu projet en
+    portail (positionné sous l'ancre + clamp viewport), 3 actions en tête,
+    séparateur, en-tête « Recent », liste des récents avec pastille colorée
+    dérivée du nom (hachage stable), nom, chemin raccourci `~`, et coche verte
+    sur le projet ouvert.
+  - **Front — `src/components/TitleBar.tsx` :** le sélecteur ouvre désormais
+    `ProjectMenu` (au lieu de la palette) ; `onOpenFolder`/`onCloneRepo`/
+    `onOpenProject` consommés depuis les commandes ; `Connect Remote Host`
+    affiche un toast « coming soon ».
+  - **Front — `src/context/CommandContext.tsx` :** ajout de `onOpenProject(path)`
+    et `onCloneRepo()` à `AppCommands` (+ defaults noop).
+  - **Front — `src/App.tsx` :** `handleCloneRepo()` (choix du dossier parent via
+    dialogue natif + saisie d'URL, nom de dépôt dérivé de l'URL, appel
+    `invoke('git_clone')`, enregistrement en récent puis ouverture) ; câblage de
+    `onOpenProject`/`onCloneRepo` dans le provider de commandes.
+  - **Front — `src/components/ai/AgentModeView.tsx` :** barre d'onglets fond noir
+    (`bg-editor`), hauteur 38 px, onglet actif légèrement éclairci (`bg-hover`)
+    + **soulignement accent** (`--origin-accent-blue`), bouton de fermeture fondu
+    pour les onglets inactifs, transitions douces.
+
+- **Décisions techniques :**
+  - **Sécurité clone :** `git clone` passe par `Command::args` (jamais de shell),
+    donc pas d'injection shell ; le risque réel est l'**injection d'options**
+    (URL en `-…`) et les **transports à exécution locale** (`ext::` = exécution
+    de commande via remote-helper). Traités par une allowlist stricte plutôt
+    qu'un simple filtre `-`.
+  - **Atomicité :** cloner dans un dossier temporaire puis `rename` évite de
+    laisser un dépôt partiel dans le dossier cible en cas d'échec réseau.
+  - **Menu dédié** plutôt qu'étendre `DropdownMenu` (qui ne gère ni icônes, ni
+    descriptions, ni coche) : évite de complexifier un composant partagé.
+  - **Couleur d'onglet :** `--origin-accent` n'existe pas dans le thème (seules
+    les variantes suffixées existent) → utilisation de `--origin-accent-blue`.
+
+- **Impacts & Dépendances :**
+  - `AppCommands` gagne deux membres : tout provider de commandes doit les
+    fournir (les defaults couvrent le reste).
+  - Le clone réutilise `pushRecentProject` + `setFolderPath` : le projet cloné
+    apparaît immédiatement dans « Recent ».
+
+- **Prochaines étapes :**
+  - `Connect Remote Host` reste inerte (toast informatif) : chantier distinct.
+  - Dialogues : `window.prompt` pour l'URL — à remplacer par un dialogue in-app
+    (cohérence visuelle) dans un futur lot.
+
+---
+
+### [2026-10-17T20:05] | Onboarding : positionnement « alternative Cursor » + carrousel de modèles
+
+- **Contexte :**
+  Deux problèmes de positionnement produit :
+  1. Le hero de l'accueil affichait « Open-source AI coding without lock-in. » +
+     « Connect Claude, GPT… or your own infrastructure. » — un discours
+     **open-source/self-host** qui ne correspond pas au produit : Mira est une
+     **alternative à Cursor**, pas un projet open-source.
+  2. L'écran de connexion (« Let's connect a provider » + formulaire de clé API)
+     demandait une clé au premier lancement. Décision produit : **ne pas demander
+     de clé ici** — simplement **montrer les modèles disponibles**.
+
+- **Modifications effectuées :**
+  - `WelcomePage.tsx` : hero → **« A Cursor-class AI code editor, your way. »** ;
+    suppression du sous-titre listant les providers/« your own infrastructure ».
+  - `ConnectAIPage.tsx` : **réécrit intégralement**. Le formulaire (clé API,
+    sélecteur de modèle, recherche, skeleton) est **supprimé**. La page devient
+    purement informative : **deux rangées en carrousel infini** affichant les
+    logos des providers (`PROVIDERS` de `data.ts`), sens opposés, masque en
+    dégradé sur les bords. Titre « Any model, on your terms ».
+  - `index.css` : ajout des keyframes `mira-marquee` / `mira-marquee-rev`
+    (translateX 0→-50% et inverse) pour la boucle sans couture.
+
+- **Décisions Techniques :**
+  - **Marquee sans JS** : liste dupliquée (`[...providers, ...providers]`) +
+    translation de -50%. La 2ᵉ copie se superpose exactement à la 1ʳᵉ au terme de
+    l'animation → boucle continue. Coût CPU minimal (une seule propriété animée,
+    composited), aucun `setInterval`, aucune dépendance.
+  - **Aucune sélection, aucune clé** : l'écran est informatif (exigence
+    utilisateur). Le stockage/gestion des clés est **laissé inchangé** (keychain
+    OS `mira-ide`) ; la gestion « façon Cursor » fera l'objet d'un **chantier
+    séparé**.
+  - **Props `onBack/onNext/onSkip` conservées** : le flux d'onboarding
+    (`Onboarding.tsx`, pages 0→1→2) reste intact, zéro régression de navigation.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src/components/onboarding/{WelcomePage.tsx, ConnectAIPage.tsx}`,
+    `src/index.css`.
+  - `data.ts` : les champs `keyLabel` / `keyPlaceholder` / `models` /
+    `customModels` / `docs` ne sont **plus référencés** (seuls `id/label/icon/
+    invert` servent au carrousel). Conserves volontairement : ils seront
+    réutilisés par le chantier « gestion des clés ».
+  - Les providers sans icône (LM Studio, vLLM) tombent sur un badge à initiales.
+
+- **Prochaines étapes :**
+  - **Chantier séparé** : gestion des clés API « comme Cursor » (stockage,
+    validation, bascule de modèle) — non traité ici.
+
+---
+
+### [2026-10-17T19:40] | Garde-fou workspace : l'agent exige un répertoire de travail
+
+- **Contexte :**
+  À l'ouverture de Mira, aucun dossier de travail n'est forcément sélectionné.
+  Or l'agent (moteur Cline partagé par TOUS les modes) démarrait alors avec
+  `workspace: "."` — le **cwd du process sidecar Node**, pas un vrai projet. Le
+  client pouvait donc lancer l'agent qui écrivait dans un dossier arbitraire,
+  hors de tout contrôle. Exigence produit : **le client doit toujours choisir le
+  répertoire de travail avant de lancer l'agent**.
+
+- **Modifications effectuées :**
+  - `ChatBox.tsx` : nouvelle prop `onSelectFolder`. Dans `handleSend`, garde en
+    tête : si `!folderPath`, on ouvre le sélecteur natif et on **n'envoie rien**
+    (le message reste dans l'input). Le bouton d'envoi s'estompe (`opacity 0.5`)
+    et son libellé d'infobulle devient « Select a working directory to start ».
+  - `AiPanel.tsx` : nouvelle prop `onOpenFolder`, transmise aux **deux**
+    instances de `ChatBox` (mode sidebar IDE + mode Agent) via `onSelectFolder`.
+    **Défense en profondeur** : même garde dans `handleSend` du panneau (avant
+    toute écriture DB / tout run Cline), avec un toast explicatif.
+  - `App.tsx` : `<AiPanel>` reçoit `onOpenFolder={handleOpenFolder}` (réutilise
+    le sélecteur natif existant, avec `pushRecentProject`).
+
+- **Décisions Techniques :**
+  - **Garde à DEUX niveaux** (ChatBox = UX immédiate ; AiPanel = barrière
+    structurelle côté moteur). Le ChatBox peut être contourné (multi-instances,
+    futurs appelants) : la vraie garantie est dans `AiPanel.handleSend`, au plus
+    près du lancement de l'agent.
+  - **Aucune modification de l'UI existante** (hors l'estompage du bouton
+    d'envoi) : on réutilise le sélecteur de dossier natif déjà présent dans
+    l'outil, pour ne pas introduire un second chemin d'ouverture de projet.
+  - **Pas de hard-code de chemin par défaut** : on ne devine jamais un workspace ;
+    c'est l'utilisateur qui décide. Cohérent avec la règle « zéro travail
+    implicite » et la contrainte d'isolation (pas d'accès filesystem arbitraire).
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src/components/ai/{ChatBox.tsx, AiPanel.tsx}`, `src/App.tsx`.
+  - Nouvelle dépendance d'API : `AiPanel` attend désormais `onOpenFolder`
+    (optionnel — sans lui, l'envoi est simplement bloqué sans ouverture).
+  - Validé : `tsc --noEmit` 0 erreur, `vitest` **608/608**.
+
+- **Prochaines étapes :**
+  - Évaluer l'affichage d'une carte « Choisir un répertoire » dans le chat vide
+    si l'on veut un guidage plus visible (l'utilisateur a préféré garder l'UI
+    actuelle : simple blocage + sélecteur).
+
+---
+
+
+### [2026-10-17T19:25] | Renommage de marque Origin → Mira + masquage total de Cline (client)
+
+- **Contexte :**
+  L'outil n'est plus « Origin » mais **Mira**. Deux contraintes produit fortes :
+  (1) l'identité produit et les textes **visibles** doivent dire Mira ;
+  (2) le client ne doit **jamais** voir le mot « cline » ni savoir qu'un SDK tiers
+  est utilisé en interne. Travail livré **par lots** (masquage d'abord, rename ensuite).
+
+- **Modifications effectuées :**
+  - **Lot 5a — Masquage Cline (défense en profondeur) :**
+    - **Sidecar :** nouveau module `src-tauri/cline-sidecar/src/brand.ts` (`neutralizeBrand`/`neutralizeForClient`) qui réécrit toute chaîne sortante (`.clinerules`→`.mira`, `Documents/Cline`→`Documents/Mira`, `cline_mcp_settings.json`→`mira_mcp_settings.json`, puis règle générique `cline`→`Mira`). Câblé sur **le point unique** `serializeError` (`index.ts`) et sur `describe` (`instructions.ts`) ; `extensionIssues` neutralisés.
+    - **Front (défense en profondeur) :** miroir `src/lib/brand.ts` + neutralisation au rendu des toasts (`AiPanel.tsx`) et des textes skills vides (`ChatBox.tsx`).
+    - **Tests :** `brand.test.ts` côté sidecar (node:test, 8 tests) et côté front (vitest, 8 tests).
+  - **Lot 5b — Identité produit + binaire :** `tauri.conf.json` (`productName`/`title` = Mira, `identifier` = `com.mira.ide`) ; menu macOS `"Mira"` (`lib.rs`) ; `Cargo.toml` (`name = "mira"`, `mira_lib`) ; `main.rs` (`mira_lib::run()`) ; test e2e `origin_lib::`→`mira_lib::` ; `keychain.rs` `SERVICE = "mira-ide"` ; `ai.rs`/`downloader.rs` User-Agent `mira-ide`/`Mira` ; `log.rs` (`~/.mira/logs/mira.log`) ; `sidecar.rs` (`<app_data>/mira`).
+  - **Lot 5c — `.mira/` projet :** `instructions.ts` ajoute `.mira/skills|rules|workflows` via `directories` (défauts SDK **réinjectés** via `resolveSkillsConfigSearchPaths`) et `.mira/plugins` à `pluginPaths`.
+  - **Lot 5d — `~/.mira/` + migration :** nouveau module `migration.rs` (`migrate_legacy_data_dir`) qui **déplace** `~/.origin`→`~/.mira` (idempotent, best-effort, ne jamais écraser une cible existante) ; appelé au `setup()`, 3 tests unitaires.
+  - **Textes UI visibles** passés à Mira : titre de fenêtre/webview, `index.html`, fallback de thèmes (`Mira Dark/Light`), theme.json, onboarding (`Enter Mira`), `alt` logos, titre LSP `clientInfo`, prompt système (`You are Mira AI`), `UnsupportedFilePane`.
+
+- **Décisions Techniques :**
+  - **Un seul point de neutralisation côté sidecar** (`serializeError`) : garantit qu'aucune erreur ne peut fuiter « cline », plutôt qu'un filtre au cas par cas.
+  - **`directories` du SDK REMPLACE les défauts** (opérateur `??`) : on réinjecte donc explicitement les chemins officiels pour ne pas perdre la découverte des skills existants.
+  - **Renommage des identifiants internes NON fait quand non visible** : IDs de commandes `origin.*`, clés localStorage (`origin-theme`, `origin-ui-density`), variables CSS `--origin-*`, namespace d'extension `origin`. Raison : aucun gain client, risque réel de régression (persistance, keybindings). Choix explicite « texte visible uniquement ».
+  - **Migration par `rename`** (pas de copie) : atomique, sans état dupliqué ; on n'écrase jamais une cible existante.
+  - **URLs de release GitHub laissées telles quelles** (`Origin-AI-IDE/origin`) : ce sont des endpoints réels de release ; les renommer casserait l'updater.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `src-tauri/{tauri.conf.json, Cargo.toml, src/{main.rs, lib.rs, keychain.rs, ai.rs, log.rs, sidecar.rs, downloader.rs, migration.rs}, cline-sidecar/src/{brand.ts, instructions.ts, index.ts, package.json}, tests/lsp_install_e2e.rs}` ; front `src/{App.tsx, index.html, lib/{brand.ts, lsp.ts}, lib/agent/prompts.ts, themes/*, components/**}`.
+  - Nouveau module Rust `migration` (3 tests). Nouveaux tests brand (sidecar + front).
+  - Validé : `cargo test --no-run` (binaire `mira`/`mira_lib`), `cargo test migration` (3/3), `tsc --noEmit` (front + sidecar) 0 erreur, `vitest` **608/608**, `node --test` sidecar 8/8.
+
+- **Prochaines étapes :**
+  - Renommer les identifiants internes (IDs de commandes, clés localStorage, `--origin-*`) **uniquement si** le produit l'exige — avec migration de persistance.
+  - Hooks : `.mira/hooks` n'est pas lisible par `createHookConfigFileHooks` (dossiers figés) → évaluer un alias `~/.mira/hooks` → `~/.cline/hooks` ou un patch SDK.
+  - Récupérer la migration `keychain` (`origin-ide`→`mira-ide`) si des secrets existants doivent être repris.
+
+---
+
+### [2026-10-17T17:15] | Exploitation complète de Cline — Skills / Plugins / Hooks+MCP câblés proprement
+
+- **Contexte :**
+  Après la parité SOLO (terminal + navigateur), il restait à **exploiter toute la puissance du Cline SDK** au lieu de réimplémenter côté maison : Skills, Plugins, Hooks et serveurs MCP existent dans le SDK mais n'étaient **pas câblés**. Objectif : discovery réelle + remontée UI des diagnostics, sans réinventer ce que le SDK fournit. Travail livré **par lots**.
+
+- **Modifications effectuées :**
+  - **Lot 4a — Skills :**
+    - **Sidecar :** nouveau module `src-tauri/cline-sidecar/src/instructions.ts` (`resolveSessionExtensions`) qui résout, de façon **non fatale**, 4 surfaces : `UserInstructionConfigService` (Skills), `pluginPaths`, `hooks`, serveurs MCP. Dans `index.ts`, le `handle("start")` renvoie désormais `skills` (`listRecords<SkillConfig>("skill")` → `{name, description}`), `commands` (`listRuntimeCommands()` mappé explicitement → `{id, name, kind, description}`) et `extensionIssues`. **Le corps des skills (`instructions`) n'est jamais propagé au front.**
+    - **Front :** typage + normalisation défensive dans `clineClient.ts` (`normalizeExtensions` : le sidecar est une frontière de processus) ; propagation via `clineHarness.ts` (`onExtensions`) ; état `sessionExtensions` dans `AiPanel.tsx` (reset sur session neuve, toasts d'erreur par issue). Dans `ChatBox.tsx` : sous-menu **Skills réel** dans le bouton `+` (liste les skills découvertes ou explique où déposer un `SKILL.md`) et **autocomplétion slash-commands** fusionnant catalogue intégré + commandes runtime.
+    - **`inputCommands.ts` :** nouvelle action `insert` (insère `/xx ` sans envoyer), `mergeSlashCommands(runtime)` (les intégrées gagnent en cas de collision), `parseSlashCommand`/`filterSlashCommands` acceptent un catalogue.
+  - **Lot 4b — Plugins :** les diagnostics plugins du SDK (`pluginIssues`, forme non typée) sont **fusionnés dans `extensionIssues`** côté sidecar (`String(issue)`) → le front n'a qu'**une seule forme bien définie** à afficher, robuste aux variations du SDK.
+  - **Lot 4c — Hooks + MCP :** hooks (`createHookConfigFileHooks`, search paths `~/Documents/Cline/Hooks`, `~/.cline/hooks`, `<ws>/.cline/hooks`) et serveurs MCP (`InMemoryMcpManager` + `registerMcpServersFromSettingsFile` + `createMcpTools`, outils `mcp__<server>__<tool>`) câblés dans `resolveSessionExtensions`.
+  - **Lot 4d — Cohérence outillage :** `clineApproval.ts` — en-tête corrigée (liste réelle d'outils, `submit_and_exit` inexistant retiré) + NB explicite : l'outil `skills` n'est dans **aucun** set d'auto-approbation (il peut injecter des instructions arbitraires → reste soumis à confirmation conservatrice). Dépendance fantôme `@cline/shared` épinglée en `0.0.93`.
+
+- **Décisions Techniques :**
+  - **Ne pas réimplémenter le SDK :** Skills/Plugins/Hooks/MCP sont fournis par Cline ; on les **résout** et on **expose** leurs diagnostics plutôt que de les recoder.
+  - **Le corps des skills ne franchit jamais la frontière de processus :** seuls `{name, description}` sont transmis → pas de fuite du contenu d'instructions vers l'UI.
+  - **Frontière de processus = frontière de confiance :** `normalizeExtensions` filtre champ par champ côté front (le sidecar est traité comme une source potentiellement malformée).
+  - **Une seule forme de diagnostic :** fusion `pluginIssues` → `extensionIssues` (type aligné) au lieu d'exposer les variations non typées du SDK.
+  - **Sécurité outillage :** `skills` non auto-approuvable (injection de contexte) ; `ask_question` confirmable ; cohérence des sets documentée.
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `src-tauri/cline-sidecar/src/{instructions.ts, index.ts, package.json}`, `src/lib/agent/{clineClient.ts, clineHarness.ts, clineApproval.ts}`, `src/lib/{inputCommands.ts, __tests__/inputCommands.test.ts}`, `src/components/ai/{AiPanel.tsx, ChatBox.tsx}`.
+  - Aucune dépendance npm ajoutée (une dépendance fantôme supprimée). Pas de changement Docker (app desktop).
+  - Validé : `tsc --noEmit` **0 erreur** (front + sidecar), `eslint src` **0 erreur** (8 warnings préexistants hors périmètre), `vitest` **600/600** (dont 6 nouveaux sur `mergeSlashCommands`), `cargo test` **123/123**, `vite build` OK.
+
+- **Prochaines étapes :**
+  - Tests unitaires ciblés Rust sur `browser.rs` (file d'attente de résultats).
+  - Test terrain : déposer un `SKILL.md` sous `.cline/skills/<name>/`, vérifier l'apparition dans le menu `+` et l'autocomplétion `/`, et l'absence de doublon avec le global `~/.cline/skills`.
+
+---
+
+### [2026-10-17T17:00] | Parité Trae SOLO — Terminal agent (lecture seule) + Navigateur piloté + budget de prompt
+
+- **Contexte :**
+  Objectif de parité avec le **mode SOLO de Trae** (= notre mode IA) : l'agent doit pouvoir (1) **piloter le terminal** dont l'utilisateur n'a qu'un accès **lecture seule**, (2) **piloter un navigateur embarqué** (navigation, DOM, clic, capture) comme dans Trae SOLO. S'ajoutait un **nettoyage ciblé** du code mort `subagentRoles`/`spawn_agent`. Le tout livré **par lots** avec validation à chaque étape.
+
+- **Modifications effectuées :**
+  - **Lot 1 — Terminal agent lecture seule :** `src/lib/agent/terminalAgentStore.ts` (état du terminal contrôlé par l'agent, par session), bridge dans `clineClient.ts`, composant xterm en **lecture seule stricte** avec **icône agent** (`Bot`) au-dessus, badge de statut. L'utilisateur voit la sortie en direct sans pouvoir saisir.
+  - **Lot 2 — Navigateur piloté par l'agent :**
+    - **Modèle (sidecar) :** nouvel extraTool `browser` — `src-tauri/cline-sidecar/src/browserTool.ts` + câblage `index.ts`. Le front n'envoie qu'un `kind` (chaîne fermée) ; le sidecar résout vers des outils codés en dur (`browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload`).
+    - **Backend Rust :** `src-tauri/src/browser.rs` (commandes `async fn` : `browser_eval`/`navigate`/`dom`/`click`/`screenshot`… + **file d'attente de résultats**), `lib.rs` (module + `BrowserState` + enregistrement). **`browser_screenshot` réécrit** : la capture se fait **depuis la page** (SVG `foreignObject` → canvas → `toDataURL('image/png')`) — il n'existe **aucune API de capture de webview** (ni JS ni Rust).
+    - **Front :** `flow.ts` (9 outils `browser_*` → onglet `browser`), `toolPresentation.ts` (contrats navigateur act + read-only), `WebPreviewPane.tsx` (badge **Agent** `Bot`, `PREVIEW_PANEL_ID` exporté), `AiPanel.tsx` (injection de l'extraTool `browser` + `panelId`).
+    - **Canal de retour :** `Webview::eval_with_callback` — la **dernière expression** du JS est sérialisée JSON et renvoyée au callback (ne dépend pas de `__TAURI__` côté page externe). Allowlist **à deux niveaux** : `BROWSER_COMMANDS` (sidecar) + `INVOKE_ALLOWLIST` (front).
+    - **Garde-fou :** confirmation utilisateur **avant navigation externe** (hors localhost).
+  - **Lot 3 — Nettoyage ciblé :** retrait de l'hôte `spawn_agent` non branché (`spawnRuntime.ts`) et du code mort `subagentRoles`. En mode IA, seule l'**équipe** `team_*` est exposée (`enableAgentTeams`) ; `spawn_agent` détaché n'émet aucun `team_progress` (invisible UI) → jamais activé.
+  - **Budget de prompt :** compactage des contrats (`EDIT_RULES_FULL` dé-dupliqué vs `TOOL_CONTRACT_FULL`, `BROWSER_CONTRACT_ACT`, `DELEGATION_GUIDANCE`) pour repasser **sous 6000 caractères**.
+
+- **Décisions Techniques :**
+  - **Capture in-page plutôt qu'API webview :** aucune API `capture()` n'existe (ni `@tauri-apps/api/webview` ni `Webview` Rust). La seule voie fiable est la rasterisation **depuis la page** ; `eval_json` sert de canal de retour sans dépendance au contexte de la page.
+  - **`extraTools` déclaratif (kind fermé) :** le front ne peut pas dicter un outil arbitraire — il choisit un `kind` dans une liste fermée, résolu côté sidecar vers du code en dur. Réduit la surface d'abus (pas d'outil injectable par le front).
+  - **Terminal lecture seule strict :** l'agent contrôle le process, l'utilisateur observe. Aucun accès en écriture côté UI → pas d'élévation de privilège via l'UI.
+  - **Nettoyage plutôt que conservation de `spawn_agent` :** un chemin non branché qui n'émet rien dans l'UI est une source de confusion et de dette ; on garde le mécanisme RÉELLEMENT observable (`team_*`).
+
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `src-tauri/src/{browser.rs, lib.rs}`, `src-tauri/cline-sidecar/src/{browserTool.ts, index.ts}`, `src/lib/agent/{clineClient.ts, clineBridge.ts, clineHarness.ts, flow.ts, toolPresentation.ts, prompts.ts}`, `src/components/{editor/WebPreviewPane.tsx, ai/AiPanel.tsx}`, tests `prompts.*`.
+  - Aucune dépendance npm ajoutée. `.dockerignore`/Docker non concernés (app desktop Tauri).
+  - Validé : `cargo check` **0 erreur / 0 warning**, `npx tsc --noEmit` **0 erreur** (front + sidecar), `eslint` **0 erreur**, `vitest` **594/594**, `vite build` OK. Budget de prompt : `agent/max` 6143 → **5839** (< 6000), 6/6 presets conformes.
+
+- **Prochaines étapes :**
+  - Test terrain du pilotage navigateur (navigation dev server, clic/type sur apps React, capture) et affinage des sélecteurs `ref` si nécessaire.
+  - Exploiter pleinement Cline (plugins, skills) de façon propre et efficace.
 
 ---
 

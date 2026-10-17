@@ -400,6 +400,39 @@ function App() {
     setFolderPath(path);
   }
 
+  /**
+   * Clone un dépôt distant puis l'ouvre. Le client choisit l'URL puis le dossier
+   * parent ; le sous-dossier de destination est dérivé du nom du dépôt et validé
+   * côté Rust (refus d'écraser un dossier non vide, filtrage des schémas git
+   * dangereux type `ext::`).
+   */
+  async function handleCloneRepo() {
+    const parent = await open({ directory: true, multiple: false, title: "Choose a parent folder for the clone" });
+    if (!parent) return;
+    const url = window.prompt("Git repository URL (https, ssh or git):");
+    if (!url || !url.trim()) return;
+    const trimmed = url.trim();
+    // Nom de dépôt dérivé de l'URL, sans le suffixe `.git`.
+    const repoName =
+      trimmed.replace(/\.git$/, "").split(/[\\/:]/).filter(Boolean).pop() ?? "repository";
+    if (!repoName || repoName.startsWith("-")) {
+      showToast("Invalid repository URL.", "error");
+      return;
+    }
+    const sep = (parent as string).includes("\\") && !(parent as string).includes("/") ? "\\" : "/";
+    const dest = `${parent}${(parent as string).endsWith(sep) ? "" : sep}${repoName}`;
+    try {
+      showToast(`Cloning ${repoName}…`, "info");
+      const cloned = await invoke<string>("git_clone", { url: trimmed, dest });
+      const name = cloned.split(/[\\/]/).filter(Boolean).pop() ?? cloned;
+      await pushRecentProject({ path: cloned, name });
+      setFolderPath(cloned);
+      showToast(`Cloned ${name}.`, "success");
+    } catch (e) {
+      showToast(`Clone failed: ${String(e)}`, "error");
+    }
+  }
+
   function handleApplyCode(code: string, filePath?: string, _ctx?: EditorContext) {
     const currentActiveTab    = activeTabRef.current;
     const currentFileContents = fileContentsRef.current;
@@ -420,9 +453,9 @@ function App() {
   }
 
   function handleNewWindow() {
-    new WebviewWindow(`origin-${Date.now()}`, {
+    new WebviewWindow(`mira-${Date.now()}`, {
       url: '/',
-      title: 'Origin IDE',
+      title: 'Mira',
       width: 1280,
       height: 800,
       decorations: false,
@@ -581,6 +614,8 @@ function App() {
     onNewWindow: handleNewWindow,
     onOpenPalette: () => { setPaletteMode('command'); setPaletteOpen(true); },
     onOpenSettings: () => setSettingsOpen(true),
+    onOpenProject: handleOpenProject,
+    onCloneRepo: () => { void handleCloneRepo(); },
     gitBranch,
     dirtyCount: tabs.filter(t => t.isDirty).length,
     hasActiveTab: !!activeTab && !activeTab.startsWith('__diff__'),
@@ -770,7 +805,7 @@ function App() {
       // ── Help ──
       { id: 'origin.welcome',        title: 'Welcome',            category: 'Help', keywords: 'get started onboarding', run: () => setPaletteOpen(false) },
       { id: 'origin.keyboardShortcuts', title: 'Keyboard Shortcuts', category: 'Help', keywords: 'keybindings reference', run: () => { setPaletteMode('command'); setPaletteOpen(true); } },
-      { id: 'origin.checkUpdates',   title: 'Check for Updates…', category: 'Help', keywords: 'upgrade version', run: () => { void checkForUpdate().then(u => { showToast(u ? `Update available — v${u.version}` : 'Origin is up to date', 'info'); }).catch(() => showToast('Update check failed', 'error')); } },
+      { id: 'origin.checkUpdates',   title: 'Check for Updates…', category: 'Help', keywords: 'upgrade version', run: () => { void checkForUpdate().then(u => { showToast(u ? `Update available — v${u.version}` : 'Mira is up to date', 'info'); }).catch(() => showToast('Update check failed', 'error')); } },
     ];
     return registerCommands(cmds);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- les handlers de commande lisent l'état via refs/closure à jour ; ré-enregistrer à chaque changement d'état UI pertinent
@@ -956,6 +991,7 @@ function App() {
                   onOpenDiffTab={openAiDiffTab}
                   onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
                   onExternalFileChanges={applyExternalFileChanges}
+                  onOpenFolder={handleOpenFolder}
                 />
               )}
             </div>

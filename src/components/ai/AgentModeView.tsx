@@ -223,12 +223,13 @@ export default function AgentModeView(props: AgentModeViewProps) {
         {/* Multitasking : bandeau des tâches actives (no-op en mono-tâche) */}
         <TaskProgressBar activeSessionId={activeSessionId} onSelect={handleSelectTask} />
 
-        {/* Tool tab bar */}
+        {/* Tool tab bar — fond noir uni (mode IA), onglet actif légèrement éclairci */}
         <div
           style={{
             display: "flex", alignItems: "center",
-            height: 36, flexShrink: 0,
-            backgroundColor: "var(--origin-bg-panel)",
+            height: 38, flexShrink: 0,
+            padding: "0 6px",
+            backgroundColor: "var(--origin-bg-editor)",
             borderBottom: "1px solid var(--origin-border-default)",
           }}
         >
@@ -241,18 +242,30 @@ export default function AgentModeView(props: AgentModeViewProps) {
                 key={tabId}
                 onClick={() => selectToolTab(tabId)}
                 style={{
+                  position: "relative",
                   display: "flex", alignItems: "center", gap: 6,
-                  height: 28, margin: "0 3px", padding: "0 10px 0 12px",
+                  height: 30, margin: "0 2px", padding: "0 8px 0 12px",
                   borderRadius: 6,
-                  background: active ? "rgba(96, 165, 250, 0.12)" : "transparent",
-                  border: active ? "1px solid rgba(96, 165, 250, 0.3)" : "1px solid transparent",
+                  background: active ? "var(--origin-bg-hover)" : "transparent",
                   color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
-                  cursor: "pointer", fontSize: "12px", fontWeight: 500,
+                  cursor: "pointer", fontSize: 12, letterSpacing: "0.01em",
+                  fontWeight: active ? 600 : 500,
                   userSelect: "none",
+                  transition: "background 120ms ease, color 120ms ease",
                 }}
                 onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
                 onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = "transparent"; }}
               >
+                {active && (
+                  <span
+                    aria-hidden
+                    style={{
+                      position: "absolute", left: 8, right: 8, bottom: -1,
+                      height: 2, borderRadius: 2,
+                      background: "var(--origin-accent-blue, #62a6ff)",
+                    }}
+                  />
+                )}
                 <Icon icon={def.icon} width={14} style={{ color: def.color }} />
                 <span>{def.label}</span>
                 <button
@@ -260,12 +273,13 @@ export default function AgentModeView(props: AgentModeViewProps) {
                   title="Close"
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    width: 16, height: 16, borderRadius: 3,
+                    width: 16, height: 16, borderRadius: 4,
                     background: "transparent", border: "none", cursor: "pointer",
                     color: "var(--origin-fg-subtle)", marginLeft: 2, padding: 0,
+                    opacity: active ? 1 : 0.6,
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; e.currentTarget.style.color = "var(--origin-fg-default)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-subtle)"; }}
+                  onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-active)"; e.currentTarget.style.color = "var(--origin-fg-default)"; e.currentTarget.style.opacity = "1"; }}
+                  onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--origin-fg-subtle)"; e.currentTarget.style.opacity = active ? "1" : "0.6"; }}
                 >
                   <Icon icon="lucide:x" width={12} />
                 </button>
@@ -553,6 +567,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
               hidden={false}
               rootPath={folderPath}
               onOpenFile={(path, line, col) => openTabAtLine(path, line, col)}
+              agentSessionId={activeSessionId}
             />
           )}
 

@@ -42,7 +42,7 @@ export default function UnsupportedFilePane({ fileName, reason }: Props) {
           Ce fichier ne peut pas être affiché
         </p>
         <p style={{ fontSize: '12px', margin: 0, maxWidth: '360px', textAlign: 'center' }}>
-          {reason ?? "Origin ne dispose pas de lecteur pour ce format binaire. Ouvre-le avec une application externe."}
+          {reason ?? "Mira ne dispose pas de lecteur pour ce format binaire. Ouvre-le avec une application externe."}
         </p>
       </div>
     </div>

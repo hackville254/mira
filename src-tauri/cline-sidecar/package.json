@@ -8,10 +8,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.mjs --minify --legal-comments=none --banner:js=\"import { createRequire as __originCreateRequire } from 'node:module'; const require = __originCreateRequire(import.meta.url);\""
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.mjs --minify --legal-comments=none --banner:js=\"import { createRequire as __originCreateRequire } from 'node:module'; const require = __originCreateRequire(import.meta.url);\"",
+    "test": "node --experimental-strip-types --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@cline/core": "0.0.93",
+    "@cline/shared": "0.0.93",
     "jiti": "^2.7.0",
     "posthog-node": "^5.8.0",
     "simple-git": "3.36.0"

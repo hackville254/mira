@@ -38,9 +38,13 @@ import { readFile } from "../../lib/fs";
 import { resolveClineProvider } from "../../lib/agent/providers";
 import { type AgentEvent } from "../../lib/agent/run";
 import { startClineHarness } from "../../lib/agent/clineHarness";
-import type { ClineRunHandle } from "../../lib/agent/clineClient";
+import { PREVIEW_PANEL_ID } from "../editor/WebPreviewPane";
+import type { ClineRunHandle, ClineSessionExtensions } from "../../lib/agent/clineClient";
 import { isWriteTool } from "../../lib/agent/clineBridge";
+import { toPendingAction } from "../../lib/agent/clineApproval";
+import { agentTerminalCommandStart, agentTerminalCommandEnd, agentTerminalOutput } from "../../lib/agent/agentTerminalStore";
 import { log } from "../../lib/logger";
+import { neutralizeForClient } from "../../lib/brand";
 import { resetProjectContext } from "../../lib/agent/projectContext";
 import { getRun, forgetRun, setRunMessages, getRunMessages, listLiveRuns } from "../../lib/agent/runState";
 import { beginTaskRun, markTaskWaiting, markTaskRunning, type RegisterRunHandle } from "../../lib/agent/taskRuntime";
@@ -345,6 +349,12 @@ interface AiPanelProps {
   onExternalFileChanges?: (paths: string[]) => Promise<void>;
   /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin dans le chat). */
   onOpenFile?: (path: string, line?: number, col?: number) => void;
+  /**
+   * Ouvre le sélecteur de répertoire natif (définit le workspace courant).
+   * Utilisé pour FORCER le choix d'un dossier de travail avant de lancer
+   * l'agent : sans workspace, l'agent tournerait sur un cwd arbitraire.
+   */
+  onOpenFolder?: () => void;
   /** When set (and changed), the panel loads the given session id. Driven by the Agent mode task rail. */
   openSessionId?: string | null;
   /** Incrementing counter that triggers a fresh chat (Agent mode "New Task"). */
@@ -403,7 +413,7 @@ function buildModelHistory(messages: DisplayMessage[]): ModelMessage[] {
 export default function AiPanel({
   getEditorContext, getActiveFilePath, forcedContext, onForcedContextConsumed,
   onApplyCode, getOpenTabPaths, getFileContents, onOpenDiffTab, onOpenFile,
-  onExternalFileChanges,
+  onExternalFileChanges, onOpenFolder,
   openSessionId = null,
   newChatNonce = 0,
   onActiveSessionChange,
@@ -647,6 +657,11 @@ export default function AiPanel({
   // session et ne prétend pas persister un feedback durable (pas de télémétrie
   // sortante). Il sert d'indicateur visuel immédiat.
   const [feedbackByIndex, setFeedbackByIndex] = useState<Record<number, "up" | "down">>({});
+  // Surface d'extension de la session courante (skills découvertes, slash-
+  // commands runtime, diagnostics non fatals). Résolue par le sidecar au `start`
+  // et remontée via `onExtensions` : on l'affiche telle quelle dans l'input au
+  // lieu de coder des skills/commandes en dur. Effacée à chaque session NEUVE.
+  const [sessionExtensions, setSessionExtensions] = useState<ClineSessionExtensions | null>(null);
   // `setTelemetry` (useState) est stable : on le garde en ref pour que les
   // closures de `handleSend` (mémorisées) y accèdent sans dépendre de lui.
   const setTelemetryRef = useRef(setTelemetry);
@@ -980,6 +995,16 @@ export default function AiPanel({
     if (!provider) return;
 
     const fp = folderPathRef.current ?? "";
+    // GARDE-FOU WORKSPACE : l'agent ne démarre JAMAIS sans dossier de travail.
+    // Sans lui, le sidecar recevrait `workspace: "."` (le cwd du process Node) et
+    // l'agent écrirait dans un dossier arbitraire, hors du contrôle du client.
+    // On ouvre donc le sélecteur natif et on interrompt l'envoi : l'utilisateur
+    // choisit son répertoire, puis renvoie son message.
+    if (!fp) {
+      showToast("Select a working directory to start the agent.", "info");
+      onOpenFolder?.();
+      return;
+    }
     const sourceFilePath = fileMentions.length === 1
       ? fileMentions[0]
       : (getActiveFilePathRef.current?.() ?? undefined);
@@ -1187,6 +1212,40 @@ export default function AiPanel({
     // Le fil de ce run a déjà été ancré au moment de l'UI optimiste (cf. le début
     // de `handleSend`) : `updateThread` part donc du bon état (bulles incluses).
 
+    // ── Suivi shell en DIRECT (parité SOLO) ──────────────────────────────────
+    //
+    // Le terminal « Agent » du panneau bas est un MIROIR lecture seule : il ne
+    // ré-exécute JAMAIS la commande (sinon `rm`/`git commit` s'exécuteraient deux
+    // fois). Il lit le flux réel du SDK :
+    //   - `tool-call` shell → on ouvre la commande (`agentTerminalCommandStart`) ;
+    //   - `terminal-output` → on écrit la sortie streamée (`agentTerminalOutput`) ;
+    //   - `tool-result` shell → on clôt avec le code de sortie (`CommandEnd`).
+    // Aucune écriture clavier n'est possible côté client : le store n'expose
+    // aucune API de saisie (contrainte structurelle, pas seulement visuelle).
+    //
+    // `liveToolId` mémorise l'id du tool-call shell courant : les `chunk` du SDK
+    // n'étant pas corrélés à un id, on rattache la sortie à la dernière commande
+    // ouverte, et on ignore les chunks d'outils non-shell (le terminal est
+    // réservé au shell).
+    let liveToolId: string | null = null;
+
+    const isShellTool = (toolName: string): boolean => {
+      const action = toPendingAction(toolName, {});
+      return action?.type === "bash_run";
+    };
+
+    /** Code de sortie lu sur le résultat d'un outil shell (défensif). */
+    const shellExitCode = (result: unknown): number => {
+      if (typeof result === "string" && /(?:error|exit code|failed)/i.test(result)) return 1;
+      if (result && typeof result === "object") {
+        const o = result as Record<string, unknown>;
+        if (typeof o.exitCode === "number") return o.exitCode;
+        if (typeof o.code === "number") return o.code;
+        if (o.error) return 1;
+      }
+      return 0;
+    };
+
     // ── Event handler ────────────────────────────────────────────────────────
     const handleEvent = (event: AgentEvent) => {
       // Garde de génération : un run remplacé/annulé ne doit PLUS toucher l'état
@@ -1267,6 +1326,13 @@ export default function AiPanel({
             appendChildTool(event.spawnId, subTc);
             break;
           }
+          // Terminal agent (parité SOLO) : une commande shell du root ouvre une
+          // entrée dans le miroir lecture seule (en-tête `$ cmd`).
+          if (isShellTool(event.toolName)) {
+            liveToolId = event.id;
+            const cmd = toPendingAction(event.toolName, event.args);
+            agentTerminalCommandStart(sessionId, cmd?.type === "bash_run" ? cmd.command : event.toolName);
+          }
           // Idempotence : un `approval-required` peut avoir créé la carte AVANT
           // que le `tool-call` ne soit consommé du flux (l'approbation démarre
           // dès que l'appel est parsé, donc l'ordre des deux events n'est pas
@@ -1308,6 +1374,12 @@ export default function AiPanel({
             updateChildTool(event.spawnId, event.id, { status: "complete", result: event.result });
             break;
           }
+          // Terminal agent : la commande shell est terminée → on clôt son entrée
+          // avec le code de sortie (marqueur vert/rouge dans le miroir).
+          if (liveToolId === event.id) {
+            agentTerminalCommandEnd(sessionId, shellExitCode(event.result));
+            liveToolId = null;
+          }
           // Revue « live » (pattern Trae) : dès qu'un outil d'écriture aboutit, on
           // rafraîchit la bannière « N files changed / Keep all / Undo all » pour
           // qu'elle apparaisse et se mette à jour PENDANT le run, pas à la fin.
@@ -1325,6 +1397,15 @@ export default function AiPanel({
             }
             return next;
           });
+          break;
+        }
+
+        case "terminal-output": {
+          // Sortie shell streamée (stdout/stderr) pendant qu'une commande tourne :
+          // on l'écrit dans le miroir du terminal agent, rattachée à la commande
+          // shell ouverte. Un chunk reçu hors commande (bruit d'un autre outil)
+          // est ignoré : le terminal est réservé au shell.
+          if (liveToolId) agentTerminalOutput(sessionId, event.chunk);
           break;
         }
 
@@ -1807,6 +1888,22 @@ export default function AiPanel({
     }): Promise<ClineRunHandle | null> => {
       const clineSessionId = sessionId ? await getClineSessionId(sessionId) : null;
       const needsTodoTools = !clineSessionId && !!sessionId;
+      // Session NEUVE : la surface d'extension (skills/commands) va être
+      // rescanée par le sidecar. On repart d'une base propre pour ne pas
+      // afficher les extensions d'une session précédente en attendant la
+      // réponse (le callback `onExtensions` la repeuplera).
+      if (!clineSessionId) setSessionExtensions(null);
+      // Navigateur piloté : on déclare le panel de prévisualisation comme cible
+      // de l'agent (parité Trae SOLO). Comme pour la todo, les outils ne sont
+      // injectés qu'à la CRÉATION de la session (un `start`) — sur une reprise,
+      // ils existent déjà côté SDK.
+      const wantsBrowser = !clineSessionId && !!sessionId;
+      const extraTools = [
+        ...(needsTodoTools ? [{ kind: "todo" as const, sessionId }] : []),
+        ...(wantsBrowser
+          ? [{ kind: "browser" as const, sessionId, panelId: PREVIEW_PANEL_ID }]
+          : []),
+      ];
       const handle = await startClineHarness({
         workspace: fp || ".",
         providerId: clineProvider.providerId,
@@ -1817,12 +1914,22 @@ export default function AiPanel({
         mode: opts.sdkMode,
         enableTeams: opts.enableTeams,
         ...(clineSessionId ? { resumeSessionId: clineSessionId } : {}),
-        ...(needsTodoTools ? { extraTools: [{ kind: "todo" as const, sessionId }] } : {}),
+        ...(extraTools.length > 0 ? { extraTools } : {}),
         onEvent: handleEvent,
         onToolEvent: (evt) => {
           // Effets d'outils custom (todo_write) : on applique dans le store
           // réactif de la session UI pour que la liste épinglée se rafraîchisse.
           if (evt.tool === "todo" && evt.todos) setTodos(evt.sessionId, evt.todos as import("../../lib/agent/todoStore").TodoItem[]);
+        },
+        onExtensions: (ext) => {
+          // Surface d'extension résolue au `start` : on l'expose à l'input
+          // (skills réelles + slash-commands). Les problèmes non fatals sont
+          // signalés une fois, sans bloquer le run.
+          setSessionExtensions(ext);
+          for (const issue of ext.issues) {
+            // Dernière barrière avant l'écran : on neutralise toute marque interne.
+            showToast(`Extension ${issue.scope}: ${neutralizeForClient(issue.message)}`, "error");
+          }
         },
         onBlocked: (action, reason) => {
           // Refus d'office (garde anti-catastrophe) : on l'EXPLIQUE, on ne
@@ -2471,8 +2578,27 @@ export default function AiPanel({
     return out;
   }, [messages]);
 
+  // Surface poussée au parent (AgentModeView) : on mémorise la dernière clé de
+  // contenu envoyée pour NE PAS repousser un objet identique. Sans ce garde-fou,
+  // chaque rendu recréait un objet neuf (`[]` pour reviewFiles, etc.), l'effet
+  // dépendant de `reviewBanner`/`runningTools` se relançait, le parent faisait
+  // `setSurface(newObj)` → re-rendu → effet → … : boucle infinie
+  // « Maximum update depth exceeded ».
+  const lastSurfaceKeyRef = useRef<string>("");
+
   useEffect(() => {
     if (!onAgentSurface) return;
+    // Clé de contenu : ne dépend que des valeurs réellement affichées. Les
+    // callbacks (identité stable via useCallback) sont volontairement exclus.
+    const key = JSON.stringify({
+      files: (reviewBanner?.files ?? []).map(f => `${f.path}:${f.added}:${f.removed}:${f.created ? 1 : 0}`),
+      doc: docMarkdown,
+      plan: pendingPlan,
+      running: runningTools.map(t => t.toolName),
+      isRunning: isStreaming,
+    });
+    if (key === lastSurfaceKeyRef.current) return;
+    lastSurfaceKeyRef.current = key;
     onAgentSurface({
       reviewFiles: reviewBanner?.files ?? [],
       undoAll: reviewBanner ? handleUndoAll : undefined,
@@ -2644,7 +2770,7 @@ export default function AiPanel({
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 24px", gap: "18px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <img src={logoCode} alt="Origin" style={{ width: 32, height: 32, flexShrink: 0 }} />
+                <img src={logoCode} alt="Mira" style={{ width: 32, height: 32, flexShrink: 0 }} />
                 <span style={{ fontSize: "26px", fontWeight: 700, color: "var(--origin-fg-default)" }}>Agent</span>
               </div>
               <div style={{ fontSize: "13px", color: "var(--origin-fg-muted)", textAlign: "center" }}>
@@ -2672,7 +2798,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} />
           </div>
         )}
 
@@ -2771,7 +2897,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} />
           </>
         )}
 

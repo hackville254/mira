@@ -472,8 +472,8 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
     await dapStart(id, config.adapter, config.adapterPath);
 
     const caps = await dapRequest(id, 'initialize', {
-      clientID: 'origin',
-      clientName: 'Origin IDE',
+      clientID: 'mira',
+      clientName: 'Mira',
       adapterID: config.adapter,
       pathFormat: 'path',
       linesStartAt1: true,
