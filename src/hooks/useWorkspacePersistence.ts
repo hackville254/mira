@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getSetting, setSetting } from "../lib/settings";
+import { hydrateAllTodos } from "../lib/agent/todoStore";
 import { useWorkspace } from "../context/WorkspaceContext";
 
 const ls = {
@@ -30,7 +31,8 @@ export function useWorkspacePersistence() {
       getSetting('sidebar.open'),
       getSetting('terminal.open'),
       getSetting('terminal.height'),
-    ]).then(([folder, sidebar, termOpen, termHeight]) => {
+      getSetting('app.mode'),
+    ]).then(([folder, sidebar, termOpen, termHeight, storeAppMode]) => {
       setFolderPath(folder || null);
 
       setSidebarOpen(sidebar);
@@ -43,7 +45,22 @@ export function useWorkspacePersistence() {
         setTerminalHeight(termHeight);
         ls.set('origin-terminal-height', String(termHeight));
       }
+
+      // Le mode applicatif était jusqu'ici reconstruit uniquement depuis
+      // localStorage, donc « désynchronisé » du store Tauri : une bascule
+      // IDE↔AI pouvait ne pas survivre selon la machine/le profil. On aligne
+      // désormais le store comme source de vérité (repli localStorage si vide).
+      const effectiveAppMode: 'ide' | 'ai' =
+        storeAppMode === 'ai' || storeAppMode === 'ide'
+          ? storeAppMode
+          : (ls.get('origin-app-mode') === 'ai' ? 'ai' : 'ide');
+      setAppMode(effectiveAppMode);
+      ls.set('origin-app-mode', effectiveAppMode);
     });
+
+    // Les todo lists sont persistées par conversation : on les réalimente une
+    // fois au démarrage pour qu'elles survivent au reload et à la bascule IDE↔AI.
+    void hydrateAllTodos();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -68,6 +85,7 @@ export function useWorkspacePersistence() {
 
   useEffect(() => {
     ls.set('origin-app-mode', appMode);
+    setSetting('app.mode', appMode);
   }, [appMode]);
 
   return {

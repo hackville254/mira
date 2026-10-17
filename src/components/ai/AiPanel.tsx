@@ -42,8 +42,12 @@ import type { ClineRunHandle } from "../../lib/agent/clineClient";
 import { isWriteTool } from "../../lib/agent/clineBridge";
 import { log } from "../../lib/logger";
 import { resetProjectContext } from "../../lib/agent/projectContext";
+import { getRun, forgetRun, setRunMessages, getRunMessages, listLiveRuns } from "../../lib/agent/runState";
+import { beginTaskRun, markTaskWaiting, markTaskRunning, type RegisterRunHandle } from "../../lib/agent/taskRuntime";
+import { planNotification, isToastEnabled } from "../../lib/notify/notify";
+import { playSound, isSoundEnabled, primeSound } from "../../lib/notify/sound";
 import { startSubAgent, stepSubAgent, endSubAgent, clearSubAgents } from "../../lib/agent/swarmStore";
-import { finalizeTodos, setTodos } from "../../lib/agent/todoStore";
+import { finalizeTodos, setTodos, clearTodos } from "../../lib/agent/todoStore";
 import { enqueueMessage, dequeueMessage } from "../../lib/agent/messageQueue";
 import { shouldPreCompact, estimateTokensWithOverhead, contextStatusPrompt, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
 import { compactHistory } from "../../lib/agent/compactHistory";
@@ -58,6 +62,8 @@ import {
   deleteSession,
   getClineSessionId,
   setClineSessionId,
+  getSessionAppMode,
+  setSessionAppMode as persistSessionAppMode,
   type DbSession,
 } from "../../lib/db";
 import type { EditorContext } from "../editor/Editor";
@@ -335,6 +341,32 @@ export interface AiDiffTabInput {
   reject: () => void;
 }
 
+/**
+ * Vue « surface agent » exportée au parent (mode Agent) pour alimenter les tool
+ * panels DiffView / DocView sans dupliquer l'état. Trae fait de même : ces
+ * panneaux ne détiennent pas la donnée, ils reflètent la tâche courante.
+ */
+export interface AgentSurfaceState {
+  /** Fichiers du tour de revue courant (bannière Undo/Keep), [] si aucun. */
+  reviewFiles: TurnFileDelta[];
+  /** Actions du tour courant, absentes si rien n'est annulable. */
+  undoAll?: () => Promise<void>;
+  keepAll?: () => Promise<void>;
+  /** Ouvre le diff avant/après d'un fichier. */
+  openDiff?: (file: TurnFileDelta) => void;
+  /** Markdown du dernier artefact assistant substantiel (source de DocView). */
+  docMarkdown: string;
+  /** Plan structuré encore en attente, s'il y en a un. */
+  plan?: import("../../lib/agent/planTypes").ParsedPlan | null;
+  /**
+   * Tool-calls actuellement `running`, dans l'ordre chronologique. Sert au Flow :
+   * le parent en déduit l'onglet d'outil à activer automatiquement.
+   */
+  runningTools: { toolName: string }[];
+  /** Un tour d'agent est-il en cours ? Le Flow ne s'active que dans ce cas. */
+  isRunning: boolean;
+}
+
 interface AiPanelProps {
   getEditorContext?: () => EditorContext | null;
   getActiveFilePath?: () => string | null;
@@ -359,6 +391,13 @@ interface AiPanelProps {
   newChatNonce?: number;
   /** Notifies the host when the active session changes (created, selected, cleared). */
   onActiveSessionChange?: (sessionId: string | null) => void;
+  /**
+   * Expose au parent (mode Agent) l'état de la « surface agent » : fichiers en
+   * revue + actions Undo/Keep + dernier document. Permet aux tool panels
+   * DiffView / DocView de refléter la conversation sans détenir d'état parallèle
+   * (le parent ne fait que déléguer l'affichage). Inutilisé en mode sidebar.
+   */
+  onAgentSurface?: (state: AgentSurfaceState) => void;
   /** 'sidebar' (IDE right panel) or 'agent' (full Agent mode surface, no resize handle). */
   renderMode?: "sidebar" | "agent";
 }
@@ -408,6 +447,7 @@ export default function AiPanel({
   openSessionId = null,
   newChatNonce = 0,
   onActiveSessionChange,
+  onAgentSurface,
   renderMode = "sidebar",
 }: AiPanelProps) {
   const { folderPath } = useWorkspace();
@@ -453,14 +493,9 @@ export default function AiPanel({
   const messageRefsMap = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const messagesRef        = useRef<DisplayMessage[]>([]);
-  const streamCleanupRef   = useRef<(() => void) | null>(null);
-  // Numéro de génération du run courant. Incrémenté à chaque `handleSend` ET à
-  // chaque stop. Les events d'un run périmé (seq différent du courant) sont
-  // ignorés dans `handleEvent` : c'est ce qui garantit qu'un stream annulé —
-  // ou dont un outil était déjà « en vol » — n'écrit PLUS dans le fil. Sans
-  // cette garde, un `tool-result` arrivé après l'abort continuait à muter
-  // `messages` (symptôme : « ça continue après avoir arrêté »).
-  const runSeqRef          = useRef<number>(0);
+  // MULTITASKING : l'état du run (seq, buffers, cleanup, timer, miroir) vit
+  // désormais PAR SESSION dans `runState` (cf. `getRun`). Plus de refs
+  // mono-instance ici : plusieurs tâches peuvent tourner en parallèle.
   const messagesEndRef     = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Vrai tant que l'utilisateur est « collé » en bas du fil. Mis à false dès qu'il
@@ -479,10 +514,6 @@ export default function AiPanel({
   const originMdRef                = useRef<string>("");
   const isFirstFolderEffect        = useRef(true);
   const activeSessionIdRef         = useRef<string | null>(null);
-  const pendingAssistantDbIdRef    = useRef<string | null>(null);
-  const pendingContentRef          = useRef<string>("");
-  const pendingPartsRef            = useRef<MessagePart[]>([]);
-  const flushTimerRef              = useRef<ReturnType<typeof setTimeout> | null>(null);
   const getActiveFilePathRef       = useRef(getActiveFilePath);
   const onApplyCodeRef             = useRef(onApplyCode);
   const onOpenDiffTabRef           = useRef(onOpenDiffTab);
@@ -509,15 +540,11 @@ export default function AiPanel({
   // Index du message utilisateur du tour courant : c'est la PORTÉE consignée
   // dans la bannière, utilisée par « Undo all » pour agir sur le bon run.
   const activeTurnUserIndexRef     = useRef<number | null>(null);
-  const streamDirtyRef             = useRef<boolean>(false);
   // Tour ↔ message utilisateur : chaque envoi ouvre un checkpoint et l'associe à
   // l'index du message utilisateur qui l'a déclenché. Reverter un message = agir
   // sur TOUS les tours générés depuis lui (un run pouvant couvrir plusieurs
   // envois), ce qui n'était pas possible avec un unique turnId courant.
   const turnIdsByUserIndexRef      = useRef<Map<number, string[]>>(new Map());
-  // Nombre de sous-agents lancés pendant le tour courant (mode IA). Alimenté par
-  // `subagent-start`, lu à la fin du tour pour une trace d'orchestration discrète.
-  const spawnedThisTurnRef         = useRef<number>(0);
   // La bannière porte AUSSI l'index du message utilisateur du run : c'est lui
   // qui définit la PORTÉE d'un « Undo all » (tous les tours générés depuis ce
   // message). Sans cela, « Undo all » devinait le tour visé (dernier index connu)
@@ -621,6 +648,36 @@ export default function AiPanel({
     setActiveSessionIdState(id);
   }, []);
 
+  // ── Mode applicatif de la conversation (parité Trae) ─────────────────────
+  // Trae garantit qu'une conversation ne perd RIEN quand on bascule IDE↔AI : le
+  // mode de CRÉATION de la conversation fait foi à la reprise, quel que soit le
+  // layout courant. On mémorise donc ce mode (en base, colonne `app_mode`) et on
+  // reflète ici la valeur de la conversation active. `null` = conversation neuve
+  // ou héritée d'avant la migration → on retombe sur le mode du layout courant,
+  // ce qui préserve la dégradation gracieuse. La ref est la source de vérité
+  // (lue par la boucle d'envoi, potentiellement asynchrone).
+  const sessionAppModeRef = useRef<'ide' | 'ai' | null>(null);
+  const setSessionAppMode = useCallback((m: 'ide' | 'ai' | null) => {
+    sessionAppModeRef.current = m;
+  }, []);
+  // Réhydrate le mode depuis la base au profit de la conversation active (et le
+  // renseigne en secours si `NULL`). Non bloquant : l'appelant n'attend pas.
+  const loadSessionAppMode = useCallback(async (sessionId: string) => {
+    try {
+      let am = await getSessionAppMode(sessionId);
+      if (am === null) {
+        // Session héritée : on fige le mode courant comme mode de création pour
+        // que les prochaines reprises soient stables dans le temps.
+        am = isAgent ? 'ai' : 'ide';
+        await persistSessionAppMode(sessionId, am);
+      }
+      // Pas de réactivité nécessaire : la valeur n'est relue qu'au prochain envoi.
+      if (activeSessionIdRef.current === sessionId) sessionAppModeRef.current = am;
+    } catch (err) {
+      console.error("[AiPanel] loadSessionAppMode failed:", err);
+    }
+  }, [isAgent]);
+
   // Télémétrie du tour : nb de compactions / reprises automatiques, et dernier
   // gain de tokens obtenu par compaction. Affichée en pied de fil.
   const [telemetry, setTelemetry] = useState<{ compaction: number; retry: number; lastSavedTokens?: number }>(
@@ -652,7 +709,7 @@ export default function AiPanel({
     const id = crypto.randomUUID();
     activeTurnIdRef.current = id;
     activeTurnUserIndexRef.current = userIndex;
-    streamDirtyRef.current = false;
+    getRun(activeSessionIdRef.current).dirty = false;
     const byUser = turnIdsByUserIndexRef.current;
     const list = byUser.get(userIndex);
     if (list) list.push(id);
@@ -785,17 +842,26 @@ export default function AiPanel({
     setSessions(lsForPath(fp));
 
     if (!isFirstFolderEffect.current) {
-      // Project switched — cancel any in-flight stream and reset to new chat
-      streamCleanupRef.current?.();
-      streamCleanupRef.current = null;
-      if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-      const prevDbId = pendingAssistantDbIdRef.current;
+      // Project switched — les sessions d'un autre projet n'ont plus de sens :
+      // on coupe TOUS les runs vivants, quel que soit le projet d'origine.
+      // MULTITASKING : plusieurs runs peuvent coexister, on les purge tous.
+      const leaving = getRun(activeSessionIdRef.current);
+      if (leaving.flushTimer) { clearTimeout(leaving.flushTimer); leaving.flushTimer = null; }
+      const prevDbId = leaving.pendingAssistantDbId;
       if (prevDbId) {
-        pendingAssistantDbIdRef.current = null;
-        updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+        leaving.pendingAssistantDbId = null;
+        updateMessageContent(prevDbId, leaving.pendingContent, "interrupted").catch(() => {});
+      }
+      for (const id of listLiveRuns()) {
+        // MULTITASKING : on marque « interrupted » AVANT de purger l'état, sinon
+        // le rail garderait ces tâches éternellement « running » (le registre de
+        // statut est indépendant de `runState`).
+        getRun(id).task?.interrupt();
+        forgetRun(id);
       }
       setMessages([]);
       setActiveSessionId(null);
+      setSessionAppMode(null);
       onActiveSessionChangeRef.current?.(null);
       setChatView("new");
       localStorage.setItem("origin-ai-chat-view", "new");
@@ -816,6 +882,7 @@ export default function AiPanel({
             setActiveSessionId(storedId);
             setChatView("chat");
             localStorage.setItem("origin-ai-chat-view", "chat");
+            void loadSessionAppMode(storedId);
           }
         } catch (err) {
           console.error("[AiPanel] DB session restore failed:", err);
@@ -823,18 +890,17 @@ export default function AiPanel({
       })();
     }
     return () => { cancelled = true; };
-  }, [folderPath, setActiveSessionId]);
+  }, [folderPath, setActiveSessionId, setSessionAppMode, loadSessionAppMode]);
 
   const handleSessionSelect = useCallback(async (sessionId: string) => {
-    streamCleanupRef.current?.();
-    streamCleanupRef.current = null;
-
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    const prevDbId = pendingAssistantDbIdRef.current;
-    if (prevDbId) {
-      pendingAssistantDbIdRef.current = null;
-      updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+    const prevSessionId = activeSessionIdRef.current;
+    // MULTITASKING (parité Trae) : changer de tâche n'interrompt PLUS le run en
+    // cours. Si une autre tâche travaille, on mémorise son fil pour pouvoir le
+    // réafficher en flux direct à la reprise, et on la laisse vivre en arrière-plan.
+    if (prevSessionId && prevSessionId !== sessionId) {
+      setRunMessages(prevSessionId, messagesRef.current);
     }
+    // Plus de cleanup du run courant : il continue en arrière-plan.
 
     setActiveSessionId(sessionId);
     const fp = folderPathRef.current ?? "";
@@ -843,8 +909,20 @@ export default function AiPanel({
     setMessages([]);
     setChatView("chat");
     localStorage.setItem("origin-ai-chat-view", "chat");
+    // Le mode suit la conversation : on relit le mode mémorisé de la conv reprise.
+    void loadSessionAppMode(sessionId);
 
     try {
+      // Si la session visée a un run EN COURS dans ce process, on réaffiche son
+      // miroir en direct (le flux se poursuit) plutôt que de relire une DB en
+      // retard sur le stream. Sinon, rechargement normal depuis la DB.
+      const mirror = getRunMessages(sessionId);
+      const live = getRun(sessionId).cleanup !== null;
+      if (mirror && live) {
+        dbIdsRef.current = mirror.map(m => m.dbId ?? null);
+        setMessages(mirror);
+        return;
+      }
       const displayMsgs = await restoreSession(sessionId);
       dbIdsRef.current = displayMsgs.map(m => m.dbId ?? null);
       setMessages(displayMsgs);
@@ -857,7 +935,7 @@ export default function AiPanel({
     } catch (err) {
       console.error("[AiPanel] Failed to load session messages:", err);
     }
-  }, [setActiveSessionId]);
+  }, [setActiveSessionId, loadSessionAppMode]);
 
   /**
    * Envoie le message en attente si présent. Appelé à la fin d'un tour (fin,
@@ -865,6 +943,33 @@ export default function AiPanel({
    * évite un double envoi lorsque plusieurs signaux de fin se chevauchent.
    */
   const flushQueueRef = useRef<(() => void) | null>(null);
+
+  /**
+   * Émet une notification de tâche (toast + son) en respectant les préférences
+   * et les règles anti-bruit. Centralise l'appel à `planNotification` : la
+   * décision « faut-il notifier ? » reste testable hors React (cf. notify.ts).
+   *
+   * `displayedId` permet de savoir si la tâche concernée est celle AFFICHÉE :
+   * une tâche qui se termine en arrière-plan mérite une alerte, celle qu'on
+   * regarde se voit déjà dans le fil.
+   */
+  const notifyTask = useCallback((
+    kind: "finish" | "question" | "error" | "stop",
+    sessionId: string,
+    opts?: { errorMessage?: string },
+  ) => {
+    const fp = folderPathRef.current ?? "";
+    const label = lsForPath(fp).find(s => s.id === sessionId)?.title || "Task";
+    const plan = planNotification(kind, {
+      taskLabel: label,
+      isDisplayed: activeSessionIdRef.current === sessionId,
+      errorMessage: opts?.errorMessage,
+      toastEnabled: isToastEnabled(),
+      soundEnabled: isSoundEnabled(),
+    });
+    if (plan.playSound) playSound(plan.playSound);
+    if (plan.toast) showToast(plan.toast.text, plan.toast.type);
+  }, [showToast]);
 
   const handleSend = useCallback(async (
     text: string,
@@ -874,20 +979,38 @@ export default function AiPanel({
     editorContext: EditorContext | null = null,
     mode: "agent" | "ask" | "plan" = "agent",
   ) => {
-    // Nouvelle génération : tout event d'un run antérieur devient périmé et sera
-    // ignoré par `handleEvent` (cf. `runSeqRef`). Incrémenté AVANT l'abort du run
-    // précédent pour que ses éventuels events tardifs ne soient jamais acceptés.
-    const runSeq = ++runSeqRef.current;
-    streamCleanupRef.current?.();
+    // MULTITASKING : l'état du run est propre à la session (cf. runState.ts).
+    // On résout la session AVANT tout : sans session existante, on en crée une
+    // d'emblée, ce qui garantit un run isolé par tâche.
+    // `handleSend` part TOUJOURS d'une action utilisateur (envoi) : c'est le
+    // meilleur moment pour « débloquer » l'AudioContext (exigé par les webviews
+    // avant tout son), afin que les notifications sonores suivantes passent.
+    primeSound();
+    const prevSessionId = activeSessionIdRef.current;
+    const sessionId = prevSessionId ?? crypto.randomUUID();
+    const run = getRun(sessionId);
 
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    const prevDbId = pendingAssistantDbIdRef.current;
+    // Nouvelle génération : tout event d'un run antérieur devient périmé et sera
+    // ignoré par `handleEvent` (cf. `run.seq`). Incrémenté AVANT l'abort du run
+    // précédent pour que ses éventuels events tardifs ne soient jamais acceptés.
+    const runSeq = ++run.seq;
+    run.cleanup?.();
+
+    // MULTITASKING : on démarre ce tour dans le REGISTRE DE STATUT (taskRuntime).
+    // La tâche devient « running » et le rail la voit travailler MÊME si l'UI
+    // affiche une autre conversation. Le handle permet de ré-enregistrer l'abort
+    // à chaque création de run Cline (cf. runCline) et de clôturer proprement.
+    const taskRun: RegisterRunHandle = beginTaskRun(sessionId);
+    run.task = taskRun;
+
+    if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
+    const prevDbId = run.pendingAssistantDbId;
     if (prevDbId) {
-      pendingAssistantDbIdRef.current = null;
-      updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+      run.pendingAssistantDbId = null;
+      updateMessageContent(prevDbId, run.pendingContent, "interrupted").catch(() => {});
     }
-    pendingContentRef.current = "";
-    pendingPartsRef.current = [];
+    run.pendingContent = "";
+    run.pendingParts = [];
 
     // Mémorise la cible du tour pour permettre une régénération ultérieure.
     activeModelIdRef.current = modelId;
@@ -905,7 +1028,7 @@ export default function AiPanel({
     // On affiche la bulle utilisateur ET la bulle assistant (« streaming ») AVANT
     // le moindre await : le feedback est instantané, et tout le travail lent
     // (clé API, DB, lecture des fichiers mentionnés) se fait pendant que l'UI est
-    // déjà à jour. `handleEvent` garde de toute façon `runSeqRef` pour ignorer
+    // déjà à jour. `handleEvent` garde de toute façon `run.seq` pour ignorer
     // les events d'un run périmé.
     const userMsg: DisplayMessage = {
       role: "user", content: text, sourceFilePath,
@@ -918,6 +1041,12 @@ export default function AiPanel({
       userMsg,
       { role: "assistant", content: "", streaming: true, parts: [], sourceFilePath: userMsg.sourceFilePath },
     ]);
+    // MULTITASKING : on ancre le fil de CE run SUR la même base que l'UI
+    // optimiste ci-dessus (`messagesRef` n'est pas encore synchronisé par l'effet
+    // au moment où le run démarre). Sans cet ancrage, `updateThread` repartirait
+    // d'un fil SANS les deux bulles qui viennent d'être affichées.
+    const runSeed = messagesRef.current;
+    run.messages = [...runSeed, userMsg, { role: "assistant", content: "", streaming: true, parts: [], sourceFilePath: userMsg.sourceFilePath }];
     setChatView("chat");
     localStorage.setItem("origin-ai-chat-view", "chat");
     // On capture la longueur AVANT l'édition optimiste : le contexte projet est
@@ -943,14 +1072,25 @@ export default function AiPanel({
       : null;
 
     // ── Session bookkeeping ──────────────────────────────────────────────────
-    let sessionId = activeSessionIdRef.current;
-    if (!sessionId) {
-      sessionId = crypto.randomUUID();
+    // `sessionId` a déjà été résolu en tête de `handleSend` (`prevSessionId`).
+    // Mode effectif de la conversation : c'est le mode MÉMORISÉ (mode de création
+    // de la conv) qui décide des capacités d'agent, PAS le layout courant. Une
+    // conv ouverte en AI garde donc ses sous-agents même relue en IDE, et
+    // inversement — c'est la garantie « le mode suit la conversation » de Trae.
+    // Repli sur le mode du layout tant qu'aucun mode n'est mémorisé (nouvelle conv).
+    const effAppMode: 'ide' | 'ai' = sessionAppModeRef.current ?? (isAgent ? 'ai' : 'ide');
+    const convIsAgent = effAppMode === 'ai';
+    if (!prevSessionId) {
+      // `sessionId` a déjà été généré en tête de `handleSend` (et `run` y est
+      // rattaché) : on ne le régénère PAS, sinon le run travaillerait sur un
+      // état orphelin. On se contente de publier la nouvelle conversation.
       setActiveSessionId(sessionId);
       localStorage.setItem(activeSessionKey(fp), sessionId);
       onActiveSessionChangeRef.current?.(sessionId);
       lsPush({ id: sessionId, title: text, workspace_path: fp, updated_at: Date.now() });
-      createSession(fp, text, modelId, providerId, sessionId)
+      // Le mode de création de la conversation est figé ici (source de vérité).
+      setSessionAppMode(effAppMode);
+      createSession(fp, text, modelId, providerId, sessionId, effAppMode)
         .catch(err => console.error("[AiPanel] DB createSession failed:", err));
     } else {
       lsTouch(sessionId);
@@ -990,7 +1130,7 @@ export default function AiPanel({
         assistantInsert.catch(err => { console.error("[AiPanel] Failed to persist assistant placeholder:", err); return null; }),
       ]);
       dbIdsRef.current.push(uid, assistantDbId);
-      pendingAssistantDbIdRef.current = assistantDbId;
+      run.pendingAssistantDbId = assistantDbId;
     } else {
       dbIdsRef.current.push(null, null);
     }
@@ -1038,11 +1178,11 @@ export default function AiPanel({
     const customAgent = localStorage.getItem("origin-ai-system-prompt");
     const customAsk   = localStorage.getItem("origin-ai-ask-prompt");
     const customPlan  = localStorage.getItem("origin-ai-plan-prompt");
-    // Le mode IA (`isAgent`) tourne avec des coéquipiers Cline (`team_*`) : on
-    // annonce TOUJOURS la délégation dans ce cas, indépendamment de l'effort.
-    // En IDE (sidebar) il n'y a qu'un agent : la consigne de sous-agents serait
+    // Le mode IA (conversation créée en AI) tourne avec des coéquipiers Cline
+    // (`team_*`) : on annonce TOUJOURS la délégation dans ce cas, indépendamment
+    // de l'effort. En IDE il n'y a qu'un agent : la consigne de sous-agents serait
     // trompeuse, on ne l'inclut qu'à l'effort max (variante `spawn_agent`).
-    const systemPrompt     = withOriginMd(customAgent ?? buildSystemPrompt("agent", isMax, "", isAgent));
+    const systemPrompt     = withOriginMd(customAgent ?? buildSystemPrompt("agent", isMax, "", convIsAgent));
     const askSystemPrompt  = withOriginMd(customAsk   ?? buildSystemPrompt("ask",   isMax));
     const planSystemPrompt = withOriginMd(customPlan  ?? buildSystemPrompt("plan",  isMax));
 
@@ -1058,16 +1198,40 @@ export default function AiPanel({
     setTelemetry({ compaction: 0, retry: 0 });
     // L'onglet Agents ne montre que les sous-agents du tour courant (les cartes
     // du chat, elles, restent persistées dans les parts des messages).
-    clearSubAgents();
+    // MULTITASKING : la purge cible CETTE session — les sous-agents d'une tâche
+    // parallèle ne doivent jamais disparaître quand une autre tâche démarre.
+    clearSubAgents(sessionId);
     // Le contexte projet dérivé (stack/arbo/fichiers clés) est recalculé au début
-    // de chaque tour : jamais figé d'un tour à l'autre.
-    resetProjectContext();
+    // de chaque tour : jamais figé d'un tour à l'autre — et propre à cette session.
+    resetProjectContext(sessionId);
+
+    // Clé stable de session pour les stores clé-par-session (sous-agents, contexte).
+    const runSessionKey = sessionId;
+
+    // ── Fil propre à CE run (multitasking) ───────────────────────────────────
+    //
+    // `messagesRef` ne peut pas servir de source de vérité à un run : il reflète
+    // le fil AFFICHÉ, qui peut appartenir à une AUTRE tâche. Chaque run travaille
+    // donc sur SON propre fil, `run.messages` (état par session de `runState`).
+    //  - si la session du run est AFFICHÉE → on pousse vers React (`setMessages`) ;
+    //  - sinon → on ne mute QUE le miroir : le fil affiché (autre tâche) est
+    //    intact et le run sera rejoué à la reprise (cf. handleSessionSelect).
+    const isDisplayed = () => activeSessionIdRef.current === sessionId;
+    const updateThread = (updater: (prev: DisplayMessage[]) => DisplayMessage[]): void => {
+      const prev = run.messages ?? messagesRef.current;
+      const next = updater(prev);
+      run.messages = next;
+      if (isDisplayed()) setMessages(next);
+    };
+
+    // Le fil de ce run a déjà été ancré au moment de l'UI optimiste (cf. le début
+    // de `handleSend`) : `updateThread` part donc du bon état (bulles incluses).
 
     // ── Event handler ────────────────────────────────────────────────────────
     const handleEvent = (event: AgentEvent) => {
       // Garde de génération : un run remplacé/annulé ne doit PLUS toucher l'état
       // de l'UI, même si un outil déjà « en vol » émet encore un event tardif.
-      if (runSeqRef.current !== runSeq) return;
+      if (run.seq !== runSeq) return;
       switch (event.type) {
 
         case "token": {
@@ -1079,8 +1243,8 @@ export default function AiPanel({
             appendChildStream(event.spawnId, delta);
             break;
           }
-          pendingPartsRef.current = appendText(pendingPartsRef.current, delta);
-          setMessages(prev => {
+          run.pendingParts = appendText(run.pendingParts, delta);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
@@ -1092,12 +1256,12 @@ export default function AiPanel({
             }
             return next;
           });
-          pendingContentRef.current += delta;
-          if (!flushTimerRef.current) {
-            flushTimerRef.current = setTimeout(() => {
-              flushTimerRef.current = null;
-              const dbId = pendingAssistantDbIdRef.current;
-              if (dbId) updateMessageContent(dbId, pendingContentRef.current, "streaming").catch(() => {});
+          run.pendingContent += delta;
+          if (!run.flushTimer) {
+            run.flushTimer = setTimeout(() => {
+              run.flushTimer = null;
+              const dbId = run.pendingAssistantDbId;
+              if (dbId) updateMessageContent(dbId, run.pendingContent, "streaming").catch(() => {});
             }, 500);
           }
           break;
@@ -1110,8 +1274,8 @@ export default function AiPanel({
           // d'un sous-agent, lui, n'alimente jamais le fil du root.
           if (event.spawnId) break;
           const delta = event.delta;
-          pendingPartsRef.current = appendReasoning(pendingPartsRef.current, delta);
-          setMessages(prev => {
+          run.pendingParts = appendReasoning(run.pendingParts, delta);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
@@ -1129,8 +1293,13 @@ export default function AiPanel({
           // `apply_patch`, PAS `write_file`/`edit` — une comparaison littérale
           // ici rendait la bannière muette.
           if (isWriteTool(event.toolName)) {
-            streamDirtyRef.current = true;
+            run.dirty = true;
           }
+          // MULTITASKING : dès qu'un outil (du root) démarre, la tâche passe en
+          // « waiting » — elle reste VIVANTE (donc basculable sans perte), mais le
+          // rail peut l'afficher comme « en attente d'outil ». Les outils de
+          // sous-agents n'y touchent pas : le root, lui, n'attend rien.
+          if (!event.spawnId) markTaskWaiting(sessionId, event.toolName);
           // Un tool-call préfixé par `spawnId` appartient à un sous-agent : il est
           // ajouté à la liste d'outils de sa carte (et JAMAIS au flux du root).
           if (event.spawnId) {
@@ -1144,11 +1313,11 @@ export default function AiPanel({
           // garanti). Sans ce garde-fou, la carte apparaîtrait en DOUBLE — une
           // fois via l'approbation, une fois via le tool-call. On met à jour la
           // part existante au lieu d'en ajouter une seconde.
-          const alreadyHasCall = pendingPartsRef.current.some(p => p.type === "tool-call" && p.tc.id === event.id);
+          const alreadyHasCall = run.pendingParts.some(p => p.type === "tool-call" && p.tc.id === event.id);
           const newPart: MessagePart = { type: "tool-call", tc: { id: event.id, toolName: event.toolName, args: event.args, status: "running" } };
           if (alreadyHasCall) {
-            pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, { toolName: event.toolName, args: event.args });
-            setMessages(prev => {
+            run.pendingParts = updateTcInParts(run.pendingParts, event.id, { toolName: event.toolName, args: event.args });
+            updateThread(prev => {
               const next = [...prev];
               const last = next[next.length - 1];
               if (last?.role === "assistant" && last.parts) {
@@ -1158,8 +1327,8 @@ export default function AiPanel({
             });
             break;
           }
-          pendingPartsRef.current = [...pendingPartsRef.current, newPart];
-          setMessages(prev => {
+          run.pendingParts = [...run.pendingParts, newPart];
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
@@ -1171,6 +1340,10 @@ export default function AiPanel({
         }
 
         case "tool-result": {
+          // MULTITASKING : l'outil du root a rendu la main, l'agent regénère —
+          // retour en « running ». (Les outils de sous-agents ne pilotent pas le
+          // statut : c'est le root qui travaille.)
+          if (!event.spawnId) markTaskRunning(sessionId);
           if (event.spawnId) {
             updateChildTool(event.spawnId, event.id, { status: "complete", result: event.result });
             break;
@@ -1183,8 +1356,8 @@ export default function AiPanel({
             if (turnId) refreshReview(turnId);
           }
           const tcUpdate = { status: "complete" as const, result: event.result, approve: undefined, reject: undefined };
-          pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, tcUpdate);
-          setMessages(prev => {
+          run.pendingParts = updateTcInParts(run.pendingParts, event.id, tcUpdate);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant" && last.parts) {
@@ -1229,15 +1402,15 @@ export default function AiPanel({
           // `messages` entre le `tool-call` et l'approbation (flush de fin
           // d'étape). On cherche donc l'id dans les deux : si on ne regardait
           // que `pendingParts`, on recréerait une seconde carte → doublon.
-          const inPending = pendingPartsRef.current.some(p => p.type === "tool-call" && p.tc.id === event.id);
+          const inPending = run.pendingParts.some(p => p.type === "tool-call" && p.tc.id === event.id);
           const inMessages = (messagesRef.current[messagesRef.current.length - 1]?.parts ?? []).some(p => p.type === "tool-call" && p.tc.id === event.id);
           if (inPending) {
-            pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, approvalUpdate);
+            run.pendingParts = updateTcInParts(run.pendingParts, event.id, approvalUpdate);
           } else if (!inMessages) {
             const tc = { id: event.id, toolName: event.action.type, args: event.action, ...approvalUpdate };
-            pendingPartsRef.current = [...pendingPartsRef.current, { type: "tool-call", tc }];
+            run.pendingParts = [...run.pendingParts, { type: "tool-call", tc }];
           }
-          setMessages(prev => {
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (!last || last.role !== "assistant") return next;
@@ -1251,6 +1424,13 @@ export default function AiPanel({
             }
             return next;
           });
+          // L'agent est BLOQUÉ en attente d'une décision (réponse à une question
+          // ou approbation d'édition) : son + toast, quel que soit le tool. La
+          // session visée est celle du run courant.
+          {
+            const waitSid = sessionId || activeSessionIdRef.current;
+            if (waitSid) notifyTask("question", waitSid);
+          }
           break;
         }
 
@@ -1263,8 +1443,8 @@ export default function AiPanel({
           const resolved = event.status === "approved"
             ? { status: "complete" as const, approve: undefined, reject: undefined }
             : { status: "complete" as const, result: { cancelled: true }, approve: undefined, reject: undefined };
-          pendingPartsRef.current = updateTcInParts(pendingPartsRef.current, event.id, resolved);
-          setMessages(prev => {
+          run.pendingParts = updateTcInParts(run.pendingParts, event.id, resolved);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant" && last.parts) {
@@ -1279,13 +1459,13 @@ export default function AiPanel({
           // Bannière système in-line : compaction de l'historique ou reprise auto.
           // On la pousse comme part `status` dans le message assistant courant.
           const statusPart: MessagePart = { type: "status", kind: event.kind, detail: event.detail, savedTokens: event.savedTokens };
-          pendingPartsRef.current = [...pendingPartsRef.current, statusPart];
+          run.pendingParts = [...run.pendingParts, statusPart];
           // Télémétrie : on incrémente le compteur de la session.
           setTelemetryRef.current?.(t => {
             const key = event.kind;
             return { ...t, [key]: (t[key] ?? 0) + 1, lastSavedTokens: event.savedTokens ?? t.lastSavedTokens };
           });
-          setMessages(prev => {
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
@@ -1324,8 +1504,8 @@ export default function AiPanel({
           //    visuellement le bon parent, et sans ce fallback la carte du
           //    coéquipier n'existerait nulle part dans le fil (son contenu, routé
           //    par `spawnId`, serait perdu — le bug « rien pour le suivi »).
-          spawnedThisTurnRef.current += 1;
-          startSubAgent({ spawnId: event.spawnId, role: event.role, task: event.task, toolCallId: event.toolCallId });
+          run.spawned += 1;
+          startSubAgent(runSessionKey, { spawnId: event.spawnId, role: event.role, task: event.task, toolCallId: event.toolCallId });
           const targetId = event.toolCallId;
           const attachChild = (parts: MessagePart[]): MessagePart[] => {
             // Cible directe par id, sinon dernier tool-call `team_*` sans cette carte.
@@ -1366,8 +1546,8 @@ export default function AiPanel({
               };
             });
           };
-          pendingPartsRef.current = attachChild(pendingPartsRef.current);
-          setMessages(prev => {
+          run.pendingParts = attachChild(run.pendingParts);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") next[next.length - 1] = { ...last, parts: attachChild(last.parts ?? []) };
@@ -1377,11 +1557,11 @@ export default function AiPanel({
         }
 
         case "subagent-step":
-          stepSubAgent(event.spawnId, event.iteration);
+          stepSubAgent(runSessionKey, event.spawnId, event.iteration);
           break;
 
         case "subagent-end": {
-          endSubAgent(event.spawnId, {
+          endSubAgent(runSessionKey, event.spawnId, {
             status: event.status, report: event.report,
             iterations: event.iterations, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
           });
@@ -1398,8 +1578,8 @@ export default function AiPanel({
             });
             return touched ? { ...p, tc: { ...p.tc, children } } : p;
           });
-          pendingPartsRef.current = finalizeChild(pendingPartsRef.current);
-          setMessages(prev => {
+          run.pendingParts = finalizeChild(run.pendingParts);
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") next[next.length - 1] = { ...last, parts: finalizeChild(last.parts ?? []) };
@@ -1409,23 +1589,23 @@ export default function AiPanel({
         }
 
         case "finish": {
-          if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+          if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
           // Trace d'orchestration discrète : on consigne le nombre de sous-agents
           // réellement lancés pendant le tour. Aucune ligne si le root a choisi
           // de tout faire lui-même (choix légitime) — c'est un journal, pas une
           // injonction. La part est ajoutée au corps final, donc persistée.
-          if (spawnedThisTurnRef.current > 0) {
-            const n = spawnedThisTurnRef.current;
-            pendingPartsRef.current = [
-              ...pendingPartsRef.current,
+          if (run.spawned > 0) {
+            const n = run.spawned;
+            run.pendingParts = [
+              ...run.pendingParts,
               { type: "status", kind: "orchestration", detail: `${n} sous-agent${n > 1 ? "s" : ""} ${n > 1 ? "ont" : "a"} travaillé pour ce tour.` },
             ];
           }
-          const dbId = pendingAssistantDbIdRef.current;
-          const finalContent = pendingContentRef.current;
-          const finalParts = pendingPartsRef.current;
-          pendingAssistantDbIdRef.current = null;
-          pendingPartsRef.current = [];
+          const dbId = run.pendingAssistantDbId;
+          const finalContent = run.pendingContent;
+          const finalParts = run.pendingParts;
+          run.pendingAssistantDbId = null;
+          run.pendingParts = [];
           const partsJson = finalParts.length > 0
             ? JSON.stringify(finalParts.map(p => {
                 if (p.type !== "tool-call") return p;
@@ -1445,9 +1625,14 @@ export default function AiPanel({
             touchSession(sid, modelId, providerId).catch(() => {});
           }
           setSessions(lsForPath(fPath));
-          streamCleanupRef.current = null;
+          run.cleanup = null;
+          // MULTITASKING : le tour s'est terminé proprement → la tâche passe
+          // « completed » dans le registre. Le handle est libéré : un abort
+          // ultérieur ne coupera plus rien.
+          taskRun.complete();
+          run.task = null;
 
-          setMessages(prev => {
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant" && last.streaming) {
@@ -1459,6 +1644,12 @@ export default function AiPanel({
           // Coche automatique de fin de tour : les tâches restées ouvertes sont
           // marquées terminées pour que la checklist reflète un run achevé.
           if (activeSessionIdRef.current) finalizeTodos(activeSessionIdRef.current);
+
+          // Notification d'ORIGINE (avant flushQueue, qui peut relancer un run) :
+          // la tâche qui vient de se terminer est identifiée par SA session
+          // (`sid`), pas par la session affichée — le helper gère l'anti-bruit
+          // (pas de son/toast si c'est justement la tâche regardée).
+          if (sid) notifyTask("finish", sid);
 
           // File d'attente : envoie le message suivant, s'il y en a un.
           flushQueueRef.current?.();
@@ -1477,10 +1668,10 @@ export default function AiPanel({
           // La bannière a déjà été alimentée en continu (refreshReview) ; ce
           // dernier rafraîchissement « immédiat » garantit l'état final exact
           // (dernier delta) juste avant le retour au repos.
-          if (streamDirtyRef.current) {
+          if (run.dirty) {
             const turnId = activeTurnIdRef.current;
             if (turnId) refreshReview(turnId, true);
-            streamDirtyRef.current = false;
+            run.dirty = false;
           }
 
           // ── Pré-compaction réactive de fin de tour ───────────────────────────
@@ -1506,7 +1697,7 @@ export default function AiPanel({
                 ...t, compaction: t.compaction + 1,
                 lastSavedTokens: saved || t.lastSavedTokens,
               }));
-              setMessages(prev => {
+              updateThread(prev => {
                 const next = [...prev];
                 const last = next[next.length - 1];
                 if (last?.role === "assistant") {
@@ -1522,7 +1713,7 @@ export default function AiPanel({
             const plan = parsePlan(finalContent);
             if (plan) {
               phase1ContentRef.current = finalContent;
-              setMessages(prev => {
+              updateThread(prev => {
                 const next = [...prev];
                 const last = next[next.length - 1];
                 if (last?.role === "assistant") {
@@ -1546,16 +1737,16 @@ export default function AiPanel({
         }
 
         case "error": {
-          if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-          const dbId = pendingAssistantDbIdRef.current;
-          const partialContent = pendingContentRef.current;
-          pendingAssistantDbIdRef.current = null;
+          if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
+          const dbId = run.pendingAssistantDbId;
+          const partialContent = run.pendingContent;
+          run.pendingAssistantDbId = null;
           // Trace exploitable : c'est LE point où un tour casse. Écrit dans le
           // terminal `tauri dev` + le fichier de log, sans DevTools.
           log.error("ai/panel", `tour en erreur (dbId=${dbId ?? "-"}, partiel=${partialContent.length} car.) : ${event.message}`);
           log.flush();
           if (dbId) updateMessageContent(dbId, partialContent || `Error: ${event.message}`, "error").catch(() => {});
-          setMessages(prev => {
+          updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
@@ -1563,13 +1754,27 @@ export default function AiPanel({
             }
             return next;
           });
-          streamCleanupRef.current = null;
+          run.cleanup = null;
+          // MULTITASKING : le tour a échoué → la tâche est « interrupted » (elle
+          // n'est plus vivante, mais elle n'a pas abouti). Handle libéré.
+          taskRun.interrupt();
+          run.task = null;
+          // Notification d'erreur : son + toast (toujours, même si la tâche est
+          // affichée — un échec doit interpeller). La session visée est celle du
+          // run courant.
+          {
+            const errSid = sessionId || activeSessionIdRef.current;
+            if (errSid) notifyTask("error", errSid, { errorMessage: event.message });
+          }
           // Le tour s'est terminé en erreur : on enchaîne tout de même le
           // message en attente (l'utilisateur a explicitement choisi de l'envoyer).
           flushQueueRef.current?.();
           break;
         }
       }
+
+      // Le fil de CE run est déjà tenu à jour par `updateThread` (miroir
+      // `run.messages`) : rien d'autre à synchroniser ici.
     };
 
     // Applique une mutation à l'unique sous-agent `spawnId` d'un tool-call parent.
@@ -1579,7 +1784,7 @@ export default function AiPanel({
         if (p.type !== "tool-call" || !p.tc.children?.some(c => c.spawnId === spawnId)) return p;
         return { ...p, tc: { ...p.tc, children: fn(p.tc.children) } };
       });
-      pendingPartsRef.current = apply(pendingPartsRef.current);
+      run.pendingParts = apply(run.pendingParts);
       setMessages(prev => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -1677,10 +1882,16 @@ export default function AiPanel({
           .catch(err => console.error("[AiPanel] DB setClineSessionId failed:", err));
       }
       // Annulation : coupe le tour en cours côté SDK, puis détache l'écouteur.
-      streamCleanupRef.current = () => {
+      run.cleanup = () => {
         void handle.abort();
         handle.dispose();
       };
+      // MULTITASKING : on publie l'abort au registre de statut pour qu'une
+      // interruption externe (rail de tâches, fermeture) coupe CE run précis.
+      taskRun.setAbort(() => {
+        void handle.abort();
+        handle.dispose();
+      });
       return handle;
     };
 
@@ -1690,14 +1901,17 @@ export default function AiPanel({
       // en mode `act` — l'agent a déjà tout le contexte du plan dans son
       // historique, on lui demande juste de passer à l'implémentation.
       startPlanExecutionRef.current = async () => {
+        // Phase 2 : on cible le run de la session ACTIVE au moment de l'exécution
+        // (l'utilisateur a pu basculer de tâche entre-temps).
+        const phase2Run = getRun(activeSessionIdRef.current);
         if (activeSessionIdRef.current) {
           try {
             const aid = await insertMessage({ sessionId: activeSessionIdRef.current, messageType: "assistant", content: "", status: "streaming", model: modelId });
-            pendingAssistantDbIdRef.current = aid;
+            phase2Run.pendingAssistantDbId = aid;
           } catch { /* ignore */ }
         }
-        pendingContentRef.current = "";
-        pendingPartsRef.current = [];
+        phase2Run.pendingContent = "";
+        phase2Run.pendingParts = [];
         setMessages(prev => [...prev, { role: "assistant", content: "", streaming: true, parts: [] }]);
 
         const phase2IsMax = (localStorage.getItem("origin-ai-effort") ?? "normal") === "max";
@@ -1717,24 +1931,24 @@ export default function AiPanel({
       if (handle) await handle.send(apiText);
     } else {
       // ── Modes IDE et IA : exécution complète ─────────────────────────────────
-      // IDE (`renderMode === "sidebar"`)  : un SEUL agent (`enableTeams:false`),
+      // IDE (conversation créée en IDE) : un SEUL agent (`enableTeams:false`),
       //   volontairement sans orchestration pour économiser les tokens.
-      // IA  (`renderMode === "agent"`)    : les équipes Cline orchestrent elles-
+      // IA  (conversation créée en AI)  : les équipes Cline orchestrent elles-
       //   mêmes (sous-agents, coordination) — l'UI route leurs flux par `spawnId`.
       //
       // Le contexte projet reste porté par `systemPrompt` (composé plus haut) :
       // on y ajoute l'état réel du contexte seulement en IA (le root Cline le lit
       // comme n'importe quelle consigne).
-      const contextStatus = isAgent ? contextStatusPrompt(modelMessages, DEFAULT_TOKEN_BUDGET) : "";
+      const contextStatus = convIsAgent ? contextStatusPrompt(modelMessages, DEFAULT_TOKEN_BUDGET) : "";
       const rootSystemPrompt = contextStatus ? `${systemPrompt}\n\n---\n\n${contextStatus}` : systemPrompt;
 
-      if (isAgent) spawnedThisTurnRef.current = 0;
+      if (convIsAgent) run.spawned = 0;
 
-      const handle = await runCline({ systemPrompt: rootSystemPrompt, sdkMode: "act", enableTeams: isAgent, prompt: "" });
+      const handle = await runCline({ systemPrompt: rootSystemPrompt, sdkMode: "act", enableTeams: convIsAgent, prompt: "" });
       if (handle) await handle.send(apiText);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getFileContents is read fresh at call time; including it would churn this callback
-  }, [showToast]);
+  }, [showToast, isAgent, setSessionAppMode]);
 
   // Maintient le miroir de `handleSend` à jour (cf. déclaration de la ref).
   useEffect(() => { handleSendRef.current = handleSend; }, [handleSend]);
@@ -1784,9 +1998,15 @@ export default function AiPanel({
     // Invalide le run courant : ses events tardifs (ex. un `tool-result` d'un
     // outil déjà en vol) sont désormais ignorés par `handleEvent`, au lieu de
     // continuer à muter le fil après l'arrêt.
-    runSeqRef.current++;
-    streamCleanupRef.current?.();
-    streamCleanupRef.current = null;
+    // MULTITASKING : on n'arrête QUE le run de la session active.
+    const run = getRun(activeSessionIdRef.current);
+    run.seq++;
+    run.cleanup?.();
+    run.cleanup = null;
+    // MULTITASKING : l'utilisateur a stoppé CE run → la tâche est « interrupted »
+    // dans le registre (elle cesse d'être comptée comme active).
+    run.task?.interrupt();
+    run.task = null;
 
     // La bannière de revue RESTE affichée après un stop : l'utilisateur peut
     // encore « Undo all » ce qui a été écrit. On rafraîchit une dernière fois
@@ -1794,11 +2014,11 @@ export default function AiPanel({
     const stopTurnId = activeTurnIdRef.current;
     if (stopTurnId) refreshReview(stopTurnId, true);
 
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    const prevDbId = pendingAssistantDbIdRef.current;
+    if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
+    const prevDbId = run.pendingAssistantDbId;
     if (prevDbId) {
-      pendingAssistantDbIdRef.current = null;
-      updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+      run.pendingAssistantDbId = null;
+      updateMessageContent(prevDbId, run.pendingContent, "interrupted").catch(() => {});
     }
 
     setMessages(prev => {
@@ -1814,7 +2034,13 @@ export default function AiPanel({
     flushQueueRef.current?.();
     // Une question en attente n'a plus de run pour la consommer : on la retire.
     setPendingQuestion(null);
-  }, [refreshReview]);
+
+    // Arrêt brutal (volontaire) : SON seul, jamais de toast — l'action vient de
+    // l'utilisateur, la commenter serait du bruit. `activeSessionIdRef` identifie
+    // la tâche stoppée (multitâche).
+    const stoppedSid = activeSessionIdRef.current;
+    if (stoppedSid) notifyTask("stop", stoppedSid);
+  }, [refreshReview, notifyTask]);
 
   /** Retire de la file le message en attente (l'utilisateur a changé d'avis). */
   const handleRemoveQueued = useCallback(() => {
@@ -1914,7 +2140,7 @@ export default function AiPanel({
   const handleRevertUserMessage = useCallback(async (userIndex: number, force = false) => {
     if (isStreaming && !force) return;
     // Dernière digue : on ne rejoue jamais un revert tant qu'un run tourne encore.
-    if (streamCleanupRef.current) return;
+    if (getRun(activeSessionIdRef.current).cleanup) return;
     const fp = folderPathRef.current ?? "";
     const turnIds = collectTurnIdsFrom(userIndex);
     // Aucun checkpoint (ex. échanges en mode Ask, ou tours déjà gardés) : on
@@ -2030,25 +2256,28 @@ export default function AiPanel({
   }, []);
 
   const handleNewChat = useCallback(() => {
-    streamCleanupRef.current?.();
-    streamCleanupRef.current = null;
-
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    const prevDbId = pendingAssistantDbIdRef.current;
-    if (prevDbId) {
-      pendingAssistantDbIdRef.current = null;
-      updateMessageContent(prevDbId, pendingContentRef.current, "interrupted").catch(() => {});
+    const prevSessionId = activeSessionIdRef.current;
+    // MULTITASKING : une nouvelle conversation ne coupe PLUS un run en
+    // arrière-plan. On mémorise simplement le fil de la session quittée pour
+    // pouvoir le RÉAFFICHER (flux direct) à la reprise ; le run continue de
+    // vivre et de persister son message assistant normalement. On ne fige donc
+    // RIEN en « interrupted » et on n'invalide PAS `pendingAssistantDbId`, sinon
+    // la tâche d'arrière-plan perdrait sa cible d'écriture DB.
+    if (prevSessionId) {
+      setRunMessages(prevSessionId, messagesRef.current);
     }
 
     setMessages([]);
     setActiveSessionId(null);
+    // Nouvelle conv : plus aucun mode mémorisé — il sera figé au premier envoi.
+    setSessionAppMode(null);
     const fp = folderPathRef.current ?? "";
     localStorage.removeItem(activeSessionKey(fp));
     onActiveSessionChangeRef.current?.(null);
     setChatView("new");
     localStorage.removeItem("origin-ai-chat-view");
     setSessions(lsForPath(fp));
-  }, [setActiveSessionId]);
+  }, [setActiveSessionId, setSessionAppMode]);
 
   // External drivers from the Agent mode task rail.
   const lastOpenSessionRef = useRef<string | null>(null);
@@ -2109,7 +2338,7 @@ export default function AiPanel({
   }, []);
 
   // ── Undo all / Keep all ──────────────────────────────────────────────────
-  // Pendant un run (`streamCleanupRef.current` non nul), la bannière est « live » :
+  // Pendant un run (`getRun(...).cleanup` non nul), la bannière est « live » :
   //   • « Keep all » masque seulement la revue SANS purger le checkpoint — le run
   //     continue et de nouvelles écritures doivent rester annulables. Purger ici
   //     casserait « Undo all » pour la suite du tour.
@@ -2119,7 +2348,7 @@ export default function AiPanel({
   const handleKeepAll = useCallback(async () => {
     const banner = reviewBanner;
     if (!banner) return;
-    if (streamCleanupRef.current) {
+    if (getRun(activeSessionIdRef.current).cleanup) {
       // Run en cours : on masque la revue mais on NE purge PAS le checkpoint (les
       // écritures à venir doivent rester annulables). On rafraîchit aussitôt —
       // SANS annuler le timer de fond ni toucher `activeTurnIdRef` — pour que la
@@ -2150,10 +2379,13 @@ export default function AiPanel({
     if (!banner) return;
     // Run en cours : on l'arrête proprement avant d'annuler (mêmes garanties que
     // `handleStop`), sinon l'annulation serait aussitôt défaite par l'agent.
-    if (streamCleanupRef.current) {
-      runSeqRef.current++;
-      streamCleanupRef.current?.();
-      streamCleanupRef.current = null;
+    const run = getRun(activeSessionIdRef.current);
+    if (run.cleanup) {
+      run.seq++;
+      run.cleanup?.();
+      run.cleanup = null;
+      run.task?.interrupt();
+      run.task = null;
       setMessages(prev => {
         const next = [...prev];
         for (let i = next.length - 1; i >= 0; i--) {
@@ -2233,6 +2465,66 @@ export default function AiPanel({
     }
   }, [reviewBanner, onOpenDiffTab, getFileContents, showToast]);
 
+  // ── Surface agent (mode Agent) : alimente DiffView / DocView ──────────────
+  //
+  // Trae garde ces panneaux synchronisés avec la tâche courante sans qu'ils
+  // détiennent d'état : on fait pareil en poussant au parent l'état dérivé de la
+  // conversation (fichiers en revue + dernier document). Le parent ne fait que
+  // déléguer l'affichage — aucune duplication de logique.
+  //
+  // `docMarkdown` = dernier texte assistant SUBSTANTIEL (on ignore les bulles
+  // vides / purement outillage). C'est le meilleur candidat au rôle « document »
+  // (réponse, PRD, note de solution), celui que Trae affiche dans DocView.
+  const docMarkdown = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const text = (m.parts ?? [])
+        .filter((p): p is { type: "text"; content: string } => p.type === "text")
+        .map(p => p.content)
+        .join("\n\n")
+        .trim() || m.content.trim();
+      if (text.length >= 40) return text;
+    }
+    return "";
+  }, [messages]);
+
+  const pendingPlan = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const parts = messages[i].parts ?? [];
+      for (const p of parts) {
+        if (p.type === "plan-card" && p.status === "pending") return p.plan;
+      }
+    }
+    return null;
+  }, [messages]);
+
+  // Tool-calls `running`, par ordre chronologique — alimente le Flow. On ne
+  // retient que le nom : le parent décide de l'onglet, il n'a pas besoin du reste.
+  const runningTools = useMemo(() => {
+    const out: { toolName: string }[] = [];
+    for (const m of messages) {
+      for (const p of m.parts ?? []) {
+        if (p.type === "tool-call" && p.tc.status === "running") out.push({ toolName: p.tc.toolName });
+      }
+    }
+    return out;
+  }, [messages]);
+
+  useEffect(() => {
+    if (!onAgentSurface) return;
+    onAgentSurface({
+      reviewFiles: reviewBanner?.files ?? [],
+      undoAll: reviewBanner ? handleUndoAll : undefined,
+      keepAll: reviewBanner ? handleKeepAll : undefined,
+      openDiff: onOpenDiffTab ? handleOpenCheckpointDiff : undefined,
+      docMarkdown,
+      plan: pendingPlan,
+      runningTools,
+      isRunning: isStreaming,
+    });
+  }, [onAgentSurface, reviewBanner, handleUndoAll, handleKeepAll, handleOpenCheckpointDiff, onOpenDiffTab, docMarkdown, pendingPlan, runningTools, isStreaming]);
+
   const handleStartPin = useCallback((content: string) => {
     setPendingPin({ content, sessionId: activeSessionIdRef.current ?? undefined });
   }, []);
@@ -2276,11 +2568,14 @@ export default function AiPanel({
     const fp = folderPathRef.current ?? "";
     if (activeSessionIdRef.current === sessionId) {
       setActiveSessionId(null);
+      setSessionAppMode(null);
       localStorage.removeItem(activeSessionKey(fp));
       onActiveSessionChangeRef.current?.(null);
     }
     deleteSession(sessionId).catch(err => console.error("[AiPanel] Failed to delete session:", err));
-  }, [setActiveSessionId]);
+    // La todo list suit la conversation : on la purge avec elle.
+    clearTodos(sessionId);
+  }, [setActiveSessionId, setSessionAppMode]);
 
   const dragging = useRef(false);
   const startX   = useRef(0);
@@ -2484,18 +2779,18 @@ export default function AiPanel({
                 <button
                   onClick={jumpToBottom}
                   title="Descendre en bas"
+                  aria-label="Descendre en bas"
                   style={{
                     position: "absolute", bottom: "10px", left: "50%", transform: "translateX(-50%)",
-                    display: "flex", alignItems: "center", gap: "5px",
-                    padding: "4px 10px", borderRadius: "14px",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: "26px", height: "26px", padding: 0, borderRadius: "50%",
                     border: "1px solid var(--origin-border-default)",
                     backgroundColor: "var(--origin-bg-active)",
                     color: "var(--origin-fg-default)", cursor: "pointer",
-                    fontSize: "11px", boxShadow: "0 2px 8px rgba(0,0,0,0.25)", zIndex: 5,
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.25)", zIndex: 5,
                   }}
                 >
-                  <Icon icon="lucide:arrow-down" width={12} />
-                  Descendre
+                  <Icon icon="lucide:arrow-down" width={14} />
                 </button>
               )}
             </div>

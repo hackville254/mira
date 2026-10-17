@@ -40,21 +40,32 @@ export interface ProjectContext {
 
 interface DirEntry { name: string; path: string; is_dir: boolean }
 
-// ── Cache par tour ─────────────────────────────────────────────────────────────
+// ── Cache par tour ET par session ──────────────────────────────────────────────
+//
+// MULTITASKING : plusieurs tâches peuvent tourner en parallèle dans le même
+// projet. Le cache est donc clé par « session » (l'identifiant de tâche fourni
+// par l'appelant) ET validé sur le `folderPath`. Sans clé, deux runs concurrents
+// partageraient la même entrée et l'un invaliderait le contexte de l'autre.
 
-let cache: ProjectContext | null = null;
+/** Clé de session par défaut (appelants mono-tâche / tests). */
+export const DEFAULT_CONTEXT_KEY = "__default__";
 
-/** À appeler au début de chaque tour : le contexte est recalculé paresseusement. */
-export function resetProjectContext(): void {
-  cache = null;
+const cache = new Map<string, ProjectContext>();
+
+/** À appeler au début de chaque tour : le contexte de CETTE session est
+ *  recalculé paresseusement. Sans clé : purge tous les contextes connus. */
+export function resetProjectContext(sessionKey?: string): void {
+  if (sessionKey === undefined) { cache.clear(); return; }
+  cache.delete(sessionKey);
 }
 
 /**
  * Construit (ou réutilise) le contexte projet du dossier donné. Idempotent sur un
- * même `folderPath` au sein d'un tour. Ne jette jamais.
+ * même `folderPath` au sein d'un tour ET d'une session. Ne jette jamais.
  */
-export async function getProjectContext(folderPath: string): Promise<ProjectContext> {
-  if (cache && cache.folderPath === folderPath) return cache;
+export async function getProjectContext(folderPath: string, sessionKey: string = DEFAULT_CONTEXT_KEY): Promise<ProjectContext> {
+  const cached = cache.get(sessionKey);
+  if (cached && cached.folderPath === folderPath) return cached;
 
   const root = folderPath || ".";
   const tree: string[] = [];
@@ -73,8 +84,9 @@ export async function getProjectContext(folderPath: string): Promise<ProjectCont
   const names = new Set(rootEntries.map(e => e.name));
   const keyFiles = KEY_FILES.filter(f => names.has(f));
 
-  cache = { folderPath: root, stack: detectStack(keyFiles, names), tree, keyFiles };
-  return cache;
+  const ctx: ProjectContext = { folderPath: root, stack: detectStack(keyFiles, names), tree, keyFiles };
+  cache.set(sessionKey, ctx);
+  return ctx;
 }
 
 /** Walk borné (profondeur + entrées/niveau) — jamais récursif à l'infini. */

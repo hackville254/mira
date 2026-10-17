@@ -1,8 +1,12 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@iconify/react";
-import AiPanel, { type AiDiffTabInput } from "./AiPanel";
+import AiPanel, { type AiDiffTabInput, type AgentSurfaceState } from "./AiPanel";
 import AgentPanel from "./AgentPanel";
+import DiffViewPanel from "./DiffViewPanel";
+import DocViewPanel from "./DocViewPanel";
 import TaskRail from "./TaskRail";
+import TaskProgressBar from "./TaskProgressBar";
+import { activeFlowTab, shouldFlow, type FlowTabId } from "../../lib/agent/flow";
 import Sidebar from "../Sidebar";
 import TabBar, { type Tab } from "../editor/TabBar";
 import Editor, { type EditorHandle, type EditorContext } from "../editor/Editor";
@@ -106,6 +110,11 @@ export default function AgentModeView(props: AgentModeViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [newChatNonce, setNewChatNonce] = useState(0);
 
+  // État de la « surface agent » remonté par AiPanel (fichiers en revue, dernier
+  // document, plan). Alimente les tool panels DiffView / DocView sans dupliquer
+  // de logique : le parent ne fait que déléguer l'affichage (parité Trae).
+  const [surface, setSurface] = useState<AgentSurfaceState | null>(null);
+
   // Open tool tabs (top bar). User can add/remove tabs via + and × buttons.
   const [openTabs, setOpenTabs] = useState<ToolTabId[]>(["editor", "browser", "terminal"]);
   const [activeToolTab, setActiveToolTab] = useState<ToolTabId | null>("editor");
@@ -116,6 +125,39 @@ export default function AgentModeView(props: AgentModeViewProps) {
     setActiveToolTab(id);
     setAddMenuOpen(false);
   }, []);
+
+  // ── Flow (parité Trae) ────────────────────────────────────────────────────
+  //
+  // Pendant un run, le panneau d'outils suit l'étape de l'agent : lecture →
+  // Editor, écriture → DiffView, commande → Terminal, web → Browser. L'utilisateur
+  // garde la main : dès qu'il clique lui-même un onglet, le Flow se met en pause
+  // pour le reste du tour (il reprendra au tour suivant). Cette logique de
+  // décision est isolée dans `lib/agent/flow.ts` (testable sans DOM).
+  const flowPausedRef = useRef(false);
+  const prevRunningRef = useRef(false);
+
+  // Un clic utilisateur (ou l'ouverture manuelle d'un onglet) suspend le Flow.
+  const selectToolTab = useCallback((id: ToolTabId) => {
+    flowPausedRef.current = true;
+    setActiveToolTab(id);
+  }, []);
+
+  useEffect(() => {
+    const running = surface?.isRunning ?? false;
+    // Front montant d'un run : le Flow reprend la main (nouveau tour).
+    if (running && !prevRunningRef.current) flowPausedRef.current = false;
+    prevRunningRef.current = running;
+
+    if (!shouldFlow(running) || flowPausedRef.current) return;
+    const target: FlowTabId | undefined = activeFlowTab(surface?.runningTools ?? []);
+    if (!target) return;
+    // On s'assure que l'onglet cible est bien ouvert, puis on l'active.
+    // Ces deux updaters sont « no-op » si la valeur ne change pas (même
+    // référence) : le Flow ne déclenche un rendu QUE lors d'une vraie bascule.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronisation volontaire agent→UI (Flow)
+    setOpenTabs(prev => prev.includes(target) ? prev : [...prev, target]);
+    setActiveToolTab(prev => (prev === target ? prev : target));
+  }, [surface]);
 
   const closeToolTab = useCallback((id: ToolTabId) => {
     setOpenTabs(prev => {
@@ -173,10 +215,14 @@ export default function AgentModeView(props: AgentModeViewProps) {
         onOpenDiffTab={openAiDiffTab}
         onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
         onExternalFileChanges={onExternalFileChanges}
+        onAgentSurface={setSurface}
       />
 
       {/* Tool panels (center) — always open */}
       <div className="flex flex-1 flex-col overflow-hidden gap-1">
+        {/* Multitasking : bandeau des tâches actives (no-op en mono-tâche) */}
+        <TaskProgressBar activeSessionId={activeSessionId} onSelect={handleSelectTask} />
+
         {/* Tool tab bar */}
         <div
           style={{
@@ -193,7 +239,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
             return (
               <div
                 key={tabId}
-                onClick={() => setActiveToolTab(tabId)}
+                onClick={() => selectToolTab(tabId)}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
                   height: 28, margin: "0 3px", padding: "0 10px 0 12px",
@@ -518,12 +564,20 @@ export default function AgentModeView(props: AgentModeViewProps) {
 
           {activeToolTab === "agents" && <AgentPanel />}
 
-          {(activeToolTab === "docview" || activeToolTab === "diffview") && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-2" style={{ color: "var(--origin-fg-subtle)" }}>
-              <Icon icon={TOOL_TABS.find(t => t.id === activeToolTab)?.icon ?? "lucide:file"} width={32} />
-              <p className="text-sm font-medium">{TOOL_TABS.find(t => t.id === activeToolTab)?.label}</p>
-              <p className="text-xs">Coming soon</p>
-            </div>
+          {activeToolTab === "diffview" && (
+            <DiffViewPanel
+              files={surface?.reviewFiles ?? []}
+              onOpenDiff={surface?.openDiff}
+              onUndoAll={surface?.undoAll}
+              onKeepAll={surface?.keepAll}
+            />
+          )}
+
+          {activeToolTab === "docview" && (
+            <DocViewPanel
+              markdown={surface?.docMarkdown ?? ""}
+              plan={surface?.plan}
+            />
           )}
         </div>
       </div>

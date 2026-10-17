@@ -8,6 +8,12 @@
   100% { content: ""; }
 }
 
+/* Rotation continue — spinner de tâche active (rail de tâches, multitasking). */
+@keyframes origin-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 @font-face {
   font-family: 'Geist Sans';
   src: url('./assets/fonts/GeistSans-Variable.woff2') format('woff2');

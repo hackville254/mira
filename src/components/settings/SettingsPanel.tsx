@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw } from "lucide-react";
+import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Bell, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
 import FileIcon from "../FileIcon";
 import { PROVIDERS } from "../ai/providers";
@@ -10,6 +10,8 @@ import type { OriginTheme } from "../../themes/types";
 import { detectDevEnvironment, type ToolInfo } from "../../lib/env";
 import { loadDevEnvPrefs, saveDevEnvPrefs, type DevEnvPrefs } from "../../lib/devEnv";
 import { notifyAutoSaveChanged, type AutoSaveMode } from "../../lib/autoSavePrefs";
+import { TOAST_PREF_KEY } from "../../lib/notify/notify";
+import { SOUND_PREF_KEY, SOUND_VOLUME_KEY, playSound } from "../../lib/notify/sound";
 import { KNOWN_SERVERS, isKnownServerId } from "../../lib/lspConfig";
 import {
   loadGlobalLspConfig,
@@ -30,7 +32,7 @@ const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
 type Section =
   | "account" | "general" | "trae-mobile" | "dev-env" | "permission"
-  | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "browser"
+  | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "notifications" | "browser"
   | "indexing" | "skills" | "rules" | "hooks" | "languages" | "beta" | "about";
 
 interface NavDef {
@@ -54,6 +56,7 @@ const NAV_ITEMS: NavDef[] = [
   { id: "models",       label: "Models",                  icon: <Cpu size={14} />,                 keywords: "models ai provider api key openai anthropic gemini" },
   { id: "appearance",   label: "Appearance",              icon: <Palette size={14} />,             keywords: "appearance theme color" },
   { id: "conversation", label: "Conversation",            icon: <MessageSquare size={14} />,       keywords: "conversation chat" },
+  { id: "notifications", label: "Notifications",          icon: <Bell size={14} />,                keywords: "notifications sound toast alert" },
   { id: "browser",      label: "Browser",                 icon: <Globe size={14} />,               keywords: "browser web preview", dividerAfter: true },
   { id: "indexing",     label: "Indexing & Docs",         icon: <Database size={14} />,            keywords: "indexing docs" },
   { id: "skills",       label: "Skills & Commands",       icon: <Command size={14} />,             keywords: "skills commands keyboard" },
@@ -819,6 +822,111 @@ function AppearanceSection() {
       </SettingRow>
       <SettingRow title="Status bar" description="Show the status bar at the bottom of the window.">
         <Toggle on={statusBar} onToggle={toggleStatusBar} />
+      </SettingRow>
+    </div>
+  );
+}
+
+// ── Conversation Section ───────────────────────────────────────────────────────
+
+/**
+ * Réglages de la liste de conversations/tâches.
+ * L'auto-fold replie les groupes de tâches entièrement terminés dans le TaskRail
+ * (mode AI), exactement comme « To-Do List » > auto-collapse chez Trae.
+ */
+export const AUTO_FOLD_KEY = 'origin-conversation-auto-fold';
+
+function ConversationSection() {
+  const [autoFold, setAutoFold] = useState(
+    () => localStorage.getItem(AUTO_FOLD_KEY) !== 'false'
+  );
+
+  function toggleAutoFold() {
+    const next = !autoFold;
+    setAutoFold(next);
+    localStorage.setItem(AUTO_FOLD_KEY, String(next));
+    // Prévient le TaskRail déjà monté (même onglet) sans rechargement.
+    window.dispatchEvent(new CustomEvent('origin:conversation-prefs', { detail: { autoFold: next } }));
+  }
+
+  return (
+    <div>
+      <SectionHeading>Conversation history</SectionHeading>
+      <SettingRow
+        title="Auto-fold completed tasks"
+        description="Fold groups of tasks that are entirely completed in the task list. Active tasks always stay visible."
+      >
+        <Toggle on={autoFold} onToggle={toggleAutoFold} />
+      </SettingRow>
+    </div>
+  );
+}
+
+// ── Notifications Section ────────────────────────────────────────────────────
+//
+// Notifications de fin de travail, façon Trae : un TOAST (visuel) et un SON aux
+// moments clés du cycle de l'agent — fin de tâche (surtout en arrière-plan),
+// question posée (« ask user »), erreur et arrêt volontaire. Les préférences
+// sont des clés localStorage PLATES, lues directement par les modules de
+// notification (notify.ts / sound.ts) : aucun état React partagé nécessaire.
+
+function NotificationsSection() {
+  const [toast, setToast] = useState(() => localStorage.getItem(TOAST_PREF_KEY) !== 'false');
+  const [sound, setSound] = useState(() => localStorage.getItem(SOUND_PREF_KEY) !== 'false');
+  const [volume, setVolume] = useState(() => {
+    const raw = Number.parseInt(localStorage.getItem(SOUND_VOLUME_KEY) ?? '', 10);
+    return Number.isNaN(raw) ? 60 : Math.min(100, Math.max(0, raw));
+  });
+
+  function toggleToast() {
+    const next = !toast;
+    setToast(next);
+    localStorage.setItem(TOAST_PREF_KEY, String(next));
+  }
+
+  function toggleSound() {
+    const next = !sound;
+    setSound(next);
+    localStorage.setItem(SOUND_PREF_KEY, String(next));
+    // Retour immédiat : on rejoue le son « finish » pour que l'utilisateur
+    // entende ce qu'il vient d'activer (force = on ignore la préférence qu'on
+    // vient d'écrire, sinon l'écriture est déjà prise en compte).
+    if (next) playSound('finish', { force: true });
+  }
+
+  function changeVolume(v: number) {
+    setVolume(v);
+    localStorage.setItem(SOUND_VOLUME_KEY, String(v));
+  }
+
+  return (
+    <div>
+      <SectionHeading>Notifications</SectionHeading>
+      <SettingRow
+        title="Show notifications"
+        description="Display a toast when a background task finishes, when the agent asks a question, or when a run fails or is stopped."
+      >
+        <Toggle on={toast} onToggle={toggleToast} />
+      </SettingRow>
+      <SettingRow
+        title="Notification sound"
+        description="Play a short synthesized sound at the same key moments (task finished, question, error, stop)."
+      >
+        <Toggle on={sound} onToggle={toggleSound} />
+      </SettingRow>
+      <SettingRow title="Sound volume" description="Loudness of the notification sounds.">
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={volume}
+          disabled={!sound}
+          onChange={e => changeVolume(Number(e.target.value))}
+          onMouseUp={() => sound && playSound('finish', { force: true })}
+          style={{ width: 140, cursor: sound ? 'pointer' : 'not-allowed', opacity: sound ? 1 : 0.5 }}
+        />
+        <span style={{ fontSize: 12, color: 'var(--origin-fg-muted)', width: 34, textAlign: 'right' }}>{volume}%</span>
       </SettingRow>
     </div>
   );
@@ -1620,9 +1728,11 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             {section === "models"      && <AIProvidersSection />}
             {section === "appearance"  && <AppearanceSection />}
             {section === "general"     && <GeneralSection />}
+            {section === "conversation" && <ConversationSection />}
+            {section === "notifications" && <NotificationsSection />}
             {section === "skills"      && <KeybindingsSection />}
             {section === "languages"   && <LspSection />}
-            {!["dev-env", "permission", "models", "appearance", "general", "skills", "languages"].includes(section) && (
+            {!["dev-env", "permission", "models", "appearance", "general", "conversation", "notifications", "skills", "languages"].includes(section) && (
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>

@@ -60,6 +60,23 @@ async function _initSchema(db: Database): Promise<void> {
   } catch (_e) {
     // Column already exists — ignore
   }
+  // Migration: mode applicatif (IDE/AI) au moment de la création de la session.
+  //
+  // POURQUOI
+  // --------
+  // Le mode IDE et le mode AI n'ont pas la même capacité d'agent : la délégation
+  // multi-agents (sous-agents / équipes) n'a de sens qu'en mode AI. Or Trae
+  // garantit qu'une conversation ne perd RIEN quand on bascule d'un mode à
+  // l'autre. On mémorise donc le mode de CRÉATION de la conversation (source de
+  // vérité) : à la reprise, ce mode fait foi quel que soit le layout courant, et
+  // les sous-agents restent donc disponibles si la conversation a été ouverte en
+  // mode AI. `NULL` = conversation héritée d'avant cette migration ; on retombe
+  // alors sur le mode courant (dégradation gracieuse).
+  try {
+    await db.execute(`ALTER TABLE sessions ADD COLUMN app_mode TEXT`);
+  } catch (_e) {
+    // Column already exists — ignore
+  }
   await db.execute(
     `CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_path, updated_at DESC)`
   );
@@ -80,6 +97,8 @@ export interface DbSession {
   updated_at: number;
   /** Id de la session SDK Cline associée, `null` tant qu'aucun tour n'a tourné. */
   cline_session_id?: string | null;
+  /** Mode applicatif de création (`'ide' | 'ai'`), `null` pour les sessions héritées. */
+  app_mode?: string | null;
 }
 
 export interface DbMessage {
@@ -105,14 +124,15 @@ export async function createSession(
   model: string,
   provider: string,
   id?: string,
+  appMode?: 'ide' | 'ai',
 ): Promise<string> {
   const db = await getDb();
   const sessionId = id ?? crypto.randomUUID();
   const now = Date.now();
   await db.execute(
-    `INSERT INTO sessions (id, workspace_path, title, active_model, active_provider, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, workspacePath, title, model, provider, now, now],
+    `INSERT INTO sessions (id, workspace_path, title, active_model, active_provider, created_at, updated_at, app_mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, workspacePath, title, model, provider, now, now, appMode ?? null],
   );
   return sessionId;
 }
@@ -238,4 +258,29 @@ export async function setClineSessionId(
     clineSessionId,
     sessionId,
   ]);
+}
+
+/**
+ * Lit le mode applicatif de création d'une session (`'ide' | 'ai'`).
+ *
+ * Renvoie `null` pour une session inexistante ou héritée d'avant la migration :
+ * l'appelant retombe alors sur le mode courant, sans jamais échouer.
+ */
+export async function getSessionAppMode(sessionId: string): Promise<'ide' | 'ai' | null> {
+  const db = await getDb();
+  const rows = await db.select<{ app_mode: string | null }[]>(
+    `SELECT app_mode FROM sessions WHERE id = ?`,
+    [sessionId],
+  );
+  const value = rows[0]?.app_mode;
+  return value === 'ide' || value === 'ai' ? value : null;
+}
+
+/**
+ * Fixe le mode applicatif d'une session. Utilisé en secours pour renseigner une
+ * session héritée (app_mode `NULL`) dès que son mode effectif est connu.
+ */
+export async function setSessionAppMode(sessionId: string, appMode: 'ide' | 'ai'): Promise<void> {
+  const db = await getDb();
+  await db.execute(`UPDATE sessions SET app_mode = ? WHERE id = ?`, [appMode, sessionId]);
 }

@@ -41,6 +41,9 @@ export function wrapSpawnAgent(
     modelChain?: LanguageModel[];
     modelIds?: string[];
     folderPath: string;
+    /** Clé de session (tâche) — isole le cache de contexte projet entre tâches
+     *  parallèles. Optionnelle : à défaut, un cache partagé est utilisé. */
+    sessionKey?: string;
     cacheSystem?: boolean;
     /** Résumé borné du fil fourni au sous-agent (contexte « ce sur quoi on travaille »). */
     threadSummary?: string;
@@ -79,7 +82,7 @@ export function wrapSpawnAgent(
     // recalculé à chaque sous-agent, et reste borné (coût en tokens prévisible).
     let contextBlock: string;
     try {
-      const ctx = await getProjectContext(opts.folderPath || ".");
+      const ctx = await getProjectContext(opts.folderPath || ".", opts.sessionKey);
       contextBlock = buildContextBlock(ctx, { threadSummary: opts.threadSummary, todos: opts.todos });
     } catch {
       contextBlock = "";

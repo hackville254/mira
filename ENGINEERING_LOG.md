@@ -5,6 +5,233 @@
 
 ---
 
+### [2026-10-16T23:55] | Notifications — Remplacement de la synthèse par de vrais sons libres de droit
+
+- **Contexte :**
+  La première version jouait des sons **synthétisés** (Web Audio, oscillateurs). Rendu trop « bip » et peu satisfaisant : un son de notification doit ressembler à un vrai `ding` produit, pas à un test de tonalité. L'utilisateur a demandé des **sons par défaut libres de droit** (comme Trae).
+
+- **Modifications effectuées :**
+  - **`src/assets/sounds/{finish,question,error,stop}.mp3`** *(créés)* : 4 fichiers MP3 (128 kbps, 44,1 kHz) issus de la banque **Mixkit** (licence gratuite, **sans attribution requise**) :
+    - `finish` ← « Positive notification » (carillon positif, fin de tâche) ;
+    - `question` ← « Confirmation tone » (interpellation pour l'« ask user ») ;
+    - `error` ← « Wrong answer fail notification » (négatif, distinct) ;
+    - `stop` ← « Software interface back » (neutre et discret pour l'arrêt volontaire).
+  - **`src/lib/notify/sound.ts`** *(réécrit)* : abandon de la synthèse Web Audio au profit de **`HTMLAudioElement`**. Un élément **préchargé par son** est réutilisé ; si le son joue déjà, un **clone éphémère** est créé pour ne pas couper la lecture en cours (superposition sûre en multitâche). Volume appliqué en scalaire `[0, 1]`. Les URLs sont résolues via `new URL("../../assets/sounds/x.mp3", import.meta.url).href` → Vite les hache et les émet dans `dist/assets/` en build. **API publique inchangée** (`playSound`, `primeSound`, `isSoundEnabled`, `getSoundVolume`, clés de préférence).
+
+- **Décisions Techniques :**
+  - **Fichiers réels plutôt que synthèse** : timbre, réverbération et production d'un vrai enregistrement — c'est exactement ce que fait Trae, et c'est ce qui faisait défaut.
+  - **`HTMLAudioElement` plutôt que l'API Web Audio** : le fichier est déjà produit et encodé ; on n'a plus besoin d'un graphe d'oscillateurs. Le volume devient un simple scalaire et le clone de nœud offre la superposition. Moins de code, moins de surface d'erreur.
+  - **Mixkit plutôt que Pixabay / Google Sound Library** : Pixabay renvoie `403` aux requêtes hors navigateur et la Google Sound Library est **réservée aux Actions Google** (redistribution interdite). Mixkit est explicitement libre et sans attribution.
+  - **Assets embarqués (bundlés), jamais distants** : un IDE doit fonctionner **hors ligne** ; dépendre d'un CDN tiers pour un son serait une régression. Les 4 MP3 sont dans le bundle (≈ 237 ko au total).
+
+- **Impacts & Dépendances :**
+  - Nouveau dossier `src/assets/sounds/` (4 MP3, ~237 ko). `sound.ts` réécrit (même surface d'import, aucun changement chez les appelants : `AiPanel.tsx`, `SettingsPanel.tsx`). Aucune dépendance npm ajoutée.
+  - Validé : `tsc` EXIT 0, `eslint` 0 erreur, `vitest` **584/584**, `vite build` OK — les 4 MP3 sont bien émis dans `dist/assets/` avec hachage.
+
+- **Prochaines étapes :**
+  - Évaluer le rendu sonore à l'usage et, si besoin, ajuster le choix des fichiers par événement.
+  - Vigilance sur la reprise de lecture après suspension OS (fenêtre en arrière-plan prolongée).
+
+---
+
+### [2026-10-16T23:30] | Parité Trae — Notifications (toast de fin + sons : question / erreur / stop)
+
+- **Contexte :**
+  Trae émet un **signal visuel (toast) et sonore** aux moments clés du cycle de l'agent : **fin de tâche**, **question posée** (« ask user »), **erreur**, **arrêt**. Chez Origin, l'infrastructure toast existait (`Toast.tsx`) mais était **mono-toast** (un nouveau message écrasait le précédent) et **aucun système audio** n'existait (pas d'assets, pas d'`AudioContext`). Avec le multitâche (F6), une tâche qui se termine **en arrière-plan** passait totalement inaperçue. Objectif : notifier à parité Trae, sans spammer, en respectant les préférences utilisateur.
+
+- **Modifications effectuées :**
+  - **`src/lib/notify/sound.ts`** *(créé)* : sons **synthétisés via Web Audio** (zéro asset binaire). 4 motifs : `finish` (do→sol sinus montant), `question` (double la triangle), `error` (notes basses sawtooth), `stop` (note descendante triangle). Contexte audio **paresseux** (créé au premier son, `resume()` si suspendu), enveloppe anti-clic (attaque 12 ms + `exponentialRampToValueAtTime`), nettoyage `osc.onended`. `playSound(name, {force?})` **best-effort** (jamais d'exception). Préférences : `SOUND_PREF_KEY` (`origin-notifications-sound`, défaut activé), `SOUND_VOLUME_KEY` (`origin-notifications-volume`, défaut 60 %). `primeSound()` débloque l'`AudioContext` sur interaction utilisateur.
+  - **`src/lib/notify/notify.ts`** *(créé)* : orchestrateur **pur** (aucune dépendance React). `planNotification(kind, ctx)` décide toast+son selon le contexte. Règles anti-bruit : `finish` → **rien** si la tâche est affichée (déjà visible dans le fil), sinon son + toast `success` ; `question` → **toujours** son + toast `info` ; `error` → **toujours** son + toast `error` ; `stop` → **son seul** (action volontaire, pas de toast). Préférence toast : `TOAST_PREF_KEY` (`origin-notifications-toast`, défaut activé) + helper `isToastEnabled()`.
+  - **`src/lib/notify/__tests__/notify.test.ts`** *(créé)* : **11 tests** sur `planNotification` (finish affichée/arrière-plan, sons/toasts coupés par préférence, question, error avec/sans message, stop sans toast, libellé vide → « Task »).
+  - **`src/components/ui/Toast.tsx`** *(réécrit)* : passage **mono-toast → pile de toasts**. `ToastType` étendu à `warning`. File limitée à `MAX_TOASTS = 4` (les plus anciens évincés), auto-dismiss 3 s (erreurs : 5 s), `flexDirection: column-reverse` (les nouveaux apparaissent au-dessus de l'input). **API publique inchangée** (`showToast(text, type)`), donc aucun impact sur les consommateurs existants.
+  - **`src/components/ai/AiPanel.tsx`** : helper `notifyTask(kind, sessionId, opts?)` (useCallback) qui résout le libellé de la tâche, construit le `NotificationContext` (`isDisplayed = activeSessionIdRef.current === sessionId`) et applique le plan. Branché aux **4 points** : `case "finish"` → `notifyTask("finish", sid)` ; `case "approval-required"` (après traitement `ask_user`/`edit`/`write_file`) → `notifyTask("question", …)` ; `case "error"` → `notifyTask("error", …, {errorMessage})` ; `handleStop` → `notifyTask("stop", …)`. `primeSound()` appelé en tête de `handleSend` (geste utilisateur).
+  - **`src/components/settings/SettingsPanel.tsx`** : nouvelle section **Notifications** (`NAV_ITEMS` + `Section` + rendu) : toggle « Show notifications », toggle « Notification sound » (rejoue `finish` à l'activation pour retour immédiat), slider de volume (0–100 %, grisé si son coupé, aperçu au relâchement). Icône `Bell` (lucide).
+  - **`ENGINEERING_LOG.md`** : présente entrée.
+
+- **Décisions Techniques :**
+  - **Synthèse WebAudio plutôt que fichiers `.mp3`** : zéro asset à versionner (ni poids, ni licence), latence nulle (pas de décodage), paramétrable (fréquence/durée/enveloppe). Un son de notification doit être **instantané** et **non bloquant**.
+  - **Logique de décision isolée dans une fonction pure (`planNotification`)** : la règle « faut-il notifier ? » (anti-spam, préférences) est **testable seule**, hors React et hors Web Audio. `AiPanel` ne fait qu'**appliquer** le plan.
+  - **`stop` = son seul, `finish` = silence si tâche affichée** : évite le bruit inutile — on ne bipe pas pour une action que l'utilisateur vient de déclencher, ni pour un résultat qu'il a déjà sous les yeux. Le son « finish » est réservé au cas **arrière-plan**, qui est précisément le gain du multitâche F6.
+  - **Préférences en clés localStorage plates** (pattern `ConversationSection`) : les modules `notify.ts`/`sound.ts` les lisent directement, sans état React partagé ni contexte.
+  - **`Toast.tsx` en pile avec API inchangée** : aucun changement requis chez les consommateurs (`App.tsx`, `AiPanel.tsx`), et plusieurs notifications simultanées (multitâche) ne s'écrasent plus.
+
+- **Impacts & Dépendances :**
+  - Nouveaux modules `src/lib/notify/*` (purs, sans couplage moteur). `Toast.tsx` étendu (rétrocompatible). `AiPanel.tsx` : 4 points de branchement + `primeSound`. `SettingsPanel.tsx` : nouvelle section autonome.
+  - Aucune dépendance ajoutée. Aucun asset binaire. Validé : `tsc` EXIT 0, `eslint` 0 erreur, `vitest` **584/584**, `vite build` OK.
+
+- **Prochaines étapes :**
+  - Son des notifications **en arrière-plan d'application** (fenêtre non focalisée) : Restart de l'`AudioContext` après suspension OS à surveiller en usage réel.
+  - Envisager un **niveau de son par type** (distinguer fin de tâche / question) si l'usage le demande.
+
+---
+
+### [2026-10-16T22:25] | Parité Trae — F6 : Multitasking (tâches parallèles)
+
+- **Contexte :**
+  Dans Trae, plusieurs tâches peuvent **travailler en parallèle** dans un même projet : on lance un run, on bascule sur une autre tâche, et le premier **continue en arrière-plan**. Chez Origin, l'état d'un run vivait **entièrement dans les refs locales d'`AiPanel`** (`runSeq`, `cleanup`, `AbortController`) : une seule tâche pouvait tourner, et `handleSessionSelect` **interrompait systématiquement** le stream courant. Basculer de tâche revenait donc à tuer le travail en cours. Le rail affichait en outre un « Completed » codé en dur. Objectif : permettre **plusieurs tâches actives simultanément**, un run qui **continue en arrière-plan**, et un **statut réel** visible partout (rail + bandeau).
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/taskRuntime.ts`** *(créé)* : registre **module-level** clé par `sessionId`. `TaskRunStatus = idle | running | waiting | completed | interrupted`. API : `beginTaskRun(sessionId): RegisterRunHandle {setAbort, complete, interrupt}`, `markTaskWaiting`, `markTaskRunning`, `abortTaskRun`, `isTaskActive`, `listActiveTasks`, `listTaskSnapshots` (tri stable par compteur monotone `seq`, snapshot mémoïsé pour `useSyncExternalStore`), `forgetTask`. Hooks : `useTaskStatus`, `useTaskSnapshots`, `useActiveTasks`. **Pur côté données** (aucune dépendance React hors hooks, aucun couplage au moteur Cline).
+  - **`src/lib/agent/__tests__/taskRuntime.test.ts`** *(créé)* : **17 tests** (transitions, non-émission si statut inchangé, stabilité de référence du snapshot, tri, abort, purge).
+  - **`src/lib/agent/runState.ts`** *(créé en F6.3, complété ici)* : état de run **clé par session** (miroir `run.messages`, `seq`, `cleanup`, `pendingAssistantDbId`), avec un champ structurel `task` (sans import de `taskRuntime`, pour éviter la dépendance circulaire) permettant à `AiPanel` de tenir le handle de statut (`setAbort`/`complete`/`interrupt`).
+  - **`src/components/ai/AiPanel.tsx`** : `handleSend` ouvre désormais un run via `beginTaskRun(sessionId)` ; le fil du run est **ancré explicitement** (`run.messages = [...runSeed, userMsg, assistantVide]`) pour ne pas dépendre de l'effet de sync de `messagesRef` ; helper interne `updateThread(updater)` qui **mute le fil du run** et ne pousse vers React (`setMessages`) **que si la session est affichée** — les 14 `setMessages` internes à `handleEvent` ont été migrés vers ce helper, ce qui **isole le fil de chaque run** ; `case "tool-call"` → `markTaskWaiting(sessionId, toolName)`, `case "tool-result"` → `markTaskRunning(sessionId)` ; `finish`/`error`/`handleStop`/`handleUndoAll` → `taskRun.complete()/interrupt()` ; changement de projet → `interrupt()` de **tous** les runs vivants ; `handleNewChat` **ne fige plus** le message assistant en « interrupted » (le run d'arrière-plan doit pouvoir **finaliser son écriture DB**) ; `handleSessionSelect` reprend l'affichage d'une tâche en cours en **flux direct** (`getRunMessages` + `getRun(sessionId).cleanup !== null`).
+  - **`src/lib/agent/swarmStore.ts`** + **`src/lib/agent/projectContext.ts`** : clé **par session** (isolation des sous-agents/équipes et du contexte projet entre tâches parallèles).
+  - **`src/components/ai/TaskRail.tsx`** : statut **réel** par tâche via `useTaskSnapshots` + helper `statusVisual(status, waitingTool)` → icône/couleur/libellé (`Running` / `Waiting · {outil}` / `Interrupted` / `Completed` / `Idle`). Le calcul `completed` (auto-fold) se déduit du statut réel : une tâche running/waiting en arrière-plan n'est **jamais** repliée.
+  - **`src/components/ai/TaskProgressBar.tsx`** *(créé)* : **bandeau de progression multitâche** au-dessus de la barre d'onglets (`AgentModeView`). Affiche le nombre de tâches actives, `N en cours · M en attente`, et une **puce cliquable par tâche** (titre + outil attendu) pour basculer l'affichage. **No-op** (ne rend rien) tant qu'une seule tâche est active → aucune pollution visuelle en mono-tâche.
+  - **`src/components/ai/AgentModeView.tsx`** : branchement de `TaskProgressBar` (`activeSessionId` + `handleSelectTask`).
+  - **`src/index.css`** : ajout du keyframe `@keyframes origin-spin` (rotation du spinner de statut ; il n'existait pas).
+
+- **Décisions Techniques :**
+  - **Registre module-level plutôt que Context/store global** : un run doit survivre à l'**affichage** du composant. Sortir l'état d'`AiPanel` (refs locales) vers un registre observable découple **possession de l'état** et **montage UI** : l'UI s'abonne/se désabonne à l'affichage, le run continue. C'est le mécanisme qui débloque le vrai multitâche.
+  - **`updateThread` (mutation du fil de run) au lieu de `setMessages` inconditionnel** : un run d'arrière-plan ne doit **jamais** écraser le fil de la session affichée. On mute `run.messages` (source de vérité du run) et on ne publie vers React que si `activeSessionIdRef.current === sessionId`. C'est le point le plus délicat de F6 (un `setMessages` inconditionnel écrasait le fil affiché).
+  - **Reprise en « flux direct »** : reprendre l'affichage d'une tâche running montre son **miroir vivant** (`run.messages`) et continue sur le même flux — pas de re-seed, pas de coupure. (La reprise par `initialMessages` reste utilisée pour les sessions **non vivantes** dans ce process.)
+  - **`handleNewChat` non destructif** : en multitâche, quitter une conversation ne doit pas la « terminer ». On ne pousse que le miroir ; le run d'arrière-plan conserve la main sur son écriture DB.
+  - **Statut « dérivé quand affiché, réel quand actif »** : le registre ne connaît que les `sessionId` ; les titres sont lus depuis les métadonnées persistées. Le bandeau reste **volontairement** discret (masqué en mono-tâche) pour ne rien changer au flux de travail courant.
+  - **Tri stable par compteur `seq`** : deux transitions dans la même milliseconde ne doivent pas produire d'ordre instable (contrainte `useSyncExternalStore`).
+  - **`task` typé structurellement dans `RunState`** : évite un cycle d'imports `runState ↔ taskRuntime` tout en gardant le handle de statut disponible dans `AiPanel`.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `taskRuntime.ts` (+tests), `runState.ts`, `swarmStore.ts`, `projectContext.ts`, `AiPanel.tsx`, `TaskRail.tsx`, `TaskProgressBar.tsx`, `AgentModeView.tsx`, `index.css`.
+  - Effet : lancer une tâche, basculer sur une autre, la relancer → **deux runs en parallèle** ; le rail et le bandeau reflètent le **statut réel** de chacun ; « Stop » / changement de projet / suppression interrompent proprement (abort SDK + statut `interrupted`).
+  - Sécurité / robustesse : le registre **isole** les runs (un run ne peut plus écrire dans le fil d'une autre session) ; `forgetTask` **abort** systématiquement un run avant purge (pas de listener orphelin) ; aucune nouvelle surface réseau — orchestration d'état côté client uniquement.
+  - Dette résolue : suppression du « Completed » codé en dur (F5) et de l'interruption intempestive à la bascule.
+
+- **Validation :**
+  - `npx tsc --noEmit` → **EXIT 0** (seul le faux positif `RevertConfirmDialog` connu, ignoré).
+  - `npx eslint src` → **0 erreur** (8 warnings préexistants sur d'autres fichiers, hors périmètre F6).
+  - `npx vitest run` → **573/573** (dont 17 sur `taskRuntime`).
+  - `npx vite build` → **built in ~4s**, aucune erreur.
+
+- **Prochaines étapes :**
+  - Notification discrète à la **fin d'une tâche d'arrière-plan** (toast), si l'utilisateur est sur une autre tâche.
+  - Persistance du statut de tâche au reload (aujourd'hui `idle` au redémarrage, par conception).
+
+---
+
+### [2026-10-16T22:05] | Parité Trae — F5 : auto-fold des conversations terminées
+
+- **Contexte :**
+  Dans Trae, la liste des tâches (équivalent de notre `TaskRail`) regroupe les conversations par période (Today / Yesterday / …) et **replie automatiquement les groupes dont toutes les tâches sont terminées** (réglage « To-Do List »). Chez Origin, le rail affichait une liste plate, sans groupement ni repli, et chaque tâche était badgée « Completed » en dur.
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/taskGrouping.ts`** *(créé)* : logique **pure** — `taskGroupFor(updatedAt, now)` (bucket par jour calendaire local : today / yesterday / last7days / last30days / older), `groupTasks(tasks, now)` (groupes non vides, tri intra-groupe décroissant, ordre chronologique), `isGroupFolded(group, autoFold)` (repli seulement si auto-fold actif **et** groupe entièrement terminé).
+  - **`src/lib/agent/__tests__/taskGrouping.test.ts`** *(créé)* : 15 tests (bornes exactes des buckets, frontière 7/8 et 30/31 jours, tri, omission des groupes vides, règle de repli).
+  - **`src/components/settings/SettingsPanel.tsx`** : la section `conversation` (jusqu'ici `ComingSoonSection`) devient une vraie `ConversationSection` (toggle « Auto-fold completed tasks », clé `origin-conversation-auto-fold`) ; constante `AUTO_FOLD_KEY` exportée ; la section est branchée dans le routeur de sections et retirée de la liste `ComingSoon`.
+  - **`src/components/ai/TaskRail.tsx`** : dérivation mémoïsée des groupes (la tâche active est marquée `completed: false`), en-têtes de groupe repliables (chevron + compteur), état `openGroups` pour l'override manuel, et écoute de l'événement `origin:conversation-prefs` pour réagir au réglage sans rechargement.
+
+- **Décisions Techniques :**
+  - **Regroupement par jour calendaire local**, pas par fenêtre glissante de 24 h : une tâche de 23 h 50 est « Aujourd'hui » le jour même, « Hier » le lendemain — comportement attendu par l'utilisateur et aligné sur Trae.
+  - **Règle de repli conservatrice** : on ne replie **jamais** un groupe contenant une tâche active. Le travail en cours reste toujours visible, même si l'auto-fold est activé.
+  - **`now` en state, pas d'appel à `Date.now()` dans le rendu** : la règle React « composants purs » interdit les fonctions impures pendant le rendu (lint bloquant). `now` est rafraîchi dans l'effet de (re)chargement de la liste.
+  - **Synchronisation cross-composant par événement DOM** (`origin:conversation-prefs`) plutôt que par remontée de props : SettingsPanel et TaskRail vivent dans deux arbres distincts (portail vs vue AI) ; un événement évite un prop-drilling artificiel et une refonte du store.
+  - **Statut dérivé, pas stocké** : `completed` est calculé à partir de `activeSessionId` (une seule tâche active à la fois), ce qui évite d'introduire une nouvelle source de vérité en base.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `taskGrouping.ts` (+tests), `SettingsPanel.tsx`, `TaskRail.tsx`. Aucune dépendance ajoutée.
+  - Effet : le Rail affiche des sections temporelles repliables ; le comportement par défaut (auto-fold ON) replie l'historique terminé et laisse les tâches actives ouvertes.
+  - Limite connue : le statut « Completed » reste codé en dur pour l'affichage (« Completed · HH:MM ») ; seul le **repli** exploite le statut dérivé. Introduire un vrai statut de tâche (pending/running/completed) est hors périmètre de F5.
+  - Sécurité : aucune surface nouvelle — regroupement d'affichage côté client.
+
+- **Validation :**
+  - `tsc` EXIT 0 ; `eslint` (fichiers modifiés) 0 erreur (1 warning préexistant `set-state-in-effect` sur le `setSessions` d'origine) ; `vitest run` → **526/526** (dont 15 sur `taskGrouping`).
+
+- **Prochaines étapes :**
+  - F6 (multitasking : tâches parallèles dans un même projet).
+
+---
+
+### [2026-10-16T21:40] | Parité Trae — F4 : Flow (bascule automatique d'onglet)
+
+- **Contexte :**
+  Trae dispose du « Flow » : pendant qu'un tour d'agent s'exécute, le panneau d'outils suit automatiquement l'étape en cours (l'agent lit → onglet Editor, écrit → DiffView, lance une commande → Terminal, va sur le web → Browser). Origin n'avait rien d'équivalent : l'onglet restait figé sur « Editor ».
+
+- **Modifications effectuées :**
+  - **`src/lib/agent/flow.ts`** *(créé)* : logique **pure** — `flowTargetFor(toolName)` (mapping outil→onglet, aligné sur les outils canoniques de `toolPresentation.ts`), `activeFlowTab(runningTools)` (dernier tool-call pilotable), `shouldFlow(isRunning)` (garde : actif seulement pendant un run).
+  - **`src/lib/agent/__tests__/flow.test.ts`** *(créé)* : 11 tests (mapping, priorité au dernier tool-call, outils silencieux ignorés, garde de run).
+  - **`src/components/ai/AiPanel.tsx`** : `AgentSurfaceState` étendu (`runningTools`, `isRunning`) ; dérivation mémoïsée des tool-calls `running` + `isStreaming`, poussée au parent.
+  - **`src/components/ai/AgentModeView.tsx`** : effet de Flow (active l'onglet cible + s'assure qu'il est ouvert) ; `flowPausedRef` met le Flow en pause dès un clic utilisateur, `prevRunningRef` détecte le front montant d'un run pour le réactiver au tour suivant.
+
+- **Décisions Techniques :**
+  - **Décision isolée dans une fonction pure** (`flow.ts`) plutôt qu'en logique de rendu : testable sans DOM, lisible, et le composant ne fait qu'appliquer le résultat.
+  - **Mapping conservateur** : seuls les outils ayant un panneau dédié changent d'onglet (`editor`, `read_files`, `run_commands`, `fetch_web_content`). Les outils silencieux (`search_codebase`, `todo_write`, `ask_question`, `skills`) ne basculent rien → évite tout clignotement.
+  - **Respect de l'utilisateur** : le Flow ne vole jamais la main en dehors d'un run, et un clic manuel le suspend jusqu'au tour suivant (comportement Trae).
+  - **Updaters no-op** (`prev === target ? prev : target`) : aucune cascade de rendu tant que la cible ne change pas.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `flow.ts` (+tests), `AiPanel.tsx`, `AgentModeView.tsx`. Aucune dépendance ajoutée.
+  - Effet : le panneau d'outils suit désormais l'agent en mode AI ; le mode IDE (sidebar) n'est pas concerné (`onAgentSurface` non fourni).
+  - Sécurité : aucune surface nouvelle — dérivation d'état côté client uniquement.
+
+- **Validation :**
+  - `tsc` EXIT 0 ; `eslint` (fichiers modifiés) 0 erreur ; `vitest run` → **511/511** (dont 11 sur `flow`).
+
+- **Prochaines étapes :**
+  - F5 (auto-fold des conversations terminées), F6 (multitasking).
+
+---
+
+### [2026-10-16T21:15] | Parité Trae — F3 : tool panels réels (DiffView + DocView)
+
+- **Contexte :**
+  En mode Agent, les onglets `docview` et `diffview` de la barre de tools n'étaient que des stubs « Coming soon » ([AgentModeView.tsx](file:///Users/user/code/orvyx-desktop/origin/src/components/ai/AgentModeView.tsx)). Or Trae expose dans SON mode tour deux panneaux réels : une vue Diff (fichiers modifiés par la tâche courante, cliquables vers le diff) et une vue Doc (document produit par l'agent). On les rend réels sans dupliquer l'état.
+
+- **Modifications effectuées :**
+  - **`src/components/ai/DiffViewPanel.tsx`** *(créé)* : bandeau de synthèse « N files changed » + delta cumulé `+A −R`, liste cliquable des fichiers du tour (icône créer/modifier, chemin, delta) et actions « Undo all » / « Keep all ». Réutilise `sumDelta` de `TurnReviewCard`.
+  - **`src/components/ai/DocViewPanel.tsx`** *(créé)* : rendu Markdown du dernier artefact assistant substantiel + bloc « Plan » (étapes structurées) si un plan est en attente. Réutilise `MarkdownMessage`.
+  - **`src/components/ai/AiPanel.tsx`** : nouvelle prop `onAgentSurface?: (state: AgentSurfaceState) => void` + état dérivé mémoïsé (`docMarkdown` = dernier texte assistant ≥ 40 car. ; `pendingPlan` = dernier `plan-card` pending) ; un `useEffect` pousse `{ reviewFiles, undoAll, keepAll, openDiff, docMarkdown, plan }` au parent.
+  - **`src/components/ai/AgentModeView.tsx`** : consomme `onAgentSurface` (état `surface`) et remplace les stubs par `DiffViewPanel` / `DocViewPanel`.
+
+- **Décisions Techniques :**
+  - **Un seul propriétaire de l'état** : AiPanel reste la source de vérité (revue, tours, plan). Les panneaux sont **purement présentationnels** ; le parent ne fait que relayer — aucune duplication de logique ni risque de désynchronisation, exactement le modèle Trae.
+  - **Canal explicite typé** (`AgentSurfaceState`) plutôt que contexte global : évite un re-render de l'arbre, garde le couplage visible et testable.
+  - **DocView choisit le dernier texte substantiel** (seuil 40 car.) pour écarter les bulles vides/outillage : le panneau montre un « document », pas un fragment de log.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `AiPanel.tsx` (+prop), `AgentModeView.tsx` (câblage), 2 nouveaux composants. Aucune dépendance ajoutée.
+  - Effet : les onglets DiffVic/DocView deviennent fonctionnels en mode Agent ; le mode IDE n'est pas touché (`onAgentSurface` non fourni).
+  - Sécurité : lecture seule côté rendu ; l'ouverture de diff réutilise le chemin d'approbation existant (`onOpenDiffTab`). Rien d'exposé au modèle.
+
+- **Validation :**
+  - `tsc` EXIT 0 ; `eslint` (fichiers modifiés) 0 erreur ; `vitest run` → **500/500**.
+
+- **Prochaines étapes :**
+  - F4 (Flow : bascule auto d'onglet selon l'étape de l'agent), F5 (auto-fold), F6 (multitasking).
+
+---
+
+### [2026-10-16T20:10] | Parité Trae — F1 « le mode suit la conversation » + F2 todo persistant
+
+- **Contexte :**
+  Parcours de la doc Trae (IDE mode ↔ SOLO mode, le nôtre étant « AI mode »). Exigence : on doit pouvoir **basculer librement d'un mode à l'autre dans la MÊME conversation sans rien perdre**. Or deux bugs structurels l'empêchaient : (1) le mode applicatif (`ide`/`ai`) n'était hydraté que depuis `localStorage`, jamais depuis le store Tauri ; (2) la capacité d'agent (`enableTeams`, contexte projet, prompt système) était dérivée du **layout courant** (`renderMode`) et non du **mode de création de la conversation** → une conv ouverte en AI perdait ses sous-agents si on la relisait en IDE. En outre la **todo list** vivait en mémoire seule et disparaissait au reload/bascule.
+
+- **Modifications effectuées :**
+  - **`src/lib/db.ts`** : migration `ALTER TABLE sessions ADD COLUMN app_mode TEXT` ; `DbSession.app_mode` ; `createSession(..., appMode?)` ; helpers `getSessionAppMode` / `setSessionAppMode`.
+  - **`src/components/ai/AiPanel.tsx`** : `sessionAppModeRef` (source de vérité) + `setSessionAppMode` / `loadSessionAppMode` ; le mode effectif de la conv (`effAppMode`, `convIsAgent`) est dérivé du mode **mémorisé**, plus du layout — il pilote `enableTeams`, `contextStatus` et `buildSystemPrompt("agent", …, convIsAgent)`. `appMode` figé à la création (ligne `createSession`) ; réhydraté à la reprise (restore, `handleSessionSelect`, sélecteur de session) ; réinitialisé sur nouvelle conv / changement de dossier ; purge de la todo à la suppression.
+  - **`src/hooks/useWorkspacePersistence.ts`** : clé store `app.mode` hydratée au mount (repli `localStorage`) et persistée à chaque bascule ; appel `hydrateAllTodos()` au démarrage.
+  - **`src/lib/settings.ts`** : clés typées `'app.mode'` et `'todo.list'` (+ défauts) et helper `deleteSetting`.
+  - **`src/lib/agent/todoStore.ts`** : persistance par conversation dans le store Tauri (clé `todo.list`, map `sessionId → TodoItem[]`), écritures **best-effort non bloquantes**, `hydrateAllTodos` (n'écrase jamais une session en mémoire), `pruneTodos`, `clearTodos` purge aussi le disque. API publique inchangée (synchrone).
+  - **Tests** (`src/lib/agent/__tests__/todoStore.test.ts`) : +4 cas de persistance/réhydratation (mock du store Tauri).
+
+- **Décisions Techniques :**
+  - **Le mode de création fait foi** (décision utilisateur « le mode suit la conversation ») : `renderMode` reste purement présentationnel ; toute la capacité d'agent se dérive du mode de conv mémorisé en base. Dégradation gracieuse : `app_mode NULL` (sessions héritées) retombe sur le mode courant, puis est figé au premier usage.
+  - **Ref plutôt que state React** pour le mode de conv : la valeur n'est relue qu'au prochain envoi (pas de rendu requis) — évite tout churn de re-render.
+  - **Todo persistée par conversation** : c'est un artefact de la tâche, pas du layout → elle doit survivre reload **et** bascule (parité Trae).
+  - **Persistance todo non bloquante** : l'API reste synchrone (fire-and-forget) pour ne pas perturber la boucle d'événements de l'agent ; `hydrateAllTodos` comble les sessions absentes sans jamais écraser un run en cours.
+
+- **Impacts & Dépendances :**
+  - Fichiers : `src/lib/db.ts`, `src/lib/settings.ts`, `src/lib/agent/todoStore.ts`, `src/lib/agent/__tests__/todoStore.test.ts`, `src/components/ai/AiPanel.tsx`, `src/hooks/useWorkspacePersistence.ts`.
+  - Effet : bascule IDE↔AI **sans perte** de capacités ni de todo, dans le même fil ; le mode global survit au reload via le store Tauri.
+  - Sécurité : aucune surface nouvelle — lecture/écriture de réglages locaux, valeurs bornées (`'ide'|'ai'`, tableau de todo typé). Rien d'exposé au modèle.
+
+- **Validation :**
+  - `tsc` EXIT 0 ; `eslint src` → **0 erreur** (8 warnings préexistants hors périmètre) ; `vitest run` → **500/500** (dont 7 sur `todoStore`).
+
+- **Prochaines étapes :**
+  - F3 (tool panels réels : diffview + docview), F4 (Flow), F5 (auto-fold), F6 (multitasking) — voir plan de parité Trae.
+  - Test UI : ouvrir une conv en AI, basculer en IDE, vérifier que les sous-agents restent disponibles et que la todo est toujours là après reload.
+
+---
+
 ### [2026-10-16T19:45] | Keep all / Undo all : le DISQUE devient la source de vérité
 
 - **Contexte :**

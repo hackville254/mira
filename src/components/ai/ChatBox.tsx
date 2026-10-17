@@ -2,6 +2,7 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square, Clock, Pencil, Trash2 } from "lucide-react";
 import PreferencesDropdown from "./PreferencesDropdown";
+import logoCode from "../../assets/logo-code.svg";
 import MentionDropdown from "./MentionDropdown";
 import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import type { EditorContext } from "../editor/Editor";
@@ -626,7 +627,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     mentionRangeRef.current = null;
   };
 
-  const agentLabel = AGENTS.find(a => a.id === mode)?.label ?? "Agent";
+  const activeAgent = AGENTS.find(a => a.id === mode);
+  const agentLabel = activeAgent?.label ?? "Agent";
   const showContextBadge = contextSnap && !contextDismissed;
   const activeProvider = PROVIDERS.find(p => p.models.some(m => m.id === selectedModelId));
   const activeModel = activeProvider?.models.find(m => m.id === selectedModelId);
@@ -923,7 +925,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             backgroundColor: mode !== "agent" ? "var(--origin-bg-active)" : "transparent",
             color: mode !== "agent" ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
             userSelect:"none", cursor:"pointer", transition:"background 0.1s, color 0.1s", maxWidth:"96px" }}>
-          <span style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }}>@</span>
+          <img src={logoCode} alt="" width={13} height={13} style={{ flexShrink: 0, display: "block" }} />
           <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{agentLabel}</span>
           <ChevronDown size={10} style={{ flexShrink: 0 }} />
         </div>
