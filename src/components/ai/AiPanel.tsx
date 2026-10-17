@@ -1618,7 +1618,7 @@ export default function AiPanel({
             : null;
           if (dbId) updateMessageContent(dbId, finalContent, "complete", partsJson).catch(() => {});
 
-          const sid = activeSessionIdRef.current;
+          const sid = sessionId;
           const fPath = folderPathRef.current ?? "";
           if (sid) {
             lsTouch(sid);

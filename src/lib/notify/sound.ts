@@ -189,17 +189,55 @@ export function playSound(name: SoundName, opts?: { force?: boolean }): void {
  * une fois `resume()` obtenu ici, toutes les lectures asynchrones suivantes
  * passent. On pré-décode aussi les buffers pour supprimer la latence au premier
  * son.
+ *
+ * Idempotent : on peut l'appeler à chaque envoi sans coût (les buffers sont mis
+ * en cache après le premier décodage).
+ *
+ * Ceinture + bretelles : si l'appel se produit hors geste utilisateur (donc
+ * `resume()` refusé), on installe un écouteur UNIQUE qui retentera le déblocage
+ * au tout premier `pointerdown`/`keydown` de l'utilisateur, où qu'il soit dans
+ * l'app. Ainsi le son finit toujours par être débloqué, même sans passer par
+ * l'envoi d'un message.
  */
 export function primeSound(): void {
   try {
     const context = getCtx();
     if (!context) return;
-    // resume() DOIT être appelé dans le geste utilisateur.
+
+    // resume() à tenter immédiatement (valide si on est déjà dans un geste).
     void context.resume().catch(() => { /* ignore */ });
+
+    // Précharge/décode les 4 sons (une seule fois grâce au cache).
     for (const name of Object.keys(SOUND_URLS) as SoundName[]) {
       void loadBuffer(name).catch(() => { /* ignore */ });
     }
+
+    installFirstGestureUnlock(context);
   } catch {
     // best-effort.
   }
+}
+
+// Le listener de déblocage ne doit exister qu'une fois pour toute la session.
+let gestureUnlockInstalled = false;
+
+/**
+ * Installe (une seule fois) un déblocage au tout premier geste utilisateur.
+ * C'est le filet de sécurité qui garantit que le contexte passe « running » même
+ * si aucun `primeSound()` n'a coïncidé avec un geste.
+ */
+function installFirstGestureUnlock(context: AudioContext): void {
+  if (gestureUnlockInstalled) return;
+  if (typeof document === "undefined") return;
+  gestureUnlockInstalled = true;
+
+  const onGesture = () => {
+    void context.resume().catch(() => { /* ignore */ });
+    if (context.state === "running") {
+      document.removeEventListener("pointerdown", onGesture, true);
+      document.removeEventListener("keydown", onGesture, true);
+    }
+  };
+  document.addEventListener("pointerdown", onGesture, true);
+  document.addEventListener("keydown", onGesture, true);
 }

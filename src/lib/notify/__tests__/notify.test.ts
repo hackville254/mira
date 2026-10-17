@@ -15,10 +15,10 @@ describe("planNotification — finish", () => {
     expect(plan.toast).toEqual({ text: "Refactor auth terminée", type: "success" });
   });
 
-  it("reste totalement silencieux si la tâche affichée se termine", () => {
+  it("notifie AUSSI (son + toast) la tâche affichée (parité Trae)", () => {
     const plan = planNotification("finish", { ...base, isDisplayed: true });
-    expect(plan.playSound).toBeNull();
-    expect(plan.toast).toBeNull();
+    expect(plan.playSound).toBe("finish");
+    expect(plan.toast).toEqual({ text: "Tâche terminée", type: "success" });
   });
 
   it("coupe le son mais garde le toast si le son est désactivé", () => {

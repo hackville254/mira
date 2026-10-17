@@ -11,13 +11,15 @@
 //   - stop     : l'utilisateur a interrompu un run (son seul, pas de toast :
 //                c'est une action VOLONTAIRE, inutile de la commenter visuellement).
 //
-// Règles de bruit (anti-spam), calquées sur l'usage réel :
-//   - « finish » n'émet un TOAST que si la tâche terminée n'est PAS celle qui est
-//     affichée (sinon l'utilisateur voit déjà le résultat dans le fil) ; le SON,
-//     lui, est réservé au même cas (pour ne pas biper à chaque tour visible) ;
+// Règles (fidèles à Trae — « Task Status Notification ») :
+//   - Trae prévient à la fois quand une tâche se TERMINE et quand elle ÉCHOUE,
+//     via deux canaux indépendants : « Banner » (notre toast) et « Sound ».
+//     Le son est donc joué pour TOUTE fin de tâche, qu'elle soit affichée ou
+//     non (c'est exactement le réglage de Trae : on est alerté de la fin du
+//     travail même en regardant ailleurs).
 //   - « question » émet TOUJOURS (l'agent est bloqué : il faut réagir) ;
-//   - « error » émet TOUJOURS (c'est un échec, il doit être visible) ;
-//   - « stop » n'émet qu'un son.
+//   - « error » émet TOUJOURS (échec de tâche, cf. réglage Trae) ;
+//   - « stop » n'émet qu'un son (action volontaire de l'utilisateur).
 //
 // Le module est PUR côté logique (aucune dépendance React) : la décision
 // « faut-il notifier ? » est isolée dans `planNotification`, testable seule.
@@ -71,12 +73,14 @@ export function planNotification(
 
   switch (kind) {
     case "finish":
-      // Une tâche terminée EN ARRIÈRE-PLAN mérite une alerte ; la tâche affichée
-      // se voit déjà dans le fil (pas de bruit inutile).
-      if (ctx.isDisplayed) return { playSound: null, toast: null };
+      // Fin de tâche (cf. réglage Trae « Task Status Notification ») : on avertit
+      // TOUJOURS, son + bannière, que la tâche soit affichée ou non. Le message
+      // s'adapte simplement au contexte (nommée si la tâche n'est pas à l'écran).
       return {
         playSound: soundPart,
-        toast: ctx.toastEnabled ? { text: `${label} terminée`, type: "success" } : null,
+        toast: ctx.toastEnabled
+          ? { text: ctx.isDisplayed ? "Tâche terminée" : `${label} terminée`, type: "success" }
+          : null,
       };
 
     case "question":
