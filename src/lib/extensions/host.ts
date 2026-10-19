@@ -209,7 +209,7 @@ export class ExtensionHost {
       // pas une « error » bloquante : l'extension reste utilisable pour ses
       // contributions passives (thèmes, grammaires, snippets).
       rec.state = "unsupported";
-      rec.error = `Code non supporté en mode léger (entrypoint introuvable : ${resolved.declared ?? "?"}).`;
+      rec.error = `Code not supported in light mode (entrypoint not found: ${resolved.declared ?? "?"}).`;
       this.emit();
       return;
     }
@@ -224,7 +224,7 @@ export class ExtensionHost {
     const prereq = checkPrerequisites(ext, installed.map((e) => e.id));
     if (!prereq.satisfied) {
       rec.state = "prerequisites-missing";
-      rec.error = `Requiert : ${prereq.missing.join(", ")}`;
+      rec.error = `Requires: ${prereq.missing.join(", ")}`;
       this.emit();
       throw new Error(rec.error);
     }
@@ -248,7 +248,7 @@ export class ExtensionHost {
     const binStatus = binaryConsentStatus(ext.id, ext.binaries ?? []);
     if (!binStatus.granted) {
       rec.state = "binary-consent-required";
-      rec.error = `Binaires tiers à approuver : ${binStatus.missing.join(", ")}`;
+      rec.error = `Third-party binaries to approve: ${binStatus.missing.join(", ")}`;
       this.emit();
       throw new Error(rec.error);
     }

@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, NotebookTabs, Waypoints, Target, Square, Clock, Pencil, Trash2 } from "lucide-react";
+import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, Waypoints, Square, Clock, Pencil, Trash2 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import PreferencesDropdown from "./PreferencesDropdown";
 import logoCode from "../../assets/logo-code.svg";
 import MentionDropdown from "./MentionDropdown";
@@ -8,6 +9,7 @@ import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
+import { copyPath, createDirCmd, pathExists } from "../../lib/fs";
 import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 import {
   AGENTS as AGENT_DESCRIPTORS,
@@ -20,8 +22,24 @@ import {
   filterSlashCommands,
   getSlashQuery,
   mergeSlashCommands,
+  SLASH_COMMANDS,
 } from "../../lib/inputCommands";
 import type { ClineSkillInfo, ClineRuntimeCommand } from "../../lib/agent/clineClient";
+import {
+  CUSTOM_AGENTS_EVENT,
+  listAgents,
+  readSelectedAgentId,
+  setSelectedAgentId,
+  resolveSelectedAgent,
+  type CustomAgent,
+} from "../../lib/agent/customAgents";
+import {
+  getHashQuery,
+  contextKindDescriptor,
+  type ContextRef,
+  type ContextKind,
+} from "../../lib/contextMentions";
+import { ContextTypeMenu, RulePicker, FolderPicker } from "./ContextMenu";
 
 // ── Agent selector ────────────────────────────────────────────────────────────
 
@@ -35,8 +53,17 @@ const AGENT_ICONS: Record<AgentIcon, typeof Bot> = {
 /** Agents affichés dans le menu : identifiants + libellés viennent du module. */
 const AGENTS = AGENT_DESCRIPTORS.map(a => ({ ...a, Icon: AGENT_ICONS[a.icon] }));
 
-function ModeDropdown({ anchorEl, selected, onSelect, onClose }: {
-  anchorEl: HTMLElement | null; selected: Mode; onSelect: (m: Mode) => void; onClose: () => void;
+function ModeDropdown({ anchorEl, selected, customAgents, selectedAgentId, onSelect, onSelectAgent, onCreate, onClose }: {
+  anchorEl: HTMLElement | null;
+  selected: Mode;
+  /** Agents personnalisés de l'utilisateur (persistés globalement). */
+  customAgents: CustomAgent[];
+  /** Id de l'agent personnalisé actif, ou `null` si un mode intégré est actif. */
+  selectedAgentId: string | null;
+  onSelect: (m: Mode) => void;
+  onSelectAgent: (id: string) => void;
+  onCreate: () => void;
+  onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -60,10 +87,11 @@ function ModeDropdown({ anchorEl, selected, onSelect, onClose }: {
       transform:"translateY(-100%)",
       background:"color-mix(in srgb, var(--origin-bg-base) 90%, transparent)", backdropFilter:"blur(16px)",
       WebkitBackdropFilter:"blur(16px)", border:"1px solid var(--origin-border-default)", borderRadius:"10px",
-      boxShadow:"0 8px 32px rgba(0,0,0,0.35)", padding:"6px", zIndex:9999 }}>
+      boxShadow:"0 8px 32px rgba(0,0,0,0.35)", padding:"6px", zIndex:9999,
+      maxHeight:"60vh", overflowY:"auto" }}>
       <div style={{ padding:"6px 8px 6px", fontSize:"12px", color:"var(--origin-fg-muted)" }}>Built-In Agents</div>
       {AGENTS.map(({ id, label, Icon }) => {
-        const isSelected = selected === id; const isHovered = hovered === id;
+        const isSelected = !selectedAgentId && selected === id; const isHovered = hovered === id;
         return (
           <button key={id} onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}
             onClick={() => { onSelect(id); onClose(); }}
@@ -79,9 +107,35 @@ function ModeDropdown({ anchorEl, selected, onSelect, onClose }: {
           </button>
         );
       })}
+      {customAgents.length > 0 && (
+        <>
+          <div style={{ margin:"6px 4px", height:1, background:"var(--origin-border-default)" }} />
+          <div style={{ padding:"6px 8px 6px", fontSize:"12px", color:"var(--origin-fg-muted)" }}>Custom Agents</div>
+          {customAgents.map(agent => {
+            const key = `agent:${agent.id}`;
+            const isSelected = selectedAgentId === agent.id; const isHovered = hovered === key;
+            return (
+              <button key={key} onMouseEnter={() => setHovered(key)} onMouseLeave={() => setHovered(null)}
+                onClick={() => { onSelectAgent(agent.id); onClose(); }}
+                title={agent.name}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:"10px", padding:"8px 10px",
+                  borderRadius:"7px", border:"none", cursor:"pointer",
+                  background: isHovered ? "var(--origin-bg-hover)" : "transparent", textAlign:"left", transition:"background 0.1s" }}>
+                <span style={{ display:"flex", alignItems:"center", justifyContent:"center", width:"22px", height:"22px",
+                  borderRadius:"5px", background:"#1a2540", color:"#7aa2f7", flexShrink:0 }}>
+                  <Bot size={13} />
+                </span>
+                <span style={{ flex:1, fontSize:"13px", fontWeight: isSelected ? 600 : 400, color:"var(--origin-fg-default)",
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{agent.name}</span>
+                {isSelected && <span style={{ color:"#3fb950", flexShrink:0, fontSize:"13px" }}>✓</span>}
+              </button>
+            );
+          })}
+        </>
+      )}
       <div style={{ margin:"6px 4px", height:1, background:"var(--origin-border-default)" }} />
       <button onMouseEnter={() => setHovered("create")} onMouseLeave={() => setHovered(null)}
-        onClick={onClose}
+        onClick={() => { onClose(); onCreate(); }}
         style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", padding:"8px 10px",
           borderRadius:"7px", border:"none", cursor:"pointer",
           background: hovered === "create" ? "var(--origin-bg-hover)" : "transparent",
@@ -154,14 +208,21 @@ function ApprovalMenu({ anchorEl, onClose, mode, onSelect }: {
 
 // ── Attach menu (+ button) ──────────────────────────────────────────────────────
 
-const COMMAND_ITEMS = [
-  { id: "spec", label: "Spec", Icon: NotebookTabs },
-  { id: "plan", label: "Plan", Icon: Waypoints },
-  { id: "goal", label: "Goal", Icon: Target },
-];
-
-function AttachMenu({ anchorEl, onAddContext, onClose, skills, onSkill }: {
+/**
+ * Actions réelles du menu `+` (aligné sur Trae). Chaque entrée fait quelque
+ * chose d'utile : « Add Context » ouvre le sélecteur de fichiers, « / for
+ * commands & skills » insère un `/` pour déclencher l'autocomplétion, « Upload
+ * image » copie une image dans le workspace et l'attache comme contexte, et
+ * « Commands » propose les modes d'agent (`/agent`, `/plan`, `/ask`).
+ */
+function AttachMenu({ anchorEl, onAddContext, onCommand, onInsertSlash, onUploadImage, onClose, skills, onSkill }: {
   anchorEl: HTMLElement | null; onAddContext: () => void; onClose: () => void;
+  /** Ouvre l'autocomplétion des commandes/skills (insère `/` dans l'input). */
+  onInsertSlash: () => void;
+  /** Applique une slash-command par son nom (ex. `agent`, `plan`, `ask`). */
+  onCommand: (name: string) => void;
+  /** Ouvre le sélecteur d'image et l'attache au message. */
+  onUploadImage: () => void;
   /** Skills réellement découvertes (dossier `.cline/skills`, etc.). */
   skills: ClineSkillInfo[];
   /** Insère `/skillName ` dans l'input quand une skill est choisie. */
@@ -203,38 +264,27 @@ function AttachMenu({ anchorEl, onAddContext, onClose, skills, onSkill }: {
         onClick={() => { onClose(); onAddContext(); }}>
         <span style={iconStyle}><Hash size={15} /></span>Add Context
       </button>
-      <button style={rowStyle("cmd")} onMouseEnter={() => setHovered("cmd")} onMouseLeave={() => setHovered(null)} onClick={onClose}>
+      <button style={rowStyle("cmd")} onMouseEnter={() => setHovered("cmd")} onMouseLeave={() => setHovered(null)}
+        onClick={() => { onClose(); onInsertSlash(); }}>
         <span style={iconStyle}><SquareSlash size={15} /></span>/ for commands &amp; skills
       </button>
-      <button style={rowStyle("img")} onMouseEnter={() => setHovered("img")} onMouseLeave={() => setHovered(null)} onClick={onClose}>
+      <button style={rowStyle("img")} onMouseEnter={() => setHovered("img")} onMouseLeave={() => setHovered(null)}
+        onClick={() => { onClose(); onUploadImage(); }}>
         <span style={iconStyle}><ImageIcon size={15} /></span>Upload image
       </button>
       <div style={{ margin:"6px 4px", height:1, background:"var(--origin-border-default)" }} />
-      <div style={{ position:"relative" }}
-        onMouseEnter={() => setHovered("cmds")} onMouseLeave={() => setHovered(null)}>
-        <button style={rowStyle("cmds")} onClick={onClose}>
+      {/* Commands : applique un mode d'agent (mêmes commandes que `/agent`,
+          `/plan`, `/ask`) au lieu d'entrées décoratives sans effet. */}
+      {SLASH_COMMANDS.filter(c => c.source === "builtin" && c.action.kind === "set-mode").map((cmd) => (
+        <button key={cmd.name} style={rowStyle(`mode-${cmd.name}`)}
+          onMouseEnter={() => setHovered(`mode-${cmd.name}`)} onMouseLeave={() => setHovered(null)}
+          onClick={() => { onClose(); onCommand(cmd.name); }}>
           <span style={iconStyle}><Wand2 size={15} /></span>
-          <span style={{ flex:1 }}>Commands</span>
-          <ChevronRight size={14} style={{ color:"var(--origin-fg-subtle)", flexShrink:0 }} />
+          <span style={{ flex:1 }}>/{cmd.name}</span>
+          <span style={{ fontSize:"11px", color:"var(--origin-fg-subtle)" }}>{cmd.description}</span>
         </button>
-        {hovered === "cmds" && (
-          <div style={{ position:"absolute", right:"100%", top:0, minWidth:"150px",
-            background:"color-mix(in srgb, var(--origin-bg-base) 90%, transparent)", backdropFilter:"blur(16px)",
-            WebkitBackdropFilter:"blur(16px)", border:"1px solid var(--origin-border-default)", borderRadius:"10px",
-            boxShadow:"0 8px 32px rgba(0,0,0,0.35)", padding:"6px" }}>
-            {COMMAND_ITEMS.map(({ id, label, Icon }) => (
-              <button key={id} onClick={onClose}
-                onMouseEnter={e => { e.currentTarget.style.background = "var(--origin-bg-hover)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-                style={{ width:"100%", display:"flex", alignItems:"center", gap:"10px", padding:"8px 10px",
-                  borderRadius:"7px", border:"none", cursor:"pointer", background:"transparent",
-                  textAlign:"left", fontSize:"13px", color:"var(--origin-fg-default)" }}>
-                <span style={iconStyle}><Icon size={15} /></span>{label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      ))}
+      <div style={{ margin:"6px 4px", height:1, background:"var(--origin-border-default)" }} />
       <div style={{ position:"relative" }}
         onMouseEnter={() => setHovered("skills")} onMouseLeave={() => setHovered(null)}>
         <button style={rowStyle("skills")} onClick={() => { onClose(); }}>
@@ -394,6 +444,121 @@ function parseContent(el: HTMLDivElement): { displayText: string; fileMentions: 
   return { displayText: displayText.trim(), fileMentions };
 }
 
+// ── Contexte `#` (context mentions) ──────────────────────────────────────────
+
+/**
+ * Badge DOM représentant un contexte `#` (`#Folder`, `#Rule`, `#Workspace`…).
+ *
+ * On réutilise le mécanisme des badges de fichiers (`data-*` + `contentEditable
+ * = false`) pour rester compatible avec le parsing de contenu et la suppression
+ * au clavier — mais avec un attribut distinct (`data-context`) afin de ne pas
+ * confondre un contexte `#` avec une mention de fichier `@`.
+ */
+function createContextBadgeElement(ref: ContextRef): HTMLSpanElement {
+  const badge = document.createElement('span');
+  badge.contentEditable = 'false';
+  badge.setAttribute('data-context', `${ref.kind}:${ref.path ?? ""}`);
+  badge.setAttribute('data-context-label', ref.label);
+  badge.textContent = `#${ref.label}`;
+  badge.style.cssText = [
+    'display:inline-flex', 'align-items:center', 'padding:1px 6px',
+    'border-radius:4px', 'font-size:11px', 'font-family:var(--font-mono)',
+    'background:var(--origin-bg-active)',
+    'border:1px solid var(--origin-border-default)',
+    'color:var(--origin-fg-default)', 'cursor:default', 'user-select:none',
+    'vertical-align:middle', 'margin:0 1px',
+  ].join(';');
+  return badge;
+}
+
+/**
+ * Remplace la requête `#…` en cours par un badge de contexte.
+ *
+ * IMPORTANT — on ne se fie PAS à une `Range` mémorisée au moment de la frappe.
+ * Entre l'ouverture du menu `#` et la sélection, le DOM de l'éditeur peut avoir
+ * été re-rendu et la sélection déplacée : une `Range` clonée devient alors
+ * détachée, `startContainer` n'est plus un nœud texte, et l'insertion échouait
+ * SILENCIEUSEMENT (menu ouvert, mais « rien ne s'insère »). On localise donc la
+ * requête `#…` **dans l'éditeur lui-même**, au moment de l'insertion, ce qui est
+ * indépendant de toute sélection périmée.
+ *
+ * Stratégie : on parcourt les nœuds texte de l'éditeur et on cherche le DERNIER
+ * `#` en fin de texte. S'il existe, on le remplace par le badge ; sinon on
+ * ajoute le badge à la fin.
+ */
+function insertContextBadge(el: HTMLDivElement, _savedRange: Range | null, ref: ContextRef): void {
+  el.focus();
+
+  // Localise le dernier nœud texte se terminant par une requête `#…`.
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let target: Text | null = null;
+  let node: Node | null = walker.nextNode();
+  while (node) {
+    const t = (node.textContent ?? '');
+    if (/#[^\s#]*$/.test(t)) target = node as Text;
+    node = walker.nextNode();
+  }
+
+  if (!target) {
+    // Aucune requête `#` résiduelle (déjà remplacée, focus perdu…) : on ajoute.
+    appendContextBadge(el, ref);
+    return;
+  }
+
+  const textContent = target.textContent ?? '';
+  const match = textContent.match(/#[^\s#]*$/);
+  if (!match) { appendContextBadge(el, ref); return; }
+  const hashIndex = textContent.length - match[0].length;
+
+  const badge = createContextBadgeElement(ref);
+  const parent = target.parentNode;
+  if (!parent) { appendContextBadge(el, ref); return; }
+  const beforeNode = document.createTextNode(textContent.slice(0, hashIndex));
+  const afterNode = document.createTextNode(textContent.slice(textContent.length) + ' ');
+  parent.insertBefore(beforeNode, target);
+  parent.insertBefore(badge, target);
+  parent.insertBefore(afterNode, target);
+  parent.removeChild(target);
+
+  const newRange = document.createRange();
+  newRange.setStart(afterNode, afterNode.textContent?.length ?? 0);
+  newRange.collapse(true);
+  const sel = document.getSelection();
+  if (sel) { sel.removeAllRanges(); sel.addRange(newRange); }
+}
+
+/** Ajoute un badge de contexte à la fin (choix via le menu `+`, pas de requête `#`). */
+function appendContextBadge(el: HTMLDivElement, ref: ContextRef) {
+  const key = `${ref.kind}:${ref.path ?? ""}`;
+  if (el.querySelector(`[data-context="${CSS.escape(key)}"]`)) return;
+  const badge = createContextBadgeElement(ref);
+  const last = el.lastChild;
+  if (last && !(last.nodeType === Node.TEXT_NODE && (last.textContent ?? '').endsWith(' '))) {
+    el.appendChild(document.createTextNode(' '));
+  }
+  el.appendChild(badge);
+  el.appendChild(document.createTextNode(' '));
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = document.getSelection();
+  if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+}
+
+/** Lit les badges de contexte actuellement présents dans l'éditeur, dans l'ordre. */
+function readContextBadges(el: HTMLDivElement): ContextRef[] {
+  const refs: ContextRef[] = [];
+  el.querySelectorAll('[data-context]').forEach(node => {
+    const raw = node.getAttribute('data-context') ?? "";
+    const sep = raw.indexOf(':');
+    const kind = (sep === -1 ? raw : raw.slice(0, sep)) as ContextKind;
+    const path = sep === -1 ? undefined : raw.slice(sep + 1) || undefined;
+    const label = node.getAttribute('data-context-label') ?? contextKindDescriptor(kind)?.label ?? raw;
+    refs.push({ kind, path, label });
+  });
+  return refs;
+}
+
 function contextLabel(ctx: EditorContext): string {
   if (ctx.startLine === ctx.endLine) return `L${ctx.startLine}`;
   return `L${ctx.startLine}–${ctx.endLine}`;
@@ -415,7 +580,7 @@ export interface ChatBoxHandle {
 }
 
 interface ChatBoxProps {
-  onSend?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode) => void;
+  onSend?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode, contextRefs: ContextRef[]) => void;
   getEditorContext?: () => EditorContext | null;
   forcedContext?: EditorContext | null;
   onForcedContextConsumed?: () => void;
@@ -429,7 +594,7 @@ interface ChatBoxProps {
    * Message actuellement en file d'attente (envoyé automatiquement à la fin du
    * tour courant). Rendu sous forme de bandeau « Waiting to send ».
    */
-  queued?: { text: string; fileMentions?: string[] } | null;
+  queued?: { text: string; fileMentions?: string[]; contextRefs?: string[] } | null;
   /** Retire de la file le message en attente. */
   onRemoveQueued?: () => void;
   /**
@@ -442,7 +607,7 @@ interface ChatBoxProps {
    * message doit être mis en file d'attente au lieu de lancer un nouveau run.
    * Renvoie `true` si le message a bien été pris en charge par la file.
    */
-  onQueue?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode) => boolean;
+  onQueue?: (text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: Mode, contextRefs: ContextRef[]) => boolean;
   /**
    * Skills RÉELLEMENT découvertes par le sidecar Cline (dossier `.cline/skills`,
    * etc.). Alimente le sous-menu « Skills » du bouton `+` et l'autocomplétion
@@ -467,11 +632,16 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const modelAnchorRef = useRef<HTMLDivElement>(null);
   const plusBtnRef = useRef<HTMLButtonElement>(null);
   const mentionRangeRef = useRef<Range | null>(null);
+  /** Position du curseur au moment où la requête `#` a été détectée. */
+  const hashRangeRef = useRef<Range | null>(null);
 
   const [isEmpty, setIsEmpty] = useState(true);
   const [focused, setFocused] = useState(false);
   const [mode, setMode] = useState<Mode>(() => readStoredMode());
   const [modeOpen, setModeOpen] = useState(false);
+  // Agents personnalisés (persistés globalement) + agent actif dans l'input.
+  const [customAgents, setCustomAgents] = useState<CustomAgent[]>([]);
+  const [selectedAgentId, setSelectedAgentIdState] = useState<string | null>(() => readSelectedAgentId());
   const [prefsOpen, setPrefsOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => loadPermissionMode());
@@ -482,6 +652,11 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [slashIndex, setSlashIndex] = useState(0);
   const [attachOpen, setAttachOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  // Menu `#` (context mentions) : menu des types, puis picker ciblé.
+  const [hashActive, setHashActive] = useState(false);
+  const [hashQuery, setHashQuery] = useState('');
+  const [hashMenuOpen, setHashMenuOpen] = useState(false);
+  const [contextPicker, setContextPicker] = useState<{ kind: "file" | "folder" | "rule"; query: string } | null>(null);
   const [contextSnap, setContextSnap] = useState<EditorContext | null>(null);
   const [contextDismissed, setContextDismissed] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState(
@@ -574,6 +749,27 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       setSlashQuery('');
     }
 
+    // Contexte `#` : taper `#` (seul, ou suivi d'une requête) ouvre le menu des
+    // types. Priorité après le slash, avant `@` (les deux ne cohabitent pas).
+    const hashQ = getHashQuery(text);
+    if (hashQ !== null) {
+      const sel = document.getSelection();
+      if (sel && sel.rangeCount > 0) hashRangeRef.current = sel.getRangeAt(0).cloneRange();
+      setHashQuery(hashQ);
+      setHashActive(true);
+      setHashMenuOpen(true);
+      setMentionActive(false);
+      setMentionQuery('');
+      mentionRangeRef.current = null;
+      return;
+    }
+    if (hashActive) {
+      setHashActive(false);
+      setHashQuery('');
+      setHashMenuOpen(false);
+      hashRangeRef.current = null;
+    }
+
     if (folderPath) {
       const query = getMentionQuery(el);
       if (query !== null) {
@@ -592,17 +788,48 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     }
   };
 
-  /** Change le mode et le mémorise (survit à un reload). */
+  // Charge les agents personnalisés et suit leurs changements (création dans les
+  // Réglages, sélection modifiée ailleurs…). La liste vit dans `~/.mira/agents`.
+  useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      void listAgents().then(list => { if (!cancelled) setCustomAgents(list); });
+    };
+    reload();
+    window.addEventListener(CUSTOM_AGENTS_EVENT, reload);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CUSTOM_AGENTS_EVENT, reload);
+    };
+  }, []);
+
+  /** Change le mode et le mémorise (survit à un reload). Efface l'agent actif. */
   const handleModeSelect = useCallback((m: Mode) => {
     setMode(m);
     writeStoredMode(m);
+    setSelectedAgentId(null);
+    setSelectedAgentIdState(null);
+  }, []);
+
+  /** Sélectionne un agent personnalisé (persisté, comme le mode). */
+  const handleAgentSelect = useCallback((id: string) => {
+    setSelectedAgentId(id);
+    setSelectedAgentIdState(id);
+    setMode("agent");
+    writeStoredMode("agent");
+  }, []);
+
+  /** Ouvre les Réglages › Agents pour créer un agent (réutilise l'éditeur existant). */
+  const handleCreateAgent = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("origin-open-settings", { detail: { section: "agents" } }));
   }, []);
 
   const handleSend = () => {
     const el = editableRef.current;
     if (!el) return;
     const { displayText, fileMentions } = parseContent(el);
-    if (!displayText && fileMentions.length === 0) return;
+    const contextRefs = readContextBadges(el);
+    if (!displayText && fileMentions.length === 0 && contextRefs.length === 0) return;
 
     // GARDE-FOU WORKSPACE : l'agent a besoin d'un dossier de travail pour lire et
     // écrire. Sans dossier, on n'envoie RIEN et on ouvre le sélecteur natif : le
@@ -626,7 +853,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       writeStoredMode(sendMode);
       text = slash.rest;
       // Commande seule (ex. `/plan`) : on bascule le mode sans envoyer de message.
-      if (!text && fileMentions.length === 0) {
+      if (!text && fileMentions.length === 0 && contextRefs.length === 0) {
         el.innerHTML = "";
         setIsEmpty(true);
         setMentionActive(false);
@@ -640,7 +867,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
     // Un tour est déjà en cours : on met le message en file d'attente au lieu de
     // lancer un nouveau run (le parent l'enverra automatiquement à la fin).
-    if (isStreaming && onQueue?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode)) {
+    if (isStreaming && onQueue?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode, contextRefs)) {
       el.innerHTML = "";
       setIsEmpty(true);
       setMentionActive(false);
@@ -651,7 +878,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       return;
     }
 
-    onSend?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode);
+    onSend?.(text, selectedModelId, selectedProviderId, fileMentions, editorContext, sendMode, contextRefs);
     el.innerHTML = "";
     setIsEmpty(true);
     setMentionActive(false);
@@ -689,6 +916,16 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       }
     }
 
+    if (e.key === "Escape" && hashActive) {
+      e.stopPropagation();
+      setHashActive(false);
+      setHashQuery('');
+      setHashMenuOpen(false);
+      setContextPicker(null);
+      hashRangeRef.current = null;
+      return;
+    }
+
     if (e.key === "Escape" && mentionActive) {
       e.stopPropagation();
       setMentionActive(false);
@@ -711,7 +948,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             } else if (range.startContainer === el) {
               prevNode = el.childNodes[range.startOffset - 1] ?? null;
             }
-            if (prevNode instanceof Element && prevNode.hasAttribute('data-filepath')) {
+            // Badge de fichier (`@`) ou de contexte (`#`) : les deux se retirent
+            // d'un seul coup, comme un jeton indivisible.
+            if (prevNode instanceof Element && (prevNode.hasAttribute('data-filepath') || prevNode.hasAttribute('data-context'))) {
               e.preventDefault();
               prevNode.remove();
               handleInput();
@@ -722,10 +961,50 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey && !mentionActive) {
+    if (e.key === "Enter" && !e.shiftKey && !mentionActive && !hashActive) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  /**
+   * Sélection d'un type dans le menu `#`.
+   *
+   *   - type ciblé (File, Folder, Rule) → bascule vers le picker correspondant ;
+   *   - type atomique (Workspace, Problems) → attache immédiatement, sans second écran ;
+   *   - `code` → lit la sélection courante de l'éditeur (aucune cible à choisir).
+   */
+  const handleContextKindSelect = (kind: ContextKind) => {
+    setHashMenuOpen(false);
+    if (kind === "file" || kind === "folder" || kind === "rule") {
+      setContextPicker({ kind, query: hashQuery });
+      return;
+    }
+    // Types atomiques : réf construit sans cible externe.
+    const desc = contextKindDescriptor(kind);
+    const label = kind === "workspace"
+      ? (folderPath?.split(/[\\/]/).filter(Boolean).pop() ?? "Workspace")
+      : (desc?.label ?? kind);
+    const ref: ContextRef = { kind, label };
+    attachContextRef(ref);
+  };
+
+  /** Insère le badge de contexte dans l'éditeur et réinitialise l'état du `#`. */
+  const attachContextRef = (ref: ContextRef) => {
+    const el = editableRef.current;
+    if (!el) return;
+    const saved = hashRangeRef.current;
+    if (saved && hashActive) {
+      insertContextBadge(el, saved, ref);
+    } else {
+      appendContextBadge(el, ref);
+    }
+    handleInput();
+    setHashActive(false);
+    setHashQuery('');
+    setHashMenuOpen(false);
+    setContextPicker(null);
+    hashRangeRef.current = null;
   };
 
   const handleMentionSelect = (filepath: string, filename: string) => {
@@ -761,8 +1040,76 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     handleInput();
   };
 
+  /**
+   * Insère un `/` en fin d'input et ouvre l'autocomplétion des commandes/skills.
+   * Déclenché par l'entrée « / for commands & skills » du menu `+` : équivalent
+   * à taper `/` au clavier, mais découvrable.
+   */
+  const handleInsertSlash = () => {
+    const el = editableRef.current;
+    if (!el) return;
+    const prefix = el.textContent && !el.textContent.endsWith(" ") ? " " : "";
+    el.textContent = `${el.textContent ?? ""}${prefix}/`;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = document.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    el.focus();
+    handleInput();
+  };
+
+  /**
+   * Sélectionne une image via le dialogue natif, la copie dans
+   * `<workspace>/.mira/attachments/` (zone dédiée, jamais dans le code de
+   * l'utilisateur) puis l'attache au message comme un fichier `@` : le contenu
+   * est donc injecté dans le prompt exactement comme une mention de fichier.
+   *
+   * Sécurité : la copie est confinée au workspace par `copy_path` (garde Rust) ;
+   * un nom existant n'est jamais écrasé (suffixe incrémental). En cas d'échec,
+   * on n'attache rien — jamais de badge pointant vers un fichier inexistant.
+   */
+  const handleUploadImage = async () => {
+    if (!folderPath) return;
+    try {
+      const picked = await openDialog({
+        multiple: false,
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] }],
+      });
+      const src = typeof picked === "string" ? picked : null;
+      if (!src) return;
+
+      const dir = `${folderPath.replace(/[\\/]+$/, "")}/.mira/attachments`;
+      await createDirCmd(dir, { workspaceRoot: folderPath });
+
+      // Nom unique : jamais d'écrasement d'une pièce jointe existante.
+      const base = src.split(/[\\/]/).filter(Boolean).pop() ?? "image";
+      const dot = base.lastIndexOf(".");
+      const stem = dot > 0 ? base.slice(0, dot) : base;
+      const ext = dot > 0 ? base.slice(dot) : "";
+      let filename = base;
+      let dest = `${dir}/${filename}`;
+      let n = 1;
+      while (await pathExists(dest, { workspaceRoot: folderPath })) {
+        filename = `${stem}-${n}${ext}`;
+        dest = `${dir}/${filename}`;
+        n += 1;
+      }
+
+      await copyPath(src, dest, { workspaceRoot: folderPath });
+
+      const el = editableRef.current;
+      if (el) { appendFileBadge(el, dest, filename); handleInput(); }
+    } catch {
+      // Échec (dialogue annulé, copie refusée…) : on n'attache rien.
+    }
+  };
+
   const activeAgent = AGENTS.find(a => a.id === mode);
-  const agentLabel = activeAgent?.label ?? "Agent";
+  // Un agent personnalisé sélectionné prend le pas sur le libellé du mode.
+  const activeCustomAgent = resolveSelectedAgent(customAgents, selectedAgentId);
+  const agentLabel = activeCustomAgent?.name ?? activeAgent?.label ?? "Agent";
 
   // Catalogue fusionné : commandes intégrées (/agent, /plan, /ask, /skill) +
   // commandes RÉELLES du runtime Cline (/skill, /workflow découvertes par le SDK).
@@ -796,6 +1143,17 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     setSlashQuery("");
     setSlashIndex(0);
   }, []);
+
+  /**
+   * Applique une slash-command du catalogue par son nom (entrées « Commands »
+   * du menu `+`). Réutilise exactement la même logique que l'autocomplétion
+   * (`applySlashCommand`) pour ne pas dupliquer le comportement.
+   */
+  const handleCommand = (name: string) => {
+    const cmd = slashCatalog.find(c => c.name === name);
+    if (cmd) applySlashCommand(cmd);
+  };
+
   const showContextBadge = contextSnap && !contextDismissed;
   const activeProvider = PROVIDERS.find(p => p.models.some(m => m.id === selectedModelId));
   const activeModel = activeProvider?.models.find(m => m.id === selectedModelId);
@@ -831,12 +1189,64 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
         />
       )}
 
+      {/* # context type menu */}
+      {hashMenuOpen && (
+        <ContextTypeMenu
+          // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
+          anchorEl={containerRef.current}
+          query={hashQuery}
+          attachedKinds={
+            // eslint-disable-next-line react-hooks/refs -- read currently-attached context badges from the editable DOM
+            readContextBadges(editableRef.current as HTMLDivElement).filter(r => !r.path).map(r => r.kind)
+          }
+          onSelectKind={handleContextKindSelect}
+          onClose={() => { setHashMenuOpen(false); setHashActive(false); setHashQuery(''); hashRangeRef.current = null; }}
+        />
+      )}
+
+      {/* # folder picker */}
+      {contextPicker?.kind === "folder" && folderPath && (
+        <FolderPicker
+          // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
+          anchorEl={containerRef.current}
+          query={contextPicker.query}
+          workspace={folderPath}
+          onSelect={(path, label) => attachContextRef({ kind: "folder", path, label })}
+          onClose={() => { setContextPicker(null); setHashActive(false); setHashQuery(''); hashRangeRef.current = null; }}
+        />
+      )}
+
+      {/* # file picker */}
+      {contextPicker?.kind === "file" && folderPath && (
+        <MentionDropdown
+          // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
+          anchorEl={containerRef.current}
+          query={contextPicker.query}
+          onSelect={(filepath, filename) => attachContextRef({ kind: "file", path: filepath, label: filename })}
+          onClose={() => { setContextPicker(null); setHashActive(false); setHashQuery(''); hashRangeRef.current = null; }}
+        />
+      )}
+
+      {/* # rule picker */}
+      {contextPicker?.kind === "rule" && (
+        <RulePicker
+          // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
+          anchorEl={containerRef.current}
+          workspace={folderPath ?? null}
+          onSelect={(ref) => attachContextRef(ref)}
+          onClose={() => { setContextPicker(null); setHashActive(false); setHashQuery(''); hashRangeRef.current = null; }}
+        />
+      )}
+
       {/* + attach menu */}
       {attachOpen && folderPath && (
         <AttachMenu
           // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the container
           anchorEl={containerRef.current}
           onAddContext={() => setFilePickerOpen(true)}
+          onInsertSlash={handleInsertSlash}
+          onCommand={handleCommand}
+          onUploadImage={() => void handleUploadImage()}
           onClose={() => setAttachOpen(false)}
           skills={skills}
           onSkill={handleSkillSelect}
@@ -884,6 +1294,13 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             <Clock size={11} style={{ flexShrink: 0, color: "var(--origin-fg-subtle)" }} />
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
               {queued.text || (queued.fileMentions?.join(", ") ?? "")}
+              {/* Aperçu des contextes `#` en attente : types + labels, discrets. */}
+              {(queued.contextRefs?.length ?? 0) > 0 && (
+                <span style={{ color: "var(--origin-fg-subtle)" }}>
+                  {"  "}
+                  {queued.contextRefs!.map(s => `#${s.split(":").slice(1).join(":") || s.split(":")[0]}`).join(" ")}
+                </span>
+              )}
             </span>
             <button
               onMouseDown={e => { e.preventDefault(); onEditQueued?.(); }}
@@ -1135,7 +1552,16 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
         </div>
         {modeOpen && (
           // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the anchor button
-          <ModeDropdown anchorEl={modeAnchorRef.current} selected={mode} onSelect={handleModeSelect} onClose={() => setModeOpen(false)} />
+          <ModeDropdown
+            anchorEl={modeAnchorRef.current}
+            selected={mode}
+            customAgents={customAgents}
+            selectedAgentId={selectedAgentId}
+            onSelect={handleModeSelect}
+            onSelectAgent={handleAgentSelect}
+            onCreate={handleCreateAgent}
+            onClose={() => setModeOpen(false)}
+          />
         )}
 
         {/* Model selector */}

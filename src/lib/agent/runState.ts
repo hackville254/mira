@@ -49,6 +49,15 @@ export interface RunState {
   /** Nombre de sous-agents lancés pendant ce run (trace d'orchestration). */
   spawned: number;
   /**
+   * Vrai dès qu'un tour de cette session a activé l'outillage d'équipe Cline.
+   * COLLANT : une fois les équipes ouvertes dans une conversation, on ne
+   * rebascule pas sur un runtime allégé en plein travail (sinon on rouvrirait
+   * une session sans les outils d'équipe alors qu'un coéquipier peut être actif).
+   * L'escalade est pilotée par le modèle : il appelle `escalate_to_team` en plein
+   * tour léger, le front bascule ce flag et relance avec les équipes.
+   */
+  teamsEnabled: boolean;
+  /**
    * Messages MIROIR du run tels qu'ils doivent s'afficher quand cette session est
    * visible. Permet à une tâche en arrière-plan de rejouer son fil à la reprise.
    * `null` tant que la session n'a jamais été le siège d'un run dans ce process.
@@ -74,6 +83,7 @@ function fresh(): RunState {
     flushTimer: null,
     dirty: false,
     spawned: 0,
+    teamsEnabled: false,
     messages: null,
     task: null,
   };

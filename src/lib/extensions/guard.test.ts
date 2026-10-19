@@ -43,6 +43,6 @@ describe('describeMissing', () => {
   });
 
   it('liste les ids manquants', () => {
-    expect(describeMissing(['acme.core', 'acme.langpack'])).toBe('Requiert : acme.core, acme.langpack');
+    expect(describeMissing(['acme.core', 'acme.langpack'])).toBe('Requires: acme.core, acme.langpack');
   });
 });

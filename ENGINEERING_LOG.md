@@ -5,6 +5,1204 @@
 
 ---
 
+### [2026-10-20T01:15] | Mode IA : escalade d'équipe pilotée par le modèle (remplace le classificateur lexical)
+
+- **Contexte :** la version précédente décidait l'activation des équipes Cline via
+  un classificateur **lexical** (`teamDemand.ts`). Retour utilisateur décisif :
+  *« classificateur trop fragile […] il confond la forme d'une demande avec la
+  complexité réelle du travail nécessaire »*. C'est exact : la longueur, les
+  mots-clés ou les puces décrivent la **forme** du message, pas le **travail**
+  réel (nombre de fichiers, dépendances, inconnues découvertes en lisant). Un
+  « corrige ce bug » court mais profond était raté ; un « refactorise ça » long
+  mais trivial était sur-déclenché.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/teamDemand.ts` + `__tests__/teamDemand.test.ts` —
+    **SUPPRIMÉS** (le classificateur ne juge plus rien).
+  - `src-tauri/cline-sidecar/src/teamEscalateTool.ts` (nouveau) — outil custom
+    léger `escalate_to_team` : le modèle l'appelle quand il **bute** sur l'ampleur.
+    Il n'exécute rien, il **émet** `tool_event` `{ tool: "team_escalate", reason }`.
+    `reason` bornée à 400 caractères. Auto-approuvé (`TOOL_POLICIES`).
+  - `src-tauri/cline-sidecar/src/index.ts` — `ExtraToolSpec.kind` gagne
+    `"team_escalate"` ; `buildExtraTools` résout le kind ; politique
+    `escalate_to_team: { autoApprove: true }`.
+  - `src/lib/agent/clineClient.ts` — `ClineExtraToolSpecAny` gagne
+    `{ kind: "team_escalate"; sessionId }` ; `ClineToolEvent.reason` ;
+    `extractToolEvent` parse `reason` (borné 400).
+  - `src/components/ai/AiPanel.tsx` — en IA, **départ léger systématique**
+    (`enableTeams:false`, `enableEscalate:true`) ; `onToolEvent` route
+    `team_escalate` → marque `run.teamsEnabled` (verrou), abandonne le tour léger
+    et **relance à froid avec `enableTeams:true`** sur la MÊME session (reprise
+    par re-seed → le travail déjà produit est conservé, aucun texte rejoué).
+    **Correction du bug des outils non réinjectés** : `extraTools` (todo/browser/
+    code_index/escalade) et `enabledMcpServers` sont désormais conditionnés à
+    `!!sessionId` (et non `!clineSessionId`) — la reprise étant un **re-seed**,
+    ils disparaissaient dès le 2ᵉ tour (et un agent MCP restreint ré-verrait tous
+    les serveurs : régression de sécurité corrigée).
+  - `src/lib/agent/runState.ts` — `teamsEnabled` conservé comme verrou collant.
+
+- **Décisions Techniques :**
+  - **Le modèle juge, pas la forme du texte** : seul le modèle, une fois face au
+    code, sait si la tâche excède sa capacité. La décision d'escalade repose donc
+    sur son observation réelle (`escalate_to_team`), pas sur une heuristique.
+  - **Départ léger** : TTFT proche de l'IDE sur les demandes simples (pas de 18
+    outils `team_*` injectés), puissance complète sur les demandes larges.
+  - **Escalade orchestrée par le FRONT** : le sidecar ne peut pas re-seeder sa
+    propre session en plein run (pas d'API `addTools`, `includeLeadManagementTools`
+    codé en dur). Le front coupe le run léger et re-`start` avec `initialMessages`
+    → chemin de reprise déjà en place, **travail conservé**.
+  - **Verrou anti-boucle** : `run.teamsEnabled` est basculé AVANT la relance ; une
+    demande d'escalade ultérieure est un no-op. La relance part avec
+    `enableEscalate:false` (plus rien à escalader).
+
+- **Impacts & Dépendances :**
+  - Comportement IA : plus de bascule « devinée » — l'agent commence léger et
+    **demande lui-même** les équipes seulement s'il bute.
+  - `extraTools`/MCP désormais réaffirmés à CHAQUE `start` : toute nouvelle
+    surface d'outil doit l'être aussi (sinon disparition au 2ᵉ tour).
+  - Le toast d'escalade passe par `neutralizeForClient` (jamais de marque interne
+    visible du client).
+
+- **Prochaines étapes :**
+  - Confirmer en `tauri dev` : (1) TTFT d'une demande simple en IA rejoint l'IDE ;
+    (2) une demande large déclenche bien `escalate_to_team` puis la relance avec
+    équipes, sans perte du travail du tour léger.
+  - Vérifier que le SDK termine proprement le tour léger après l'`abort` du front
+    (pas d'événement résiduel).
+
+---
+
+
+### [2026-10-20T00:45] | Mode IA : équipes « à la demande » (TTFT, sans réglage utilisateur)
+
+- **Contexte :** en mode IA, l'agent semblait systématiquement plus lent qu'en IDE.
+  Diagnostic mesuré : le prompt système IA ne diffère de l'IDE que de **86 tokens**
+  (négligeable) ; la vraie cause est que le SDK Cline, dès `enableAgentTeams:true`,
+  expose **18 outils `team_*`** dans CHAQUE requête (câblage codé en dur côté SDK,
+  `includeLeadSpawnTool:!0, includeLeadManagementTools:!0` — non réductible par
+  config). Chaque schéma d'outil alourdit le payload : coût de **TTFT fixe**, subi
+  même pour un « bonjour ». Le mode IDE (`enableTeams:false`) répond plus vite.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/teamDemand.ts` (nouveau) — classificateur **déterministe**
+    `shouldEnableTeams(request, sticky)` : active l'outillage d'équipe seulement
+    si la demande le justifie. Signaux : verbes d'investigation, portée transverse
+    (codebase/repo/modules/« partout »/« tous les fichiers »), longueur
+    multi-étapes. **Aucun appel modèle supplémentaire** (ce serait du TTFT en plus).
+    Règle **asymétrique** : un faux négatif (rater une tâche qui aurait eu besoin
+    des équipes) coûte plus cher qu'un faux positif → tout doute raisonnable
+    penche vers l'arrêt.
+  - `src/lib/agent/runState.ts` — champ `teamsEnabled` (collant) dans `RunState`.
+  - `src/components/ai/AiPanel.tsx` — remplace `enableTeams: convIsAgent &&
+    !selectedAgent` par `shouldEnableTeams(apiText, run.teamsEnabled)` ; une fois
+    activées, `run.teamsEnabled` reste vrai (la conversation ne rebascule pas en
+    runtime allégé en plein travail d'équipe).
+  - `src/lib/agent/__tests__/teamDemand.test.ts` (nouveau) — 7 cas (refus court,
+    activation investigation+portée, portée+étapes, collant, pas d'activation sur
+    signal faible isolé).
+
+- **Décisions Techniques :**
+  - **Pourquoi un classement déterministe et pas un appel LLM** : un routeur LLM
+    ajouterait lui-même un aller-retour réseau avant chaque tour — exactement le
+    TTFT qu'on cherche à supprimer. Le texte de la demande contient assez de
+    signaux explicites pour trancher localement, en microsecondes.
+  - **Pourquoi collant** : le SDK fige les outils au `start`. Repasser d'équipes à
+    « léger » en cours de conversation rouvrirait une session sans les outils
+    d'équipe alors qu'un coéquipier peut être actif → incohérence. On ne rouvre
+    jamais un runtime allégé après activation.
+  - **Décision prise au niveau du front, chaque tour** : la reprise re-seede
+    l'historique (`initialMessages`) et le SDK reconstruit le runtime avec la
+    config fournie → `enableTeams` peut changer entre deux tours sans perdre le
+    contexte. Vérifié dans `clineClient.ts` (reprise par re-seed) et
+    `sidecar/index.ts` (`engine.start` appelé à chaque `start`).
+
+- **Impacts & Dépendances :**
+  - Comportement IA : les tâches simples (question, édition ciblée) démarrent
+    désormais **sans** orchestration → TTFT proche de l'IDE. Les tâches larges
+    (refactor, audit, recherche transverse) conservent les équipes.
+  - `RunState` gagne un champ : tout constructeur d'état doit l'initialiser
+    (`fresh()` mis à jour).
+  - Le seuil de classement est volontairement prudent ; si des tâches légitimes
+    n'activent pas les équipes, enrichir `INVESTIGATION_SIGNALS`/`SCOPE_SIGNALS`
+    plutôt que desserrer la règle.
+
+- **Prochaines étapes :**
+  - Confirmer en `tauri dev` que le TTFT d'une demande simple en IA rejoint celui
+    de l'IDE (instrumentation `1er événement d'UI @+Xms` déjà en place).
+  - Surveiller les cas limites du classement (demandes sobres mais réellement
+    larges) et compléter les listes de signaux si besoin.
+
+---
+
+### [2026-10-20T00:10] | Prompt système : bloc « Objective » (poursuite de l'objectif, sans biais)
+
+- **Contexte :** l'utilisateur veut qu'en mode IA l'agent **atteigne toujours**
+  l'objectif, en mobilisant tout ce qui est à sa disposition pour trouver la
+  meilleure solution et satisfaire la demande — sans introduire de biais dans le
+  prompt. Risque identifié : un bloc mal formulé (« utilise les sous-agents »,
+  « fais tout seul ») entrerait en conflit avec les blocs de délégation, qui
+  raisonnent eux sur le COÛT.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/prompts.ts` — nouveau bloc exporté `OBJECTIVE_PURSUIT`
+    (section « ## Objective », 6 puces). Neutralité sur la MÉTHODE : il ne
+    prescrit ni délégation ni travail en solo. Il fixe une seule finalité (le but
+    réel de l'utilisateur atteint) et pose des **garde-fous anti-échec
+    silencieux** : comprendre l'intention, contourner un chemin bloqué, n'utiliser
+    un outil que s'il sert l'objectif, vérifier avant de déclarer « fait »,
+    signaler un vrai blocage plutôt que livrer du non-fini, ne pas confondre
+    tâche longue et tâche cassée.
+  - `OBJECTIVE_PURSUIT` est inséré dans `buildSystemPrompt` juste après
+    `CONCISION` → présent dans **les trois modes** (agent, ask, plan) : viser
+    l'objectif n'est pas spécifique aux équipes.
+  - `src/lib/agent/__tests__/prompts.metrics.test.ts` — seuil de budget de prompt
+    relevé de **6000 → 8000** caractères (garde-fou anti-dérive, pas une cible),
+    avec commentaire justifiant la marge (le preset IA réel ajoute en plus la
+    délégation d'équipe, non mesurée par ce test).
+
+- **Décisions Techniques :**
+  - **Neutralité volontaire** : le bloc n'énonce que le POURQUOI (satisfaire le
+    besoin) jamais le COMMENT (quel outil, seul ou en équipe). Les décisions de
+    méthode restent portées par `DELEGATION_GUIDANCE_TEAMS` / `BATCHING_RULES`,
+    qui ne se contredisent donc pas.
+  - **Formulé en interdictions d'échec, pas en injonction d'en faire plus** :
+    « ne pas s'arrêter à un résultat plausible », « ne jamais présenter un travail
+    inachevé comme fini ». Cela pousse à la persévérance sans encourager le
+    sur-travail (« le chemin le plus court qui satisfait pleinement l'utilisateur
+    gagne »).
+  - **Budget mesuré, pas supposé** : vérifié par mesure (`agent/max` 5831 → 6922
+    chars) et par `git stash` que le dépassement venait bien de ce bloc, avant de
+    toucher le seuil. La décision de relever le seuil a été validée par
+    l'utilisateur (le seuil datait d'avant les capacités teams/navigateur/skills).
+
+- **Impacts & Dépendances :**
+  - Le bloc apparaît dans tous les prompts système ; les tests d'uniformité et de
+    non-redite passent (43/43 sur `prompts.*`, 334/334 sur `src/lib/agent`).
+  - Toute nouvelle capacité qui gonfle le prompt devra rester sous le seuil 8000.
+
+- **Prochaines étapes :**
+  - Observer en usage réel que le bloc ne provoque pas de tours excessifs
+    (sur-vérification) — le contre-poids « ne pas gonfler le travail » est prévu
+    pour cela.
+
+---
+
+### [2026-10-20T00:30] | Mode IA : visibilité des événements (outils, web, sous-agents)
+
+- **Contexte :** en mode IA, le fil de chat n'affiche quasiment rien pendant un
+  run : les recherches web, les lectures, les recherches codebase et surtout les
+  **sous-agents lancés** restaient invisibles, alors qu'en mode IDE ces
+  événements s'affichent. Symptôme associé : « le TTFT est lent », « on ne voit
+  même pas les sous-agents qui sont lancés ». Deux causes distinctes :
+    1. **Noms d'outils divergents** : le SDK Cline émet des noms canoniques
+       (`read_files`, `search_codebase`, `fetch_web_content`, `web_search`,
+       `apply_patch`, `editor`, `run_commands`, + 18 `team_*`) qui NE
+       correspondaient à AUCUN des noms connus de `toolGroups.ts` (calibré sur le
+       harness historique : `read_file`, `grep`, `glob`, `edit`). Résultat : ni
+       regroupement (« Read 2 files »), ni clic-vers-fichier, ni libellé lisible
+       pour ces outils.
+    2. **TTFT perçu** : pendant le silence de l'orchestrateur (avant le premier
+       token), une bulle assistant vide n'affichait qu'un curseur 2px discret,
+       indistinguable d'un gel.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/clineBridge.ts` — ajout d'un bloc **« SOURCE DE VÉRITÉ UNIQUE
+    DES NOMS D'OUTILS »** : `READ_TOOL_NAMES`, `SEARCH_TOOL_NAMES`,
+    `LIST_TOOL_NAMES`, `WEB_TOOL_NAMES`, `TEAM_TOOL_NAMES` (18) + helpers
+    `isTeamTool(toolName)` et `toolFilePath(toolName, args)` (gère `path` ET
+    `paths[0]`). Un seul endroit à faire évoluer quand le SDK renomme un outil.
+  - `src/lib/toolGroups.ts` — réécrit pour **consommer** ces constantes au lieu
+    de listes locales périmées : `toolVerb` mappe désormais read→`read`,
+    search→`search`, list→`list`, web→`fetch` ; `isGroupable` couvre les 4
+    familles ; `toolTargetPath` délègue à `toolFilePath` ; `groupLabel` gagne le
+    cas `"fetch"` (« Fetched N pages »).
+  - `src/components/ai/ToolCallCard.tsx` — `TOOL_LABELS` enrichi (`apply_patch`,
+    `web_search`, **les 18 `team_*`** : « Spawn teammate », « Team status »,
+    « Run teammate task »…) ; `FILE_TOOLS` complété (`read_files`, `apply_patch`,
+    `write_to_file`) ; `argsPreview` affiche l'URL/requête pour les outils web
+    (`fetch_web_content`/`web_fetch` → `url ?? query`, `web_search` → `query`).
+  - `src/components/ai/MessageBubble.tsx` — l'état de streaming vide n'affiche
+    plus un simple curseur mais un indicateur **« Working »** + 3 points animés
+    (`pulse 1.2s`, délais décalés) : l'utilisateur voit immédiatement que le
+    moteur travaille, même avant le premier token.
+
+- **Décisions Techniques :**
+  - **Source de vérité unique** plutôt que duplication : avant, chaque fichier
+    (toolGroups, ToolCallCard, clineApproval) avait sa propre liste de noms, qui
+    divergeaient. En centralisant dans `clineBridge.ts` (déjà le point de
+    traduction SDK→UI), un renommage SDK se corrige en un seul endroit.
+  - **Regrouper les lectures, pas les écritures** : on ne regroupe que les
+    familles sans risque (read/search/list/web). Les écritures et le shell
+    restent en cartes individuelles, pour ne jamais masquer une action sensible.
+  - **Indicateur d'activité explicite** : « Working » lève l'ambiguïté d'un
+    curseur clignotant. C'est un gain de TTFT **perçu** sans mentir sur l'état
+    (on n'affiche pas de faux contenu).
+
+- **Impacts & Dépendances :**
+  - `toolGroups.ts` importe désormais `./agent/clineBridge` : pas de cycle
+    (clineBridge n'importe pas toolGroups). Toute évolution de noms d'outils doit
+    passer par `clineBridge.ts`.
+  - Le regroupement change l'affichage de plusieurs outils de lecture en IA/IDE :
+    vérifier visuellement qu'aucun outil n'est « avalé » (un groupe a un
+    en-tête cliquable et dépliable).
+
+- **Prochaines étapes :**
+  - Vérifier en `tauri dev` que les `team_progress` arrivent bien (non
+    vérifiable statiquement) : la carte « Spawn teammate » doit afficher les
+    outils du coéquipier en direct puis se figer à la fin du run.
+  - Vérifier que les recherches web (`fetch_web_content`/`web_search`) affichent
+    bien URL/requête et se regroupent.
+
+---
+
+### [2026-10-19T23:45] | Mode IA : alléger l'orchestration d'équipe (lenteur perçue)
+
+- **Contexte :** l'utilisateur trouve l'agent **plus lent en mode IA qu'en mode IDE**.
+  Diagnostic : ce n'est pas un bug mais un surcoût **structurel**. En IA,
+  `AiPanel` passe `enableTeams:true` → le sidecar active `enableAgentTeams` :
+  un orchestrateur racine + des coéquipiers = **boucles LLM multiples** et des
+  tours de coordination (`team_spawn_teammate` → `team_run_task` →
+  `team_await_runs` → `team_shutdown_teammate`) qui ne produisent pas de travail
+  visible. En IDE, `enableTeams:false` = **un seul agent**, zéro coordination.
+  Facteur aggravant **textuel** : le prompt `DELEGATION_GUIDANCE_TEAMS` disait
+  au modèle de déléguer « **by default on broad work** », et le bloc
+  `contextStatusPrompt` poussait à déléguer **même à contexte quasi vide** →
+  spawn réflexe pour du travail qu'un agent seul finissait plus vite.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/prompts.ts` — `DELEGATION_GUIDANCE_TEAMS` recalibré :
+    message d'ouverture « use it judiciously », coût explicite du spawn
+    (« an extra model loop plus coordination round-trips »), et consigne
+    inversée : « Do NOT delegate by default… a single round-trip beats an
+    orchestration every time ». Ajout d'une règle anti-fuite : « Never leave a
+    teammate running idle ».
+  - `src/lib/agent/tokenBudget.ts` — `contextStatusPrompt` : à budget `ok`
+    (contexte non contraint), la consigne devient « handle the work directly
+    unless an investigation is genuinely broad ». La pression à déléguer ne
+    réapparaît qu'aux niveaux `compact`/`critical`, où elle est réellement
+    justifiée.
+
+- **Décisions Techniques :**
+  - **Agir par le prompt, pas par un plafond dur** : le SDK n'expose aucune
+    limite de coéquipiers (`maxTeammates` & co. absents). La décision « spawner
+    ou non » est prise par le modèle ; on corrige donc **sa consigne**, pas un
+    artifice fragile. Zéro perte de capacité : la délégation reste disponible là
+    où elle paie (investigation large, contexte qui se remplit).
+  - **Ne pas désactiver les équipes** : choix explicite de l'utilisateur
+    (« Alléger les équipes », pas « Aligner IA sur IDE »). On conserve
+    l'orchestration multi-agents comme capacité, on en retire le **réflexe**.
+  - **Invariants testés préservés** : les tests vérifient la présence/absence du
+    bloc et de ses outils (`team_spawn_teammate`), pas le texte exact → le
+    recalibrage passe sans casser le contrat (`33 tests OK`).
+
+- **Impacts & Dépendances :**
+  - `prompts.ts`, `tokenBudget.ts`. Aucun changement de contrat côté SDK/sidecar.
+  - Effet attendu : en IA, moins de spawns inutiles, tours plus courts, TTFT plus
+    bas sur les tâches ciblées ; le multi-agents reste engagé sur gros travaux.
+  - Vérif : `npx tsc --noEmit` (fichiers `src/` → 0 erreur) ; `vitest` sur
+    `prompts.test.ts` + `prompts.metrics.test.ts` → **33 passed**.
+
+- **Prochaines étapes :**
+  - Mesurer en conditions réelles : comparer TTFT / nombre de tours IDE vs IA sur
+    une même tâche ciblée (scripts `scripts/ttft-probe.ts`, `scripts/turn-probe.ts`).
+  - Si la lenteur persiste sur des tâches simples, envisager un garde
+    déterministe (n'activer `enableTeams` que si la tâche dépasse un seuil de
+    complexité) — piste évoquée, non retenue pour ce lot.
+
+---
+
+### [2026-10-19T10:40] | Approbation interactive des commandes (ask → carte, plus d'erreur `approval_required`)
+
+- **Contexte :** quand l'agent voulait exécuter une commande (`Run command`) en
+  mode `manual`/`auto`, l'UI affichait une **erreur d'outil** :
+  `Error: {"error":"approval_required -- NOT a tool or system failure. Clarify
+  with user before proceeding."}`. Le pipeline Cline (`tool_approval` → front →
+  `decideApproval` → `tool_approval_response`) renvoyait `{approved:false,
+  reason:"approval_required"}` **immédiatement** pour un verdict `ask`, au lieu
+  d'attendre l'accord de l'utilisateur. Résultat : le SDK recevait un refus et le
+  transformait en erreur d'outil, au lieu de **mettre le run en pause** le temps
+  d'une confirmation.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/clineHarness.ts` :
+    - `makeApprovalDecider(workspace, onBlocked?, emitAsk?)` : le verdict `ask`
+      renvoie désormais une **Promise** résolue par l'UI (`emitAsk(action)`)
+      quand un canal UI est branché ; repli sûr `{approved:false,
+      reason:"approval_required"}` seulement si `emitAsk` est absent.
+    - `startClineHarness` : pont `emitAsk` — émet un event `approval-required`
+      (id local `harness-approval-N`) dans le fil, résout par `approve/reject`,
+      puis émet `approval-resolved` pour **figer la carte** après le clic.
+  - `src/lib/agent/permissions.ts` :
+    - Mémoire « Always allow » (localStorage `origin-ai-always-allow-commands`,
+      bornée à 200) : `loadAlwaysAllowCommands` / `addAlwaysAllowCommand` /
+      `removeAlwaysAllowCommand`, comparaison sur **commande exacte** normalisée.
+    - `decideApproval` : une commande `bash_run` présente dans l'allowlist est
+      auto-approuvée — placé **après** la garde anti-catastrophe (jamais
+      court-circuitée) et après le court-circuit `full`.
+  - `src/components/ai/ToolCallCard.tsx` : bouton **« Always allow »** sur la
+    carte d'approbation `bash_run` → `addAlwaysAllowCommand(command)` puis
+    `tc.approve?.()`.
+
+- **Décisions Techniques :**
+  - **Réutiliser la carte du fil existante** (pas de nouveau composant) : la
+    carte `approval-required` de `bash_run` portait déjà Reject/Approve ; on y
+    ajoute « Always allow ». Cohérence avec l'existant, zéro surface d'UI neuve.
+  - **`ask` = pause, pas refus** : c'est la correction de fond. Un `ask` doit
+    *attendre*, pas *refuser* — le refus immédiat était un bug de sémantique qui
+    se traduisait en erreur visible côté agent.
+  - **Allowlist à portée étroite** : commande **exacte** (jamais un préfixe, qui
+    ouvrirait l'exécution de variantes injectées). Ne contourne **jamais** la
+    garde anti-catastrophe. Uniquement les commandes shell (les écritures gardent
+    l'onglet diff, plus sûr).
+  - **Bornage** : 200 entrées max (éviction FIFO via l'ordre d'insertion du Set)
+    → borne le stockage localStorage et limite la fenêtre d'une allowlist qui
+    deviendrait trop large par usure.
+
+- **Impacts & Dépendances :**
+  - `clineHarness.ts`, `permissions.ts`, `ToolCallCard.tsx`.
+  - Contrat inchangé côté sidecar/Rust : `decideApproval` acceptait déjà une
+    Promise. Le délai sidecar (120 s) reste le garde-fou : sans clic dans la
+    fenêtre, l'outil est refusé (dégradation sûre).
+  - Vérif : `npx tsc --noEmit` → exit 0.
+
+- **Prochaines étapes :**
+  - Tester en `tauri dev` : une commande non catastrophique ouvre la carte, le
+    run attend ; « Approve » débloque, « Always allow » mémorise et ré-exécute
+    sans redemander, « Reject » annule proprement.
+  - Surveiller : en cas de forte latence, la promesse `emitAsk` peut survivre au
+    timeout sidecar de 120 s (résolution post-refus, inoffensive car `settled`).
+
+---
+
+### [2026-10-18T20:05] | MCP ENOENT + garde-fou workspace de l'agent (2 lots)
+
+- **Contexte :**
+  1. Au lancement d'une session agent : `Extension mcp: ENOENT ... open
+     '/Users/user/Library/Application Support/com.mira.ide/mira/settings/
+     mira_mcp_settings.json'`, suivi de `[ai/panel] tour en erreur ... erreur du
+     moteur d'agent`. Cause : le SDK Cline lit ce fichier de façon **non
+     tolérante** (`registerMcpServersFromSettingsFile` → ENOENT fatal), mais il
+     n'était **jamais créé par défaut** — seulement au premier ajout d'un serveur
+     MCP via Settings. Sur une install neuve, ni `settings/` ni le fichier
+     n'existent. (`mira_mcp_settings.json` dans le message est un artefact de
+     neutralisation de marque ; le vrai fichier est `cline_mcp_settings.json`.)
+  2. L'agent « se perd » dans le workspace (ex. invente
+     `/home/user/workspace/mareg/src/index.ts`). Diagnostic : le workspace est
+     unique et explicite (`WorkspaceContext.folderPath` → `start.cwd`), mais des
+     fallbacks `"."` subsistaient côté lancement, et `process.cwd()` du sidecar
+     est `<app_data>/mira` (jamais le projet) → tout `"."` pointe hors projet.
+
+- **Modifications effectuées :**
+  - **Lot A — provisioning MCP (cause racine)**
+    - `src-tauri/src/extensions_store.rs` : nouvelle fonction
+      `ensure_mcp_settings_file(app)` — crée `<app_data>/mira/settings/
+      cline_mcp_settings.json` avec `{"mcpServers":{}}` **si absent uniquement**
+      (idempotent, best-effort, journalisé).
+    - `src-tauri/src/lib.rs` : appel dans `setup()`, après `default_skills`.
+    - `src-tauri/cline-sidecar/src/instructions.ts` : garde-fou
+      `ensureMcpSettingsFile(path)` avant l'appel SDK (défense en profondeur :
+      lancement hors setup Tauri, dossier purgé). Écriture avec flag `wx`
+      (n'écrase jamais), `EEXIST` ignoré (course avec Rust).
+  - **Lot B — workspace agent**
+    - `src/components/ai/AiPanel.tsx` : suppression des fallbacks `"."` morts et
+      trompeurs (`workspace: fp || "."` → `fp` ; `touchTurn(path, ws ?? fp ??
+      ".")` → `ws ?? fp`). `fp` est déjà garanti non vide par la garde-fou
+      workspace en amont.
+    - `App.tsx:942` `cwd={folderPath ?? "."}` (terminal) : **laissé tel quel** —
+      le terminal doit pouvoir s'ouvrir sans projet ; ce n'est pas un chemin
+      agent.
+
+- **Décisions Techniques :**
+  - **Provisionner plutôt que rendre l'absence acceptable** : on garantit au SDK
+    un fichier de configuration **valide et vide**, ce qui est l'état attendu
+    « aucun serveur MCP ». Deux niveaux (Rust setup + sidecar) car le sidecar
+    peut tourner sans le setup Tauri (tests, lancement manuel).
+  - **Idempotence stricte** : on ne touche jamais un fichier existant, même
+    vide/partiel → zéro risque d'écraser la config utilisateur. `flag: "wx"`
+    côté Node ferme la fenêtre de course.
+  - **Cross-platform** : chemins via `app_data_dir()` (Rust) et résolution du
+    SDK (Node) → macOS `~/Library/Application Support/com.mira.ide`,
+    Windows `%APPDATA%\com.mira.ide`, Linux `~/.local/share/com.mira.ide`.
+  - Suppression des fallbacks `"."` côté agent uniquement : élimine un
+    chemin d'écriture hors-projet silencieux (risque de sécurité).
+
+- **Impacts & Dépendances :**
+  - `extensions_store.rs`, `lib.rs`, `instructions.ts`, `AiPanel.tsx`.
+  - Aucune migration nécessaire : les configs existantes restent intactes.
+  - Vérifs : `cargo check --no-default-features` → Finished (0 warning) ;
+    `npx tsc --noEmit` → exit 0 ; `npm run build` du sidecar → OK (11.6 mb).
+
+- **Prochaines étapes :**
+  - Tester au prochain `tauri dev` : plus d'ENOENT au lancement, l'agent démarre
+    avec un workspace valide. Si l'agent invente encore des chemins, envisager
+    d'injecter un aperçu réel de l'arborescence dans le prompt (piste évoquée,
+    non retenue pour ce lot).
+
+---
+
+### [2026-10-18T19:20] | Logs : `listExtensions` bruité en preview (faux warning `SIDECAR_NOT_RUNNING`)
+
+- **Contexte :** la console affichait en boucle un `warn` :
+  `[agent/clineClient] listExtensions ignoré: {"code":"SIDECAR_NOT_RUNNING", ...}`.
+  Diagnostic : `listExtensions` (peuplement de l'auto-complétion `#skills` /
+  `/commands`) est appelé au montage de l'UI, avant tout `send`. Dans
+  `trae-preview` (aperçu navigateur sans backend Tauri) l'`invoke` échoue
+  toujours → code `SIDECAR_NOT_RUNNING`. Or cet échec est **nominal** : le repli
+  « surface vide » est le comportement prévu (cf. doc de la fonction). Le logger
+  le classait en `warn`, polluant la console avec une fausse alerte.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/clineClient.ts` :
+    - nouveau helper `describeErrorCode(error)` : extrait le champ `code` d'une
+      erreur Tauri, qu'il arrive en objet `{ code, message }` ou sérialisé en
+      JSON dans le message (deux formes possibles selon le chemin IPC) ; renvoie
+      `null` sans jamais jeter.
+    - `listExtensions` : `SIDECAR_NOT_RUNNING` → `log.debug` (état attendu) ;
+      toute AUTRE erreur reste `log.warn` (vraie anomalie). Aucun changement de
+      comportement fonctionnel (retour `{ skills: [], commands: [], issues: [] }`
+      inchangé).
+
+- **Décisions Techniques :** on **ne supprime pas** le log — on le **dégrade** en
+  `debug` uniquement pour le code attendu. Cela préserve l'observabilité (un
+  vrai échec de sidecar pendant un run reste visible en `warn`) tout en
+  supprimant le bruit de démarrage. Lecture du code d'erreur tolérante aux deux
+  formes de sérialisation, sans dépendance à la structure interne de Tauri.
+
+- **Impacts & Dépendances :** `src/lib/agent/clineClient.ts` uniquement.
+  Rétrocompatible ; `npx tsc --noEmit` → exit 0.
+
+- **Prochaines étapes :** surveiller qu'aucun autre appel précoce au sidecar ne
+  produit le même faux `warn` (même traitement à appliquer si constaté).
+
+---
+
+### [2026-10-18T18:05] | Agents : création d'agents personnalisés (prompt + outils + MCP) et sélection dans l'input
+
+- **Contexte :** parité Trae « Agents » (docs.trae.ai/ide/agent), avec un périmètre
+  volontairement réduit : l'utilisateur crée ses propres agents (nom + prompt +
+  outils + serveurs MCP), ils sont **globaux** (toutes sessions, tous projets), et
+  il les **sélectionne dans le dropdown Agent** de l'input du chat. Exclus : Smart
+  Generate, « Callable by other agents ».
+
+- **Modifications effectuées :**
+  - **Backend Rust** — `src-tauri/src/extensions_store.rs` : section « Agents
+    personnalisés » (`AgentInfo { id, name, prompt, tools, mcp, avatar,
+    created_at }`, `agents_root() = ~/.mira/agents`, `validate_agent_id`,
+    `list_agents` / `read_agent` / `write_agent` / `delete_agent`, écriture
+    atomique). `src-tauri/src/lib.rs` : 4 commandes enregistrées.
+  - **Front (état + invoke)** — `src/lib/agent/customAgents.ts` : `CustomAgent`,
+    `slugifyAgentId`, `listAgents` / `saveAgent` (anti-collision `-2`, `-3`),
+    `deleteAgent`, `readSelectedAgentId` / `setSelectedAgentId`
+    (`localStorage: origin-ai-agent`), `resolveSelectedAgent`,
+    émission `CUSTOM_AGENTS_EVENT`.
+  - **Settings** — `src/components/settings/AgentsSection.tsx` : liste Custom /
+    Built-In + éditeur (Name, Prompt, MCP cochés via `list_mcp_servers`, Built-In
+    Tools). `SettingsPanel.tsx` : section `agents`, prop `initialSection`, écoute
+    `origin-open-settings`. `App.tsx` : état `settingsSection` + handler d'ouvert.
+  - **Dropdown input** — `src/components/ai/ChatBox.tsx` : `ModeDropdown` reçoit
+    `customAgents` / `selectedAgentId` / `onSelectAgent` / `onCreate`, section
+    « Custom Agents » sous « Built-In Agents », bouton « Create Agent » →
+    `origin-open-settings { section: "agents" }`. Sélection = `mode = "agent"`.
+  - **Moteur** — `src/components/ai/AiPanel.tsx` : le prompt de l'agent est
+    **injecté** dans le prompt système (bloc `# Agent Role`, jamais en
+    remplacement) ; filtrage d'outils = préférences globales ∪ (outils non
+    retenus) ; équipes coupées si agent perso ; `enabledMcpServers` dérivé de
+    `agent.mcp` à la CRÉATION de session. `clineHarness.ts` /
+    `clineClient.ts` : champ `enabledMcpServers` transmis.
+  - **Sidecar** — `src-tauri/cline-sidecar/src/blockedTool.ts` (nouveau) :
+    `buildBlockedTools` fabrique des outils « refus » de MÊME NOM pour masquer
+    les outils MCP des serveurs non autorisés. `index.ts` : `StartCommand`
+    gagne `enabledMcpServers` ; `blockedMcpSpecs` déduit `<server>` du nom
+    `mcp__<server>__<tool>` ; les outils « refus » rejoignent `extraTools`.
+
+- **Décisions Techniques :** agents persistés **globalement** dans
+  `~/.mira/agents/<slug>.json` (réponse explicite de l'utilisateur). Prompt
+  injecté (pas substitué) pour préserver les garde-fous système. Le SDK charge
+  TOUS les serveurs MCP du fichier global : faute de pouvoir filtrer sa config
+  côté front, l'isolation se fait par **outils de même nom qui refusent** —
+  l'appel échoue donc proprement au lieu d'exécuter une action non autorisée.
+  `undefined` (pas d'agent) → tous les serveurs restent exposés (comportement
+  par défaut inchangé) ; tableau vide → aucun.
+
+- **Impacts & Dépendances :** nouveaux fichiers front/TS et un module sidecar ;
+  `AiPanel` / `ChatBox` / `SettingsPanel` / `App.tsx` modifiés. Le champ
+  `enabledMcpServers` traverse `cline_sidecar_send` (Rust passe le JSON tel quel,
+  aucune modif Rust du transport). Effet de bord voulu : masquage des serveurs
+  MCP par session via outils « refus ».
+
+- **Prochaines étapes :** dette connue (non prioritaire) — migrer les
+  `window.confirm` asynchrones de `SourceTreePanel.tsx` / `SettingsPanel.tsx`.
+
+---
+
+### [2026-10-18T12:10] | Editeur : fermeture d'onglet à la suppression, gutter compacte, bordures allégées
+
+- **Contexte :** trois irritants UI signalés sur l'éditeur/explorateur :
+  1. Supprimer un fichier ouvert depuis l'explorateur laissait l'onglet ouvert
+     (contrairement à VS Code) — le fichier n'existant plus, l'éditeur restait
+     sur un contenu fantôme.
+  2. La gutter des numéros de ligne était trop large (`minWidth: 3.2em` +
+     `padding: 0 12px 0 8px`), gaspillant de l'espace horizontal.
+  3. Trop de bordures dans l'éditeur (gutter, minimap, sticky scroll, chunks de
+     diff) — certaines masquaient visuellement le code.
+
+- **Modifications effectuées :**
+  - `src/components/FileTree.tsx` : ajout de la prop `onExternalFileChanges`
+    (Props + signature) ; dans `performDelete`, calcul de `deleted` (chemins
+    réellement supprimés) puis appel de `onExternalFileChanges?.(deleted)`.
+  - `src/components/Sidebar.tsx` : prop `onExternalFileChanges` ajoutée à
+    `Props` / `ActivePanel` / `Sidebar`, transmise à `FileTree` (case
+    "explorer").
+  - `src/App.tsx` : `onExternalFileChanges={applyExternalFileChanges}` passé à
+    `<Sidebar>` (l.863).
+  - `src/components/editor/Editor.tsx` (`originBaseTheme`) :
+    - `.cm-gutters` : suppression de `borderRight`, ajout `minWidth: '0'`.
+    - `.cm-lineNumbers .cm-gutterElement` : `minWidth: 3.2em → 1.8em`,
+      `padding: 0 12px 0 8px → 0 4px 0 4px`.
+    - `.cm-minimap-gutter` : suppression de `borderLeft`.
+    - `.cm-sticky-scroll` : suppression de `borderBottom`.
+    - `.cm-deleted|changed|insertedChunk-gutter` : `borderRight: 3px → 2px` et
+      opacité réduite (65% → 55%).
+
+- **Décisions Techniques :** `applyExternalFileChanges` (useTabs) faisait déjà
+  exactement le comportement VS Code voulu (relit chaque chemin ; si
+  `readFile` échoue → ferme l'onglet). Plutôt que dupliquer cette logique dans
+  `FileTree`, on rebranche cette fonction existante via une prop dédiée — zéro
+  duplication, sémantique unique conservée. On ne notifie que les chemins
+  **réellement supprimés** (`r.ok && r.path`) pour ne pas fermer d'onglet sur
+  un échec partiel. Côté thème, on conserve les gutters de diff fonctionnels
+  (repère visuel utile) mais on amincit la bordure pour ne plus masquer le code.
+
+- **Impacts & Dépendances :** `FileTree`, `Sidebar`, `App.tsx`, `Editor.tsx`.
+  Aucun changement d'API publique hors ces props optionnelles (rétrocompatible :
+  `onExternalFileChanges` est optionnel). `npx tsc --noEmit` → exit 0.
+
+- **Prochaines étapes :** surveillance visuelle multi-thème (contraste de la
+  gutter compacte) ; le comportement est identique pour suppression unitaire,
+  multiple et via raccourci `Delete`/`Backspace`.
+
+---
+
+- **Contexte :** gros lot de Réglages demandé. Trois sections devaient devenir
+  **fonctionnelles** (et non plus des coquilles « Coming soon ») : **CUE**,
+  **Agent** (façon Trae) et **Browser**. En parallèle : livrer une bibliothèque de
+  **skills par défaut** avec l'app (tous les skills HyperFrames + media-use +
+  InsForge + copywriting), activés d'office, **désactivables dans l'UI**, et
+  surtout **réellement chargés par le moteur Cline** (pas seulement listés).
+
+- **Modifications effectuées :**
+  - **CUE** — `src/lib/cuePrefs.ts` (clés `origin-cue-tab`, `-smart-import`,
+    `-smart-rename`, opt-out : absent = activé) + `CueSection.tsx` (3 toggles avec
+    badges Beta). Gâchette réelle : `App.tsx` coupe la complétion inline quand
+    `origin-cue-tab === "false"`.
+  - **Agent** — `src/lib/agent/agentToolPrefs.ts` (`origin-agent-disabled-tools`,
+    catalogue `read_files`/`search_codebase`/`editor`/`run_commands`/
+    `fetch_web_content`/`browser`) + `AgentSection.tsx` (liste activable, compteur
+    « N of M »). Le contrat d'outils du système prompt devient **filtré** :
+    `buildFullToolContract`/`buildReadOnlyToolContract` dans `toolPresentation.ts`,
+    5ᵉ paramètre `disabledTools` de `buildSystemPrompt` (`prompts.ts`), alimenté
+    par `getDisabledTools()` dans `AiPanel.tsx`.
+  - **Browser** — `src/lib/browserPrefs.ts` (`origin-browser-builtin-control`
+    [défaut ON], `-external-control` [opt-in, défaut OFF], `-default-target`,
+    `-auto-screenshot`) + `BrowserSection.tsx` (3 blocs conformes à la maquette :
+    Built-in / External Chrome avec bouton « Install extension » et lien manuel /
+    General). Le toggle « builtin » pilote réellement l'injection de l'outil
+    `browser` (`extraTools`) dans `AiPanel.tsx`.
+  - **Skills par défaut** — 12 `SKILL.md` créés sous `src-tauri/default_skills/`
+    (10 HyperFrames/media-use + `insforge` + `copywriting`), frontmatter
+    `name`+`description` valide, **sans** `enabled: false` (activés d'office).
+  - **Installation native** — nouveau module `src-tauri/src/default_skills.rs` :
+    `install_default_skills` copie `default_skills/**` du bundle vers
+    `~/.mira/skills` **de façon idempotente** (un skill déjà présent — ou
+    désactivé par l'utilisateur — n'est JAMAIS écrasé), noms validés
+    (`validate_name`), confinement (`ensure_within`), copie atomique
+    (tmp voisin + `rename`), dossiers cachés/`node_modules` ignorés. Appelée
+    **best-effort** dans `.setup()` de `lib.rs`. `default_skills` ajouté à
+    `bundle.resources` (`tauri.conf.json`).
+  - **Câblage moteur Cline (correctif clé)** — `cline-sidecar/src/instructions.ts` :
+    `resolveSkillsConfigSearchPaths` ne connaît QUE `.cline`/`.claude`/`.agents` et
+    **ignore `.mira`**. Sans correctif, les skills par défaut auraient été visibles
+    dans Réglages (qui lit `.mira/skills`) mais **jamais proposés au modèle**. On
+    ajoute donc `~/.mira/{skills,rules,workflows}` (via `homedir()`) à
+    `withMiraDirectories`. Bundle sidecar rebuild.
+
+- **Décisions Techniques :**
+  - **Politique de préférence unifiée** : « opt-out » pour les fonctions à forte
+    valeur (CUE, contrôle du navigateur intégré, auto-screenshot) → l'absence de
+    clé vaut « activé » ; « opt-in » pour ce qui touche à l'extérieur (contrôle du
+    Chrome externe) → désactivé par défaut. Cohérent avec la règle « secure by
+    default » du projet.
+  - **Skills : livrer sans écraser.** On copie seulement les skills absents. Un
+    skill désactivé reste désactivé après mise à jour de l'app : on respecte l'état
+    utilisateur plutôt que de « réparer » silencieusement. Compromis assumé : une
+    correction de contenu sur un skill déjà installé ne se propage pas (l'UI permet
+    la ré-édition/import).
+  - **Filtrer le contrat ≠ retirer l'outil.** Les familles désactivées sont
+    retirées du prompt système (le modèle ne les voit plus) ; les outils non
+    désactivables (progression todo, questions, skills) restent toujours présents.
+
+- **Impacts & Dépendances :** nouveaux fichiers `cuePrefs.ts`, `browserPrefs.ts`,
+  `agentToolPrefs.ts`, `CueSection.tsx`, `BrowserSection.tsx`, `AgentSection.tsx`,
+  `default_skills.rs`, `default_skills/**`. Modifiés : `SettingsPanel.tsx` (montage
+  des 3 sections), `App.tsx`, `AiPanel.tsx`, `prompts.ts`, `toolPresentation.ts`,
+  `instructions.ts` (sidecar, rebuild requis), `lib.rs`, `tauri.conf.json`. La
+  découverte des skills gagne `~/.mira/*` globalement — effet de bord voulu pour
+  les règles/workflows `.mira` globaux.
+
+- **Sécurité / revue adversariale :** l'installation n'accepte **aucune entrée**
+  du webview (source = bundle, destination = `~/.mira/skills`) ; noms de dossiers
+  du bundle traités comme **non fiables** (validés + confinement) ; skills = 
+  Markdown **inerte**, jamais exécuté. Le toggle navigateur externe reste opt-in.
+  Pas de secret introduit.
+
+- **Validation :** `cargo check` OK, `cargo test default_skills` OK, `tsc` OK,
+  `eslint` 10 warnings préexistants (0 erreur), `vitest` **640/640**, `vite build`
+  OK, sidecar `tsc` + tests (8/8) + rebuild bundle OK.
+
+- **Prochaines étapes :** (1) dette précédente — migrer les `window.confirm`
+  asynchrones (`SourceTreePanel.tsx:288`, `SettingsPanel.tsx:1144`). (2) Optionnel :
+  versionner les skills par défaut (marqueur de version) pour propager les
+  corrections de contenu sans écraser l'état utilisateur.
+
+---
+
+### [2026-10-18T01:35] | Skills auto-load (sans run) + boutons Indexing à droite + i18n EN élargie
+
+- **Contexte :** trois écarts remontés par l'utilisateur. (1) Le « chargement
+  automatique des skills » n'était pas opérationnel : la liste des skills restait
+  vide tant qu'aucun message n'avait été envoyé. (2) Dans **Indexing & Docs**, les
+  boutons Build/Clear étaient sous le contenu au lieu d'être à droite de la ligne
+  « Index status ». (3) Du français subsistait dans l'UI, au-delà des Réglages.
+
+- **Modifications effectuées :**
+  - **Skills sans session — côté sidecar** (`src-tauri/cline-sidecar/src/index.ts`) :
+    nouvelle commande `listExtensions { cwd }` → appelle `resolveSessionExtensions`
+    (même résolution que `start`, sans créer de session) et renvoie
+    `{ skills, commands, customCommands, extensionIssues }`. Les issues sont
+    neutralisées (`neutralizeForClient`) comme au `start`.
+  - **Skills sans session — côté client** (`src/lib/agent/clineClient.ts`) :
+    `listExtensions(cwd): Promise<ClineSessionExtensions>` via
+    `invoke("cline_sidecar_send", { command: { type: "listExtensions", cwd } })`
+    réutilise le MÊME normaliseur défensif que `start` (`normalizeExtensions`).
+    Non fatal : toute erreur renvoie une surface vide.
+  - **Câblage UI** (`src/components/ai/AiPanel.tsx`) : effet déclenché dès qu'un
+    `folderPath` est connu → peuple `sessionExtensions` sans attendre un run. Un
+    `CustomEvent` (`EXTENSIONS_CHANGED_EVENT` = `mira:extensions-changed`, exporté
+    depuis `clineClient`) est écouté pour recharger après mutation depuis les
+    Réglages. `SkillsSection` émet ce signal après save/delete/toggle/import.
+  - **Indexing & Docs** (`IndexingSection.tsx`) : Build/Rebuild + Cancel + Clear
+    déplacés sur la ligne « Index status », ancrés à droite (`marginLeft:auto`),
+    masqués tant que le statut charge ou sans workspace.
+  - **i18n EN** : traduction des chaînes FR **visibles** restantes hors Réglages
+    (viewers audio/vidéo/image/PDF/Markdown, terminal & debug, notifications,
+    permissions, notices de run, consentement binaires tiers, toasts d'install
+    LSP dans `App.tsx`). Les commentaires de code restent en français.
+
+- **Décisions Techniques :**
+  - **Résolution à la demande plutôt qu'un watcher** : le sidecar résout les
+    extensions au `start` uniquement (choix architectural existant pour éviter un
+    scan permanent). On ajoute donc une RPC ponctuelle, idempotente, réutilisant
+    strictement la même forme de retour → une seule source de vérité sur le
+    schéma, aucun risque de divergence entre `start` et `listExtensions`.
+  - **`CustomEvent` natif plutôt qu'un store global** : signal découplé, sans état
+    partagé ni dépendance nouvelle entre les modules Settings et l'AI Panel. Coût
+    nul, testable, et extensible aux autres surfaces d'extension.
+
+- **Impacts & Dépendances :**
+  - `cline-sidecar` reconstruit (`npm run build` → `dist/index.mjs`).
+  - `SkillsSection` importe désormais `notifyExtensionsChanged` depuis
+    `lib/agent/clineClient` (dépendance UI → client agent, volontairement minime :
+    une constante + une fonction pure).
+  - Aucune migration de données ; aucune API Rust modifiée.
+
+- **Prochaines étapes :**
+  - Refonte visuelle structurelle profonde des modales Réglages (esprit Trae,
+    identité Mira) — validée avec l'utilisateur, à mener en itération dédiée.
+  - Section **Models** façon Trae : recherche de modèles + activer/désactiver par
+    provider.
+  - Dette connue : `SourceTreePanel.tsx` (drop de stash) et `SettingsPanel.tsx`
+    (serveur MCP) utilisent encore `window.confirm` asynchrone sous Tauri —
+    remplacement par une modale React déterministe à prévoir.
+
+
+- **Contexte :** deux écarts avec l'UI de Trae. (1) De nombreux libellés des
+  pages Réglages étaient restés en français, alors que l'interface de référence
+  (Trae) est entièrement en anglais. (2) L'icône « + » de l'input agent ouvrait
+  un menu dont plusieurs items semblaient présents mais n'étaient pas branchés.
+
+- **Modifications effectuées :**
+  - **Traduction EN (8 fichiers, chaînes visibles uniquement — les commentaires
+    de code restent en français par convention du projet) :** `IndexingSection`,
+    `inputCommands`, `settings/ui` (ScopeTabs, KeyValueEditor), `HooksSection`,
+    `RulesMemoriesSection`, `SkillsSection`, `CommandsSection`, `McpSection`,
+    `AboutSection`, `MessageActionsBar` (titles des boutons d'action message).
+    Normalisation des replis d'erreur sur `"Something went wrong"` (au lieu de
+    « Une erreur est survenue ») pour homogénéiser les 4 pages CRUD.
+  - **Icône « + » (AttachMenu) :** les 4 items agissent réellement —
+    « Add Context » → file picker ; « / for commands & skills » → insère `/` et
+    ouvre le catalogue de slash-commands ; « Upload image » → copie l'image dans
+    `.mira/attachments/` puis ajoute un badge de fichier ; sous-menu « Skills »
+    branché sur `onSkill`. Handlers convertis en fonctions simples (plus de
+    `useCallback`) pour satisfaire React Compiler (« Existing memoization could
+    not be preserved »).
+
+- **Décisions techniques :**
+  - Traduire **uniquement les chaînes rendues** et laisser les JSDoc en français
+    : la convention interne du projet (commentaires FR) est un actif pour les
+    relecteurs ; seules les surfaces utilisateur doivent suivre Trae (EN).
+  - Garder les handlers de l'AttachMenu en fonctions simples plutôt que
+    `useCallback` : le style existant recrée déjà `handleInput` à chaque render,
+    donc mémoïser uniquement certains handlers créait une instabilité que React
+    Compiler refusait de préserver.
+
+- **Impacts & Dépendances :** `ChatBox.tsx` (props passées à `AttachMenu`),
+  `settings/*` (textes), `ai/MessageActionsBar.tsx`. Aucun changement d'API ou
+  de commande Rust ; `npx tsc --noEmit` passe (exit 0).
+
+- **Prochaines étapes :** traduire les dernières surfaces résiduelles
+  (`terminal/TerminalPanel` : « Commande en cours », « Terminal de l'agent ») ;
+  lot « Docs » (URL / upload local) séparé, différé.
+
+---
+
+### [2026-10-18T00:30] | L'agent utilise l'index — outil d'agent `codebase_search`
+
+- **Contexte :** le moteur d'index (Lot 6) était complet mais **inertes pour
+  l'agent** : l'index n'était interrogeable que par Rust/UI. Or Trae dit
+  explicitement que l'index « improves contextual understanding » — autrement
+  dit, **c'est l'agent qui s'en sert**, pas seulement l'utilisateur. Il fallait
+  donc exposer l'index au modèle pour qu'il localise le code avant de le lire.
+
+- **Modifications effectuées :**
+  - **Sidecar — nouveau `src-tauri/cline-sidecar/src/codeIndexTool.ts` :** outil
+    custom `codebase_search` (`createTool` de `@cline/core`, zod : `query`
+    1..300 car., `limit` 1..50 optionnel, défaut 12, `lifecycle.completesRun =
+    false`). `execute` appelle `originInvoke("search_index", { workspace, query,
+    limit })`, parse le JSON en `IndexHit[]` et le formate en lignes
+    `- <chemin relatif> (score X.XX)`. Un échec remonte une **erreur explicite**
+    (jamais un résultat vide trompeur).
+  - **Sidecar (`index.ts`) :** `ExtraToolSpec.kind` étendu à `"code_index"` ;
+    `buildExtraTools(specs, cwd)` instancie l'outil quand le spec est présent ;
+    nouveau pont générique `originInvoke(command, args)` (calqué sur
+    `browserInvoke`, sans injection de `panelId`) ; `TOOL_POLICIES.codebase_search
+    = { autoApprove: true }` (lecture seule stricte).
+  - **Front (`clineClient.ts`) :** `ClineExtraToolSpecAny` + `{ kind:
+    "code_index"; sessionId }` ; `INVOKE_ALLOWLIST` + `"search_index"` ; dans
+    `respondToInvoke`, cas dédié `search_index` → `invoke("search_index", args)`
+    puis `reply({ output: JSON.stringify(hits ?? []) })`.
+  - **Front (`AiPanel.tsx`) :** `wantsCodeIndex = !clineSessionId && !!sessionId
+    && opts.sdkMode === "act"` → ajoute `{ kind: "code_index", sessionId }` aux
+    `extraTools` **uniquement** en mode Agent/SOLO.
+  - **Contrat de prompt (`toolPresentation.ts`) :** `codebase_search` ajouté à
+    `FULL_TOOL_NAMES` **et** documenté au contrat Agent (« search the LOCAL
+    codebase index… use it FIRST to locate code »). Sans cette ligne, le modèle
+    ignorait l'outil et ne l'appelait jamais.
+  - **Transparence UI :** `clineApproval.ts` (`READ_TOOLS`), `ToolCallCard.tsx`
+    (label « Search codebase index », aperçu = `"<query>"`).
+
+- **Décisions techniques :**
+  - **Nom distinct de `search_codebase` (SDK).** Volontaire : le SDK possède déjà
+    un outil homonyme piloté par le modèle. Mélanger les deux aurait créé une
+    ambiguïté pour le modèle **et** dans les logs/UI. `codebase_search` ≠
+    `search_codebase`.
+  - **Double barrière de sécurité.** L'outil n'existe que si le spec
+    `kind:"code_index"` est reçu (sidecar figé), **et** l'invocation est
+    refiltrée côté front par `INVOKE_ALLOWLIST`. Défense en profondeur : un
+    sidecar compromis ne peut pas appeler une commande arbitraire.
+  - **Auto-approbation justifiée.** `search_index` est **lecture seule** et ne
+    retourne que des **chemins relatifs** issus de son propre index (confiné via
+    `ensure_within`). Aucune exfiltration de contenu, aucune écriture → pas de
+    friction d'approbation.
+  - **Mode `act` (Agent/SOLO) uniquement.** Choix produit validé : pas d'outil
+    d'index en mode chat/plan ; l'index est une capacité d'action.
+
+- **Impacts & Dépendances :**
+  - **Nouveau** : `codeIndexTool.ts`. **Modifiés** : `index.ts` (sidecar),
+    `clineClient.ts`, `AiPanel.tsx`, `toolPresentation.ts`, `clineApproval.ts`,
+    `ToolCallCard.tsx`.
+  - **Contrainte** : `toolPresentation` doit rester sous **6 000 caractères** par
+    preset (`prompts.metrics.test.ts`) — la ligne de contrat a été raccourcie
+    jusqu'à passer.
+  - **Rebuild requis** : `node scripts/build-sidecar.mjs` (le sidecar est bundlé
+    dans `dist/index.mjs`).
+  - Aucun effet de bord sur `context.rs` (l'expansion `#Workspace` n'utilise
+    toujours pas l'index).
+
+- **Validation :**
+  - `npx tsc --noEmit` (front + sidecar) → OK.
+  - `npx eslint` sur les 7 fichiers touchés → 0 erreur (2 warnings « File
+    ignored » sur des fichiers sidecar, non bloquants).
+  - `vitest run` → **640 passés** (48 fichiers).
+  - `cargo test` → OK (inchangé, 1 ignoré réseau).
+  - `node scripts/build-sidecar.mjs` → `dist/index.mjs` reconstruit (11,6 Mo).
+
+- **Prochaines étapes :**
+  - **Optionnel** : brancher `search_index` sur le tri de `context.rs`
+    (`#Workspace`/`#Folder` triés par pertinence au lieu de l'ordre
+    d'arborescence).
+  - **Différé** : volet « Docs » (URL / upload local) de la page Indexing,
+    `#Doc`/`#Web`.
+
+---
+
+### [2026-10-17T23:45] | Indexing local — moteur BM25 + page Settings « Indexing & Docs »
+
+- **Contexte :** Mira ne savait faire qu'un parcours disque + grep (`context.rs`,
+  `search.rs`) dont le tri final était **lexicographique** — donc peu pertinent
+  pour « retrouver le fichier où l'on parle de X ». Trae construit un **index du
+  workspace** (« Indexing & Docs ») qui alimente ses références `#Workspace` /
+  `#Folder`. Besoin : reproduire ce **comportement** (auto-index, statut,
+  rebuild/cancel/clear, respect des fichiers ignorés) avec un moteur local.
+
+- **Modifications effectuées :**
+  - **Backend — nouveau module `src-tauri/src/indexing.rs` :**
+    - **Index inversé local** (type BM25) : `tokenize` (minuscules + découpe
+      camelCase/snake_case pour `parseContextRef` → `parse`,`context`,`ref`),
+      `build_doc` (corps + tokens de chemin), `walk` récursif respectant
+      `search::SEARCH_IGNORE`, `build_index` (postings + `doc_freq` + `avg_len`),
+      `rank` (BM25 `k1=1.5, b=0.75` + `PATH_WEIGHT=2.0` quand le terme est dans le
+      chemin, départage déterministe par chemin croissant).
+    - **Persistance** sous `<ws>/.mira/index/{index.json,meta.json}` en écriture
+      atomique (tmp + rename). **Jamais** `.cline` visible.
+    - **Bornes/DoORS** : `MAX_FILE_BYTES=512 KiB`, `MAX_INDEX_FILES=20 000`,
+      `MAX_TOKENS_PER_DOC=4 000`, sniff binaire (octet NUL), pas de suivi de
+      symlinks (`file_type` sans `follow`).
+    - **Annulation** via `AtomicBool` : le worker s'arrête au prochain fichier,
+      l'index partiel reste valide et persisté.
+    - **Commandes Tauri** : `index_status`, `index_build`, `index_cancel`,
+      `index_clear`, `search_index(query, limit)` (limit borné `1..=200`).
+    - **Confinement** : `index_dir` exige un workspace absolu et passe par
+      `extensions_store::ensure_within` (racine `.mira`).
+    - **15 tests unitaires** : tokenisation, camel/snake, binaire/vide, exclusion
+      de `.mira/index`, respect des ignores, annulation, ranking path-aware,
+      déterminisme des égalités, confinement, round-trip build→persist→reload,
+      rejet d'un index d'une autre racine.
+  - **Enregistrement (`lib.rs`) :** `mod indexing;` + 5 commandes dans
+    `generate_handler!` (après `context::*`).
+  - **UI — nouveau `src/components/settings/IndexingSection.tsx` :** page
+    « Indexing & Docs » réelle (remplace le `ComingSoonSection`). Toggle
+    « Indexation automatique » (préférence localStorage `mira-indexing-auto`,
+    activée par défaut), badge d'état (`Index construit` / `Indexation en cours…`
+    / `Index non construit`), compteur de fichiers, « dernière construction »
+    relative, boutons **Reconstruire / Annuler / Vider l'index**, avertissement
+    « projet volumineux » au-delà de 5 000 fichiers. Auto-index au premier
+    montage si rien n'est construit (une seule fois par workspace, via `useRef`).
+  - **`SettingsPanel.tsx` :** import + rendu `section === "indexing"`, retrait de
+    `"indexing"` de la liste des sections « Coming soon ».
+
+- **Décisions techniques :**
+  - **Moteur 100 % local, zéro dépendance.** L'exploration a montré que le SDK
+    Cline **n'expose aucun index réutilisable** : son `search_codebase` est un
+    *outil piloté par le modèle* (« by pattern or meaning »), sans API
+    déterministe ni commande NDJSON/Tauri, et aucun vector store n'existe côté
+    Rust ni côté SDK. On implémente donc un index lexical avancé maison (BM25) —
+    déterministe, hors-ligne, sans embeddings. C'est le seul chemin fiable pour
+    une recherche programmable depuis Rust/UI.
+  - **Persister sous `.mira/index`.** Cohérent avec `.mira/{skills,rules,…}` déjà
+    en place et invisible pour l'utilisateur (règle « le client ne voit jamais
+    `.cline` »). Un champ `root` dans l'index invalide tout index d'un autre
+    workspace (anti-fuite entre projets).
+  - **Auto-index sans plafond dur mais garde-fous.** Choix produit validé :
+    indexer tout le workspace (pas de limite à 5 000 comme Trae), mais
+    `MAX_INDEX_FILES` et l'annulation protègent contre un monorepo pathologique ;
+    le seuil 5 000 ne sert qu'à **avertir** dans l'UI.
+
+- **Impacts & Dépendances :**
+  - **Nouveau module** `indexing.rs` ; `lib.rs` (module + 5 commandes).
+  - **Réutilise** `search::SEARCH_IGNORE` (couplage volontaire : une seule liste
+    d'exclusions pour la recherche, l'expansion de contexte et l'indexation) et
+    `extensions_store::ensure_within` (confinement).
+  - **UI** : `IndexingSection.tsx` (nouveau) + `SettingsPanel.tsx` (branché).
+  - Aucun effet de bord sur `context.rs` : l'expansion `#Workspace` n'utilise pas
+    encore l'index (branchement = lot ultérieur optionnel).
+  - L'index est ignoré par lui-même (`rel.starts_with(".mira/")`) : pas de
+    récursion sur ses propres fichiers.
+
+- **Validation :**
+  - `cargo test` → **168 passés** (153 + 15 nouveaux), 1 ignoré (réseau).
+  - `vitest run` → **640 passés** (48 fichiers).
+  - `npx tsc --noEmit` → OK ; `npx eslint` sur les fichiers touchés → 0 erreur.
+
+- **Prochaines étapes :**
+  - **Optionnel** : brancher `search_index` sur le tri de `context.rs`
+    (`#Workspace`/`#Folder` triés par pertinence au lieu de l'ordre
+    d'arborescence) et exposer l'index comme outil d'agent.
+  - **Différé** : `#Doc` / `#Web`, nesting 3 niveaux des commands/rules, Agent
+    Review, Refactoring Insights.
+
+---
+
+- **Contexte :** la page Hooks était en **lecture seule** car le moteur d'agent ne
+  lit les hooks que dans des dossiers fixes (`.cline/hooks`) et exige un fichier
+  nommé exactement comme l'événement. Une page d'édition qui écrirait ailleurs
+  aurait produit des hooks inertes (fausse promesse). Besoin : rendre les hooks
+  réellement gérables depuis Mira, sans jamais exposer la convention interne.
+
+- **Modifications effectuées :**
+  - **Backend (`extensions_store.rs`) :**
+    - `HookInfo` enrichi d'un champ `executable: bool` (le fichier porte-t-il une
+      extension reconnue par le moteur ?).
+    - Dossier réel lu/écrit par le moteur centralisé dans `hooks_dir(scope, ws)`
+      (`~/.cline/hooks` / `<ws>/.cline/hooks`).
+    - `HOOK_EVENTS` : liste blanche stricte des 10 événements du moteur.
+    - `validate_hook_event`, `validate_hook_extension` (`.js|.mjs|.cjs|.sh`),
+      `hook_path` (confinement via `ensure_within`).
+    - Nouvelles commandes : `read_hook(scope, ws, event, ext)`,
+      `write_hook(scope, ws, event, ext, content)` (contenu vide ⇒ supprime),
+      `delete_hook(scope, ws, event)` (balaie les 4 extensions connues).
+    - `list_hooks` ne retient que le nom d'événement et marque l'exécutabilité.
+  - **Enregistrement (`lib.rs`) :** ajout de `read_hook`, `write_hook`,
+    `delete_hook` dans `generate_handler!`.
+  - **UI (`HooksSection.tsx`) :** page réécrite en CRUD complet — bouton
+    « Nouveau hook » à droite, liste avec badge `actif`/`inactif`, éditeur
+    (choix d'événement parmi les libellés lisibles + éditeur de script JS),
+    suppression. Avertissement sécurité conservé.
+
+- **Décisions techniques :**
+  - **Écrire là où le moteur lit, pas sous `.mira`.** Le SDK n'accepte pas de
+    dossier de hooks personnalisé : `.mira/hooks` serait ignoré. On écrit donc
+    dans `.cline/hooks`, mais l'UI ne montre **jamais** cette convention (noms
+    d'événements + libellés uniquement). C'est le compromis retenu plutôt qu'un
+    pont sidecar (plus complexe, à maintenir au fil des versions du SDK).
+  - **Liste blanche d'événements + extension forcée :** impossible d'écrire un
+    nom de fichier arbitraire ; un fichier sans extension reconnue serait inerte,
+    donc interdit. Le chemin est toujours reconstruit côté Rust (jamais fourni
+    par le front) ⇒ pas d'évasion de répertoire.
+  - **Aucune exécution côté Mira :** ce module ne fait qu'écrire/supprimer le
+    script. L'exécution (donc le risque) reste déclenchée par le moteur. Le
+    contenu est borné par `MAX_CONTENT_BYTES` et écrit atomiquement.
+
+- **Impacts & Dépendances :** `HookInfo` gagne un champ (purement additif,
+  `#[serde(default)]` non nécessaire car toujours renseigné côté Rust).
+  `list_hooks` filtre désormais sur l'extension — un fichier déposé sans
+  extension n'apparaît plus comme « exécutable ». Touche `extensions_store.rs`,
+  `lib.rs`, `HooksSection.tsx`.
+
+- **Validation :** `cargo build` + `cargo test` (153 passés), `tsc --noEmit` OK,
+  `eslint` 0 erreur, `vitest` 640 tests passés.
+
+- **Prochaines étapes :** envisager un pont sidecar si une future version du SDK
+  accepte un `hooksDir` configurable (permettrait `.mira/hooks` sans écriture
+  cachée) ; sinon conserver cet alias.
+
+### [2026-10-17T22:50] | Settings — logo Mira (About), icône Skills, boutons à droite, compat skills
+
+- **Contexte :** retours utilisateur sur la page Réglages : (1) About affichait un
+  carré « M » au lieu du logo ; (2) l'état vide de Skills montrait l'icône IA
+  (« étincelles ») plutôt que l'éclair attendu ; (3) les boutons d'action des
+  formulaires étaient alignés à gauche alors que la convention est à droite ;
+  (4) les skills devaient être compatibles avec les conventions d'écosystèmes
+  tiers (`.agents/skills`, Claude, skills.sh).
+
+- **Modifications effectuées :**
+  - **About (`AboutSection.tsx`) :** import de `logo-code.svg` et remplacement du
+    carré dégradé « M » par un conteneur `overflow: hidden` (fond
+    `--origin-bg-base`, bordure `--origin-border-default`) contenant
+    `<img src={logoSrc} width=40 height=40 objectFit="contain" />`.
+  - **Skills (`SkillsSection.tsx`) :** icône d'état vide passée de `Sparkles`
+    (étincelles, perçue comme « icône IA ») à `Zap` (éclair), cohérent avec la
+    navigation. Ajout du champ `source` et rendu **lecture seule** pour les skills
+    externes (badge « externe », pas de toggle/édit/suppression).
+  - **Boutons à droite (Skills/Commands/Mcp/Keybindings) :** barres d'action des
+    éditeurs passées à `justifyContent:"flex-end"` ; dans Keybindings, « Reset
+    all » déplacé en bas à droite et « Import from » aligné à droite. `PageHeader`
+    était déjà à droite.
+  - **Compat skills (backend `extensions_store.rs`) :** `list_skills` agrège
+    désormais plusieurs racines — `.mira/skills` (source `mira`), puis
+    `.agents/skills` et `.claude/skills` (source `external`) — avec priorité Mira
+    et déduplication par nom. `read_skill` cherche dans toutes les racines.
+    Helpers `workspace_dot_mira`, `external_skill_roots`, `skill_roots`,
+    `find_skill_file`, `priority` ; champ `source: Option<String>` ajouté à
+    `ArtifactInfo` (rétro-compatible via `#[serde(default)]`).
+
+- **Décisions techniques :**
+  - **Lecture seule des racines externes.** Écrire dans `.agents/skills` ou
+    `.claude/skills` ferait de Mira un gestionnaire de fichiers appartenant à
+    d'autres outils (risque de corruption / conflits). On lit pour rester
+    compatible, on n'écrit que sous `.mira`. Le confinement strict existant
+    (`ensure_within`, `safe_rel_under`) est conservé : `find_skill_file`
+    revérifie que le chemin reste sous la racine.
+  - **Déduplication par priorité.** En cas de même nom, Mira gagne — évite les
+    doublons d'affichage et un comportement non déterministe.
+  - **`skills.sh`** distribue des packs **au format Agent Skills** ; en lisant
+    `.agents/skills`, Mira couvre donc l'installation manuelle de ces packs sans
+    nouvelle intégration réseau (aucun téléchargement côté IDE = pas de surface
+    SSRF/supply-chain supplémentaire).
+
+- **Impacts & Dépendances :** `ArtifactInfo.source` est nullable côté TS (aucune
+  break) ; le front n'affiche jamais les chemins disque. Le listing skills fait
+  maintenant jusqu'à 3 `read_dir` au lieu d'un (coût négligeable, dossiers
+  absents ignorés silencieusement).
+
+- **Validation :** `cargo test` — 146 verts (dont 11 dans `extensions_store`,
+  +3 nouveaux : `find_skill_file_priorise_la_premiere_racine`,
+  `find_skill_file_refuse_une_nomination_dangereuse`,
+  `priority_place_mira_avant_externe`) ; `vitest run` — 640 verts ;
+  `tsc --noEmit` et `eslint` propres sur les fichiers touchés.
+
+- **Prochaines étapes :** éventuel import/installation d'un skill depuis
+  skills.sh (téléchargement + validation) ; hooks fonctionnels `.mira/hooks.json`.
+
+---
+
+### [2026-10-17T20:37] | Chantier Contexte `#` — mentions Trae (Code/File/Folder/Workspace/Problems/Rule)
+
+- **Contexte :** aligner Mira sur le système de **contexte `#` de Trae** (saisie `#`
+  dans le chat → menu de types → sélection). Portée validée : `#File`, `#Folder`,
+  `#Workspace`, `#Problems`, `#Rule` + le `#Code` (fichier actif) déjà existant.
+  Contrainte durable : **aucun `#Doc`/`#Web`** pour l'instant (nécessite crawl /
+  index) et le client ne doit jamais voir l'infra sous-jacente.
+
+- **Modifications effectuées :**
+  - **L1 — Logique pure (`src/lib/contextMentions.ts`, nouveau) :** source unique de
+    vérité côté front. `ContextKind = code|file|folder|workspace|problems|rule`,
+    `CONTEXT_KINDS` (ordre d'affichage + `needsPicker` : `file`/`folder`/`rule`
+    exigent un picker, `code`/`workspace`/`problems` sont directs). Helpers
+    `contextRefKey`, `hasContextRef`, `addContextRef`, `removeContextRef`,
+    `getHashQuery` (déclencheur `#` en fin de mot), `filterContextKinds`,
+    `serializeContextRefs` / `parseContextRef` (format `kind:path`, coupe au
+    **premier** `:` → chemins Windows-safe), `contextIconName`. Tests :
+    `src/lib/__tests__/contextMentions.test.ts` — **32 tests verts**.
+  - **L2 — Backend Rust (`src-tauri/src/context.rs`, nouveau) :** expansion bornée
+    côté natif pour ne jamais saturer la mémoire ni le prompt. Bornes multi-niveaux :
+    `MAX_FILES=80`, `MAX_FILE_BYTES=128 Kio`, `MAX_TOTAL_BYTES=512 Kio`, détection
+    binaire (`NUL` byte sur `BINARY_SNIFF_BYTES=8 Kio`). Types
+    `WorkspaceFile { name, path, rel, content, skipped }` (le champ `rel` est
+    **relatif à la racine** et normalisé en `/` — indispensable pour un affichage
+    de prompt portable et non fuyant le chemin disque absolu) et
+    `ContextExpansion { files, truncated, included }`. Helpers `normalize_rel` /
+    `rel_to` (strip_prefix, fallback basename). Commands
+    `expand_context_folder(path, workspace_root)` (avec `assert_in_workspace_public`)
+    et `expand_context_workspace(workspace_root)`. `lib.rs` : `mod context;` +
+    enregistrement des 2 commands. Tests : **9/9 verts** (dont
+    `rel_est_relatif_a_la_racine_et_normalise`).
+  - **L3 — UI (`src/components/ai/ContextMenu.tsx`, nouveau) :**
+    `ContextTypeMenu` (menu des 6 types), `RulePicker` (règles `.mira/rules`),
+    et `FolderPicker` — dérive l'arborescence des dossiers depuis
+    `list_workspace_files` (remontée de chaque ancêtre, dédoublonnage `Map`, tri
+    `localeCompare`, recherche label **ou** path, navigation clavier). Le stub
+    historique du picker dossier (un `MentionDropdown` à `onSelect` vide) est
+    supprimé au profit de `FolderPicker`.
+  - **L4 — ChatBox (`src/components/ai/ChatBox.tsx`) :** déclencheur `#`
+    (`handleKeyDown` → `getHashQuery`), ouverture du `ContextTypeMenu`, chips de
+    contexte rendues dans l'aperçu du message en file (`queued.contextRefs`).
+    `handleSend`/`handleQueue` reçoivent un 7ᵉ paramètre `contextRefs`.
+    `QueuedMessage` (`src/lib/aiTypes.ts`) étendu avec `contextRefs?: string[]`
+    (sérialisé → survit à la file via `messageQueue.ts`).
+  - **L5 — AiPanel (`src/components/ai/AiPanel.tsx`) :** résolution des refs
+    **au moment de l'envoi**, injectée dans `apiText` (même canal que les
+    `@mentions`, aucun changement de protocole NDJSON). `resolveContextRefs`
+    (useCallback) dispatche : `workspace`→`expand_context_workspace`,
+    `folder`→`expand_context_folder`, `file`→`readFile`, `rule`→`read_rule`
+    (split `scope:rel`), `problems`→`formatDiagnostics(useDiagnostics().byFile)`,
+    `code`→`buildContextPrefix`. Helpers module-level `FENCE_MAP`, `formatExpansion`
+    (blocs `[File: rel]` + fence, ignore `skipped`), `formatDiagnostics`
+    (`rel:line:col severity[ code] message`). Toute ref en échec est **ignorée
+    silencieusement** (jamais bloquante).
+  - **L6 — Validation :** `tsc --noEmit` **0 erreur**, `eslint` clean sur les
+    fichiers touchés, `cargo build` OK, `cargo test context::` **9/9**, `vitest run`
+    **640/640**.
+
+- **Décisions techniques :**
+  - **Expansion des refs lourdes côté `AiPanel`, pas dans le protocole** : les
+    `#Folder`/`#Workspace` sont volumineux et spécifiques à l'UI ; les injecter à
+    l'envoi évite de polluer le sidecar/NDJSON et garde le protocole stable.
+  - **Dériver les dossiers depuis `list_workspace_files`** plutôt que d'ajouter
+    une command IPC dédiée : une seule source de vérité des fichiers, pas de
+    nouvel aller-retour backend ni de risque de désynchronisation.
+  - **Sécurité backend à plusieurs ceintures :** confinement workspace
+    (`assert_in_workspace_public` / `ensure_within`), bornes fichier/total/nombre,
+    sniff binaire ; les chemins exposés au prompt sont **relatifs** (`rel`), donc
+    pas de fuite du chemin absolu utilisateur.
+  - **`kind:path` avec coupe au premier `:`** : robuste aux lecteurs de disque
+    Windows (`C:\...`) sans échappement.
+
+- **Impacts & dépendances :**
+  - Fichiers créés : `contextMentions.ts`, `context.rs`, `ContextMenu.tsx`,
+    `__tests__/contextMentions.test.ts`.
+  - Fichiers modifiés : `ChatBox.tsx`, `AiPanel.tsx`, `aiTypes.ts`, `lib.rs`.
+  - `context.rs` expose 2 commands IPC ; tout futur picker (`#Doc`, `#Web`) doit
+    réutiliser `ContextRef`/`ContextTypeMenu` et non dupliquer la logique.
+  - `AiPanel` dépend désormais de `DiagnosticsContext` (déjà monté dans
+    `main.tsx`) pour `#Problems`.
+
+- **Prochaines étapes :**
+  - **Différé (validé)** : hooks **fonctionnels** (`hooks.json` sous `.mira` +
+    pont sidecar), pages **Rules** & **Memories**, nesting 3 niveaux
+    (commands/rules), `#Doc` / `#Web` (crawl + index), CUE, Agent Review,
+    Refactoring Insights.
+
+---
+
+### [2026-10-17T22:40] | Chantier Settings — pages About, MCP, Skills, Commands, Hooks
+
+- **Contexte :** l'écran Settings ne proposait que des pages « à venir » pour la
+  gestion des extensions. Objectif : reproduire le modèle Trae (Skills séparés
+  des **slash-commands**, MCP, Hooks, About) tout en respectant deux contraintes
+  fortes : (1) le client ne doit **jamais** voir l'infrastructure `Cline`/`.cline` ;
+  (2) Skills ≠ Commands — les Commands sont les **slash-commands** `/nom`, pas la
+  palette d'actions VS Code (les raccourcis clavier restent une page distincte).
+
+- **Modifications effectuées :**
+  - **Backend Rust — `src-tauri/src/extensions_store.rs` (nouveau, ~880 lignes) :**
+    accès disque direct aux artefacts sous `.mira`, **indépendant d'une session
+    agent** (l'UI peut lister/éditer sans agent connecté). Racines `~/.mira`
+    (global) et `<ws>/.mira` (projet). Sécurité : `validate_name` (slug `[A-Za-z0-9._-]`,
+    max 64, refuse `.`/`..`/préfixe `.`/`-`), `ensure_within` + `normalize_lexical`
+    (confinement anti-traversal), `validate_content` (max 256 Kio), écriture
+    atomique `tmp` + `rename`. Types `ArtifactInfo`, `HookInfo`, `McpServerInfo`.
+    17 commands Tauri : `list_skills`/`read_skill`/`write_skill`/`delete_skill`,
+    `list_commands`/`read_command`/`write_command`/`delete_command`,
+    `list_rules`/`read_rule`/`write_rule`/`delete_rule`, `list_hooks`,
+    `list_mcp_servers`/`write_mcp_server`/`set_mcp_server_disabled`/`delete_mcp_server`.
+    8 tests unitaires (tous verts).
+  - **`src-tauri/src/lib.rs` :** `mod extensions_store;` + enregistrement des 17
+    commands dans `generate_handler!`.
+  - **Sidecar `cline-sidecar/src/instructions.ts` :** nouveau type `CustomCommand`
+    + champ `customCommands` dans `SessionExtensions` ; loader `loadCustomCommands`
+    lisant `.mira/commands/*.md` (1er niveau, `.md` uniquement, max 64 Kio/fichier,
+    max 200 commands, jamais bloquant). **`src/index.ts` :** `start` renvoie
+    `customCommands` ; `expandRuntimeSlashCommand` résout d'abord les commands
+    custom (regex `^\/name args$`) puis retombe sur le SDK.
+  - **Front — `src/components/settings/ui.tsx` (nouveau) :** primitives partagées
+    (boutons, champs, `Switch`, `ListRow`, `Badge`, `ScopeTabs` global/projet,
+    `KeyValueEditor`, états vides/chargement/erreur).
+  - **5 pages (nouvelles) :** `AboutSection` (version via `getVersion`, MAJ via
+    plugin-updater + relaunch, liens), `McpSection` (CRUD serveurs, transports
+    stdio/SSE/HTTP, toggle), `SkillsSection` (global/projet, édition Markdown,
+    enable/disable), `CommandsSection` (slash-commands `.mira/commands`, édition),
+    `HooksSection` (**read-only**, libellés lisibles, jamais d'exposition `.cline`).
+  - **`SettingsPanel.tsx` :** nav réorganisée — ajout `commands` (« Commands ») et
+    `shortcuts` (« Keyboard Shortcuts », ex-slot skills) ; Skills désormais dédié.
+    `workspace` chargé via `getSetting("workspace.folder")`.
+
+- **Décisions techniques :**
+  - **Un seul socle disque côté Rust** plutôt que de passer par le SDK pour les
+    listes/éditions : évite d'exiger une session agent et garde l'UI réactive.
+  - **Commands custom côté sidecar** : le SDK n'expose **aucun** dossier `commands/`
+    (`RuntimeCommandKind` = `skill | workflow` seulement) ; on construit donc
+    `.mira/commands/*.md` et on les injecte dans la résolution des slash-commands.
+  - **Hooks en lecture seule** : le SDK ne lit que `~/.cline/hooks` et
+    `<ws>/.cline/hooks`. On **affiche** ces hooks (utile) mais on ne présente
+    jamais le chemin `Cline`/`.cline` à l'utilisateur — conformité à la règle de
+    marque et à la règle « le client ne doit pas voir `.cline` ».
+
+- **Impacts & Dépendances :** `SettingsPanel` consomme 5 nouveaux composants et
+  `getSetting` (async). Les commands custom transitent par le même canal que les
+  skills (`ChatBox` autocomplete `/`). Le module Rust est autonome (pas de
+  dépendance à `extensions.rs`).
+
+- **Validation :** `cargo check` **0 erreur / 0 warning** ; `cargo test
+  extensions_store` **8/8** ; `tsc --noEmit` **0 erreur** ; `eslint
+  src/components/settings/` **0 erreur / 0 warning** ; `vitest run` **608/608**
+  (47 fichiers).
+
+- **Prochaines étapes :** absorption de la documentation Trae (context, indexing,
+  memories, hooks config, cue, code review, refactoring, chat) pour aligner le
+  comportement produit ; éventuellement exposer l'édition des Rules côté UI.
+
+---
+
 ### [2026-10-17T22:05] | Poursuite du renommage : README + manifeste sidecar
 
 - **Contexte :** après la purge des libellés UI, il restait des occurrences de la

@@ -1,7 +1,19 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Bell, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw } from "lucide-react";
+import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Bell, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw, Bot } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
+import SkillsSection from "./SkillsSection";
+import CommandsSection from "./CommandsSection";
+import RulesMemoriesSection from "./RulesMemoriesSection";
+import McpSection from "./McpSection";
+import HooksSection from "./HooksSection";
+import IndexingSection from "./IndexingSection";
+import AboutSection from "./AboutSection";
+import { CueSection } from "./CueSection";
+import { BrowserSection } from "./BrowserSection";
+import { AgentSection } from "./AgentSection";
+import { AgentsSection } from "./AgentsSection";
+import { getSetting } from "../../lib/settings";
 import FileIcon from "../FileIcon";
 import { PROVIDERS } from "../ai/providers";
 import { loadApiKey, saveApiKey, deleteApiKey } from "../../lib/secrets";
@@ -32,8 +44,8 @@ const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
 type Section =
   | "account" | "general" | "mira-mobile" | "dev-env" | "permission"
-  | "agent" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "notifications" | "browser"
-  | "indexing" | "skills" | "rules" | "hooks" | "languages" | "beta" | "about";
+  | "agent" | "agents" | "mcp" | "cue" | "models" | "appearance" | "conversation" | "notifications" | "browser"
+  | "indexing" | "skills" | "commands" | "rules" | "hooks" | "languages" | "shortcuts" | "beta" | "about";
 
 interface NavDef {
   id: Section;
@@ -51,6 +63,7 @@ const NAV_ITEMS: NavDef[] = [
   { id: "dev-env",      label: "Development Environment", icon: <Code2 size={14} />,              keywords: "python node interpreter environment" },
   { id: "permission",   label: "Permission Approval",      icon: <ShieldCheck size={14} />,         keywords: "permission approval security" },
   { id: "agent",        label: "Agent",                   icon: <Wrench size={14} />,              keywords: "agent tools" },
+  { id: "agents",       label: "Agents",                  icon: <Bot size={14} />,                 keywords: "agents custom agent create prompt tools mcp" },
   { id: "mcp",          label: "MCP",                     icon: <Plug size={14} />,                keywords: "mcp server" },
   { id: "cue",          label: "CUE",                     icon: <Zap size={14} />,                 keywords: "cue" },
   { id: "models",       label: "Models",                  icon: <Cpu size={14} />,                 keywords: "models ai provider api key openai anthropic gemini" },
@@ -59,10 +72,12 @@ const NAV_ITEMS: NavDef[] = [
   { id: "notifications", label: "Notifications",          icon: <Bell size={14} />,                keywords: "notifications sound toast alert" },
   { id: "browser",      label: "Browser",                 icon: <Globe size={14} />,               keywords: "browser web preview", dividerAfter: true },
   { id: "indexing",     label: "Indexing & Docs",         icon: <Database size={14} />,            keywords: "indexing docs" },
-  { id: "skills",       label: "Skills & Commands",       icon: <Command size={14} />,             keywords: "skills commands keyboard" },
+  { id: "skills",       label: "Skills",                  icon: <Zap size={14} />,                 keywords: "skills agent capabilities" },
+  { id: "commands",     label: "Commands",                icon: <Command size={14} />,             keywords: "commands slash commands prompts" },
   { id: "rules",        label: "Rules & Memories",        icon: <ScrollText size={14} />,          keywords: "rules memories" },
   { id: "hooks",        label: "Hooks",                   icon: <Anchor size={14} />,              keywords: "hooks" },
   { id: "languages",    label: "Languages & LSP",         icon: <Code2 size={14} />,               keywords: "languages lsp language server intellisense diagnostics completion hover", dividerAfter: true },
+  { id: "shortcuts",    label: "Keyboard Shortcuts",      icon: <Command size={14} />,             keywords: "keyboard shortcuts keybindings hotkeys keys", dividerAfter: true },
   { id: "beta",         label: "Beta",                    icon: <FlaskConical size={14} />,        keywords: "beta experimental", dividerAfter: true },
   { id: "about",        label: "About Mira",              icon: <Info size={14} />,                keywords: "about" },
 ];
@@ -1569,11 +1584,19 @@ void TerminalSection;
 
 interface SettingsPanelProps {
   onClose: () => void;
+  /** Onglet à ouvrir au montage (ex. « agents » depuis « Create Agent »). */
+  initialSection?: string;
 }
 
-export default function SettingsPanel({ onClose }: SettingsPanelProps) {
-  const [section, setSection] = useState<Section>("dev-env");
+export default function SettingsPanel({ onClose, initialSection }: SettingsPanelProps) {
+  const [section, setSection] = useState<Section>((initialSection as Section) ?? "dev-env");
   const [query, setQuery] = useState("");
+  // Dossier de projet courant, nécessaire aux pages Skills/Commands/Hooks pour
+  // proposer la portée « projet » (`.mira` du workspace). Chargé au montage.
+  const [workspace, setWorkspace] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    void getSetting("workspace.folder").then(p => setWorkspace(p || undefined));
+  }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1582,6 +1605,17 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Ouverture ciblée depuis un autre composant (ex. « Create Agent » de l'input
+  // chat) : `origin-open-settings` avec `{ section }` présélectionne l'onglet.
+  useEffect(() => {
+    function onOpen(e: Event) {
+      const detail = (e as CustomEvent<{ section?: Section }>).detail;
+      if (detail?.section) setSection(detail.section);
+    }
+    window.addEventListener("origin-open-settings", onOpen);
+    return () => window.removeEventListener("origin-open-settings", onOpen);
+  }, []);
 
   const filteredSections = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1730,9 +1764,20 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             {section === "general"     && <GeneralSection />}
             {section === "conversation" && <ConversationSection />}
             {section === "notifications" && <NotificationsSection />}
-            {section === "skills"      && <KeybindingsSection />}
+            {section === "skills"      && <SkillsSection workspace={workspace} />}
+            {section === "commands"    && <CommandsSection workspace={workspace} />}
+            {section === "rules"       && <RulesMemoriesSection workspace={workspace} />}
+            {section === "mcp"         && <McpSection />}
+            {section === "hooks"       && <HooksSection workspace={workspace} />}
+            {section === "indexing"    && <IndexingSection workspace={workspace} />}
+            {section === "cue"         && <CueSection />}
+            {section === "browser"     && <BrowserSection workspace={workspace} />}
+            {section === "agent"       && <AgentSection />}
+            {section === "agents"      && <AgentsSection />}
+            {section === "about"       && <AboutSection />}
+            {section === "shortcuts"   && <KeybindingsSection />}
             {section === "languages"   && <LspSection />}
-            {!["dev-env", "permission", "models", "appearance", "general", "conversation", "notifications", "skills", "languages"].includes(section) && (
+            {!["dev-env", "permission", "models", "appearance", "general", "conversation", "notifications", "skills", "commands", "rules", "mcp", "hooks", "indexing", "cue", "browser", "agent", "agents", "about", "shortcuts", "languages"].includes(section) && (
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>

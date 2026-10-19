@@ -145,7 +145,7 @@ export default function DebugLaunchForm() {
           type="text"
           value={adapterPath}
           onChange={e => setAdapterPath(e.target.value)}
-          placeholder="chemin du binaire de l'adaptateur (vide = PATH)"
+          placeholder="path to the adapter binary (empty = PATH)"
           style={FIELD_STYLE}
           onFocus={e => { (e.target as HTMLElement).style.borderColor = 'var(--origin-accent-blue)'; }}
           onBlur={e => { (e.target as HTMLElement).style.borderColor = 'var(--origin-border-default)'; }}

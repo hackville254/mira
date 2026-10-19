@@ -18,7 +18,7 @@ export default function StatusNotice({ kind, detail, savedTokens }: {
   const isCompaction = kind === "compaction";
   const isOrchestration = kind === "orchestration";
   const Icon = isOrchestration ? Network : isCompaction ? Layers : RefreshCw;
-  const label = isOrchestration ? "Orchestration" : isCompaction ? "Compaction de l'historique" : "Reprise automatique";
+  const label = isOrchestration ? "Orchestration" : isCompaction ? "History compaction" : "Automatic retry";
   const hasDetail = !!savedTokens || !!detail;
 
   return (
@@ -44,7 +44,7 @@ export default function StatusNotice({ kind, detail, savedTokens }: {
           fontSize: "11px", color: "var(--origin-fg-subtle)", lineHeight: "1.6" }}>
           <div>{detail}</div>
           {savedTokens != null && savedTokens > 0 && (
-            <div>≈ {savedTokens.toLocaleString()} tokens économisés</div>
+            <div>≈ {savedTokens.toLocaleString()} tokens saved</div>
           )}
         </div>
       )}

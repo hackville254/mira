@@ -49,7 +49,7 @@ describe("missingBinaryConsent", () => {
 describe("describeBinaries", () => {
   it("liste les binaires manquants dans le message", () => {
     expect(describeBinaries(["bin/a", "bin/b"])).toBe(
-      "Binaires tiers à approuver : bin/a, bin/b",
+      "Third-party binaries to approve: bin/a, bin/b",
     );
   });
 

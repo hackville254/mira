@@ -101,25 +101,25 @@ export default function MessageActionsBar({
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "1px", marginTop: "6px" }}>
       {/* Copier */}
-      <button onClick={copy} title="Copier" style={actionBtnStyle()} {...actionHover}>
+      <button onClick={copy} title="Copy" style={actionBtnStyle()} {...actionHover}>
         {copied ? <Check {...ICON} /> : <Copy {...ICON} />}
       </button>
 
       {/* Insérer dans l'éditeur actif (fourni par le parent). */}
       {onInsert && (
-        <button onClick={onInsert} title="Insérer dans l'éditeur" style={actionBtnStyle()} {...actionHover}>
+        <button onClick={onInsert} title="Insert into editor" style={actionBtnStyle()} {...actionHover}>
           <CornerUpRight {...ICON} />
         </button>
       )}
 
       {/* Régénérer (assistant) / Éditer (utilisateur) — même emplacement. */}
       {showRegen && (
-        <button onClick={onRegenerate} title="Régénérer" style={actionBtnStyle()} {...actionHover}>
+        <button onClick={onRegenerate} title="Regenerate" style={actionBtnStyle()} {...actionHover}>
           <RefreshCw {...ICON} />
         </button>
       )}
       {showEdit && (
-        <button onClick={onEdit} title="Éditer et renvoyer" style={actionBtnStyle()} {...actionHover}>
+        <button onClick={onEdit} title="Edit and resend" style={actionBtnStyle()} {...actionHover}>
           <Pencil {...ICON} />
         </button>
       )}
@@ -127,7 +127,7 @@ export default function MessageActionsBar({
       {/* Vote positif */}
       <button
         onClick={() => toggleVote("up")}
-        title="Bonne réponse"
+        title="Good response"
         style={{
           ...actionBtnStyle(),
           color: shownVote === "up" ? "var(--origin-accent-blue)" : "var(--origin-fg-subtle)",
@@ -140,7 +140,7 @@ export default function MessageActionsBar({
       {/* Vote négatif */}
       <button
         onClick={() => toggleVote("down")}
-        title="Réponse à améliorer"
+        title="Response to improve"
         style={{
           ...actionBtnStyle(),
           color: shownVote === "down" ? "var(--origin-semantic-error, #ef4444)" : "var(--origin-fg-subtle)",
@@ -185,19 +185,19 @@ export function UserMessageActions({ onEdit, onDelete, onRevert, onUndo, onKeep 
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: "1px" }}>
       {onEdit && (
-        <button onClick={onEdit} title="Éditer et renvoyer" style={actionBtnStyle()} {...actionHover}>
+        <button onClick={onEdit} title="Edit and resend" style={actionBtnStyle()} {...actionHover}>
           <Pencil {...ICON} />
         </button>
       )}
       {onDelete && (
-        <button onClick={onDelete} title="Supprimer ce message" style={actionBtnStyle()} {...actionHover}>
+        <button onClick={onDelete} title="Delete this message" style={actionBtnStyle()} {...actionHover}>
           <Trash2 {...ICON} />
         </button>
       )}
       {undo && (
         <button
           onClick={undo}
-          title="Annuler les modifications de ce message et des suivants"
+          title="Undo changes from this message and the following ones"
           style={actionBtnStyle()}
           {...actionHover}
         >
@@ -207,7 +207,7 @@ export function UserMessageActions({ onEdit, onDelete, onRevert, onUndo, onKeep 
       {onKeep && (
         <button
           onClick={onKeep}
-          title="Conserver les modifications de ce message"
+          title="Keep changes from this message"
           style={actionBtnStyle()}
           {...actionHover}
         >

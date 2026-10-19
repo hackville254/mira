@@ -108,14 +108,14 @@ export const originBaseTheme = EditorView.theme({
   '.cm-gutters': {
     backgroundColor: 'transparent',
     border: 'none',
-    borderRight: '1px solid var(--origin-border-default)',
     color: 'var(--origin-fg-subtle)',
     paddingRight: '0',
+    minWidth: '0',
     userSelect: 'none',
   },
   '.cm-lineNumbers .cm-gutterElement': {
-    minWidth: '3.2em',
-    padding: '0 12px 0 8px',
+    minWidth: '1.8em',
+    padding: '0 4px 0 4px',
     textAlign: 'right',
   },
   '.cm-foldGutter .cm-gutterElement': { padding: '0 4px', cursor: 'pointer' },
@@ -132,7 +132,6 @@ export const originBaseTheme = EditorView.theme({
   // ── Minimap ────────────────────────────────────────────────────────────────
   '.cm-minimap-gutter': {
     borderRight: 'none',
-    borderLeft: '1px solid var(--origin-border-default)',
     backgroundColor: 'transparent',
   },
   // ── Sticky scroll ────────────────────────────────────────────────────────────
@@ -143,7 +142,6 @@ export const originBaseTheme = EditorView.theme({
     zIndex: '6',
     display: 'none',
     backgroundColor: 'var(--origin-bg-base)',
-    borderBottom: '1px solid var(--origin-border-default)',
     boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
     fontFamily: 'var(--font-mono, "Geist Mono", "Fira Code", monospace)',
     fontSize: '13px',
@@ -221,21 +219,21 @@ export const originBaseTheme = EditorView.theme({
   },
   '.cm-deletedChunk-gutter': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-error) 28%, transparent)',
-    borderRight: '3px solid color-mix(in srgb, var(--origin-semantic-error) 65%, transparent)',
+    borderRight: '2px solid color-mix(in srgb, var(--origin-semantic-error) 55%, transparent)',
   },
   '.cm-changedChunk': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-success) 13%, transparent)',
   },
   '.cm-changedChunk-gutter': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-success) 25%, transparent)',
-    borderRight: '3px solid color-mix(in srgb, var(--origin-semantic-success) 65%, transparent)',
+    borderRight: '2px solid color-mix(in srgb, var(--origin-semantic-success) 55%, transparent)',
   },
   '.cm-insertedChunk': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-success) 13%, transparent)',
   },
   '.cm-insertedChunk-gutter': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-success) 25%, transparent)',
-    borderRight: '3px solid color-mix(in srgb, var(--origin-semantic-success) 65%, transparent)',
+    borderRight: '2px solid color-mix(in srgb, var(--origin-semantic-success) 55%, transparent)',
   },
   '.cm-deletedChunkField': {
     backgroundColor: 'color-mix(in srgb, var(--origin-semantic-error) 35%, transparent)',

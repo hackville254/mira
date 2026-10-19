@@ -163,7 +163,7 @@ function AgentLiveBadge({ sessionId }: { sessionId: string }) {
   if (!running) return null;
   return (
     <span
-      title="Commande en cours"
+      title="Command running"
       style={{
         width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
         backgroundColor: "var(--origin-accent-blue)",
@@ -522,7 +522,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           {agentSessionId && (
             <div
               onClick={() => setActiveId(AGENT_TAB_ID)}
-              title="Terminal de l'agent (lecture seule)"
+              title="Agent terminal (read-only)"
               style={{
                 display: "flex",
                 alignItems: "center",

@@ -108,16 +108,16 @@ export default function ImageViewerPane({ base64, mime, fileName }: Props) {
 
         <div style={{ flex: 1 }} />
 
-        <Tooltip content="Zoom arrière" side="bottom">
+        <Tooltip content="Zoom out" side="bottom">
           <ToolbarButton onClick={() => zoomBy(1 / ZOOM_STEP)}><ZoomOut size={13} /></ToolbarButton>
         </Tooltip>
         <span style={{ fontSize: '11px', color: 'var(--origin-fg-subtle)', minWidth: '42px', textAlign: 'center' }}>
           {Math.round(zoom * 100)}%
         </span>
-        <Tooltip content="Zoom avant" side="bottom">
+        <Tooltip content="Zoom in" side="bottom">
           <ToolbarButton onClick={() => zoomBy(ZOOM_STEP)}><ZoomIn size={13} /></ToolbarButton>
         </Tooltip>
-        <Tooltip content="Ajuster" side="bottom">
+        <Tooltip content="Fit" side="bottom">
           <ToolbarButton onClick={requestFit}><Maximize2 size={13} /></ToolbarButton>
         </Tooltip>
       </div>
@@ -144,7 +144,7 @@ export default function ImageViewerPane({ base64, mime, fileName }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
             color: 'var(--origin-fg-subtle)' }}>
             <ImageOff size={28} />
-            <span style={{ fontSize: '12px' }}>Impossible d'afficher cette image</span>
+            <span style={{ fontSize: '12px' }}>Cannot display this image</span>
           </div>
         ) : (
           <img

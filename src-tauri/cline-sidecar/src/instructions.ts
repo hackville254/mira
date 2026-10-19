@@ -38,7 +38,9 @@
  *     collecte les problèmes et on les remonte à l'UI (`pluginIssues`).
  */
 
-import { resolve } from "node:path";
+import { readFile, readdir, mkdir, writeFile, access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 import {
   InMemoryMcpManager,
@@ -82,6 +84,25 @@ export interface SessionExtensions {
   mcpManager: McpManager | null;
   /** Problèmes NON FATALS collectés (skills illisibles, MCP en échec…). */
   issues: ExtensionIssue[];
+  /**
+   * Slash-commands PERSONNALISÉES définies par l'utilisateur dans
+   * `.mira/commands/*.md`. Le SDK Cline n'a pas de surface « commands » : c'est
+   * une convention d'hôte propre à Mira (comme Trae). On les fusionne côté front
+   * avec les commands dérivées des skills/workflows.
+   */
+  customCommands: CustomCommand[];
+}
+
+/** Slash-command utilisateur (`.mira/commands/<nom>.md`). */
+export interface CustomCommand {
+  /** Identifiant stable = nom sans extension (slug). */
+  id: string;
+  /** Nom exposé, sans le `/` initial. */
+  name: string;
+  /** Description courte (frontmatter `description`, sinon 1re ligne non vide). */
+  description: string;
+  /** Corps du prompt : ce qui est envoyé au modèle quand on invoque `/name`. */
+  instructions: string;
 }
 
 export interface ExtensionIssue {
@@ -105,6 +126,32 @@ const CLINE_PLUGINS_FOLDER = "plugins";
 const MIRA_PROJECT_DIRS = [".mira/skills", ".mira/rules", ".mira/workflows"] as const;
 
 /**
+ * Sous-dossiers `.mira` **globaux** (sous `~/.mira`) à ajouter à la découverte.
+ *
+ * POURQUOI : les skills LIVRÉS avec l'app (HyperFrames, media-use, InsForge,
+ * copywriting…) sont installés dans `~/.mira/skills` par le natif au démarrage.
+ * Or `resolveSkillsConfigSearchPaths` ne connaît QUE `.cline` / `.claude` /
+ * `.agents` — il ignore complètement `.mira`. Sans ces lignes, les skills par
+ * défaut seraient visibles dans Réglages (qui lit `.mira`) mais JAMAIS proposés
+ * au modèle : l'outil `skills` resterait vide pour eux. On aligne donc la
+ * découverte du moteur sur notre marque.
+ *
+ * SÉCURITÉ : `homedir()` est fourni par Node (variable d'environnement de l'OS),
+ * jamais par le front ; on ne fait qu'ajouter un chemin fixe sous le HOME.
+ */
+const MIRA_GLOBAL_DIRS = [".mira/skills", ".mira/rules", ".mira/workflows"] as const;
+
+/**
+ * Sous-dossier projet des slash-commands personnalisées (`<ws>/.mira/commands`).
+ *
+ * Le SDK ne connaît PAS de surface « commands » : on charge donc nous-mêmes ces
+ * fichiers Markdown et on les expose au front comme commandes invocables. On ne
+ * touche PAS au service d'instructions : une commande n'est PAS un skill, le
+ * modèle ne doit pas la voir dans l'outil `skills`.
+ */
+const MIRA_COMMANDS_DIR = ".mira/commands";
+
+/**
  * Compose la liste de dossiers à passer au SDK : nos dossiers `.mira` d'abord,
  * puis les chemins par défaut officiels (qui couvrent `.cline`, `.claude`, …).
  *
@@ -114,10 +161,14 @@ const MIRA_PROJECT_DIRS = [".mira/skills", ".mira/rules", ".mira/workflows"] as 
  * la découverte des skills/plugins existants.
  */
 function withMiraDirectories(workspace: string): string[] {
-  const mira = MIRA_PROJECT_DIRS.map((rel) => resolve(workspace, rel));
+  const miraProject = MIRA_PROJECT_DIRS.map((rel) => resolve(workspace, rel));
+  // Skills/règles/workflows GLOBAUX de notre marque : `~/.mira/...`. C'est là que
+  // le natif installe les skills par défaut, et `resolveSkillsConfigSearchPaths`
+  // ne les connaît pas (voir MIRA_GLOBAL_DIRS).
+  const miraGlobal = MIRA_GLOBAL_DIRS.map((rel) => resolve(homedir(), rel));
   // Défauts officiels (chemins projet + globaux) — réinjectés pour ne rien perdre.
   const sdkDefaults = resolveSkillsConfigSearchPaths(workspace);
-  return [...mira, ...sdkDefaults];
+  return [...miraProject, ...miraGlobal, ...sdkDefaults];
 }
 
 /**
@@ -191,7 +242,19 @@ export async function resolveSessionExtensions(cwd: string): Promise<SessionExte
     issues.push({ scope: "hooks", message: describe(error) });
   }
 
-  // ── 4. MCP ───────────────────────────────────────────────────────────────
+  // ── 4. Slash-commands personnalisées (`.mira/commands/*.md`) ─────────────
+  // Le SDK Cline n'expose AUCUNE surface « commands » (seuls skills et workflows
+  // alimentent `listRuntimeCommands`). On charge donc nous-mêmes les fichiers
+  // `.mira/commands/*.md` : ce sont des prompts réutilisables invoqués par
+  // `/nom`. Jamais bloquant : un fichier illisible devient une issue.
+  let customCommands: CustomCommand[] = [];
+  try {
+    customCommands = await loadCustomCommands(workspace);
+  } catch (error) {
+    issues.push({ scope: "skills", message: describe(error) });
+  }
+
+  // ── 5. MCP ───────────────────────────────────────────────────────────────
   // Le fichier de réglages MCP vit sous le `CLINE_DIR` d'Origin (imposé par
   // Rust). On le laisse résoudre par le SDK, puis on enregistre chaque serveur
   // et on convertit leurs outils. Un serveur injoignable n'invalide PAS les
@@ -200,6 +263,11 @@ export async function resolveSessionExtensions(cwd: string): Promise<SessionExte
   let mcpManager: McpManager | null = null;
   try {
     const settingsPath = resolveDefaultMcpSettingsPath();
+    // Le SDK LIT ce fichier de façon non tolérante (ENOENT fatal sinon). Rust le
+    // provisionne au démarrage, mais on garantit ici aussi un fichier vide valide
+    // (défense en profondeur : sidecar lancé hors setup Tauri, dossier purgé…).
+    // Idempotent : un fichier existant n'est jamais écrasé.
+    await ensureMcpSettingsFile(settingsPath);
     mcpManager = new InMemoryMcpManager({
       clientFactory: createDefaultMcpServerClientFactory(),
     });
@@ -227,7 +295,126 @@ export async function resolveSessionExtensions(cwd: string): Promise<SessionExte
     mcpTools = [];
   }
 
-  return { userInstructionService, pluginPaths, hooks, mcpTools, mcpManager, issues };
+  return { userInstructionService, pluginPaths, hooks, mcpTools, mcpManager, issues, customCommands };
+}
+
+/**
+ * Garantit l'existence du fichier de réglages MCP, avec un contenu vide valide.
+ *
+ * Le SDK (`registerMcpServersFromSettingsFile`) LIT ce fichier sans tolérance à
+ * l'absence : un fichier manquant lève `ENOENT` et fait échouer le démarrage de
+ * la session (« erreur du moteur d'agent »). Rust provisionne déjà ce fichier au
+ * démarrage de l'app ; ce garde-fou côté sidecar couvre les lancements hors
+ * setup Tauri et un dossier `settings/` purgé. Idempotent : ne réécrit JAMAIS
+ * un fichier existant (aucune perte de configuration utilisateur).
+ */
+async function ensureMcpSettingsFile(settingsPath: string): Promise<void> {
+  try {
+    await access(settingsPath);
+    return; // déjà présent
+  } catch {
+    /* absent : on le crée ci-dessous */
+  }
+  await mkdir(dirname(settingsPath), { recursive: true });
+  try {
+    // `wx` : n'écrase jamais un fichier apparu entre-temps (course avec le
+    // provisioning Rust). EEXIST est un succès fonctionnel, on l'ignore.
+    await writeFile(settingsPath, '{\n  "mcpServers": {}\n}\n', { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+  }
+}
+
+/** Bornes de sécurité pour les commandes utilisateur (contenu hostile par défaut). */
+const MAX_COMMAND_FILE_BYTES = 64 * 1024;
+const MAX_COMMANDS = 200;
+
+/**
+ * Charge les slash-commands de `<workspace>/.mira/commands/*.md`.
+ *
+ * FORMAT : Markdown, frontmatter YAML optionnel.
+ *
+ * ```
+ * ---
+ * description: Relire la branche courante sans pousser
+ * ---
+ * Passe en revue les changements non commités et propose un plan.
+ * ```
+ *
+ * SÉCURITÉ : on ne lit QUE des fichiers `.md` de premier niveau (jamais de
+ * récursion, donc pas de symlink-chain), taille plafonnée, nombre plafonné. Le
+ * contenu n'est jamais exécuté ni évalué : il est transmis au modèle comme
+ * prompt, dans le même canal que ce que l'utilisateur tape lui-même.
+ */
+async function loadCustomCommands(workspace: string): Promise<CustomCommand[]> {
+  const dir = resolve(workspace, MIRA_COMMANDS_DIR);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    // Dossier absent = aucune commande : cas normal, pas une erreur.
+    return [];
+  }
+
+  const commands: CustomCommand[] = [];
+  for (const entry of entries.sort()) {
+    if (commands.length >= MAX_COMMANDS) break;
+    if (!entry.toLowerCase().endsWith(".md")) continue;
+    const name = entry.slice(0, -".md".length);
+    if (!isSafeCommandName(name)) continue;
+    const filePath = join(dir, basename(entry));
+    try {
+      const raw = await readFile(filePath, "utf8");
+      if (Buffer.byteLength(raw, "utf8") > MAX_COMMAND_FILE_BYTES) continue;
+      const { description, body } = splitCommandFile(raw);
+      commands.push({
+        id: name,
+        name,
+        description: description || firstMeaningfulLine(body),
+        instructions: body.trim(),
+      });
+    } catch {
+      // Fichier illisible (permissions, course) : on l'ignore silencieusement,
+      // une commande manquante ne doit jamais casser la session.
+    }
+  }
+  return commands;
+}
+
+/** Un nom de commande reste un slug simple : `/` et espaces interdits. */
+function isSafeCommandName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= 64 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.startsWith(".") &&
+    /^[A-Za-z0-9._-]+$/.test(name)
+  );
+}
+
+/** Sépare un frontmatter `---` minimal du corps, et extrait `description`. */
+function splitCommandFile(raw: string): { description: string; body: string } {
+  const normalized = raw.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return { description: "", body: normalized };
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return { description: "", body: normalized };
+  const frontmatter = normalized.slice(4, end);
+  const body = normalized.slice(normalized.indexOf("\n", end + 1) + 1);
+  const match = /^description:[ \t]*(.*)$/m.exec(frontmatter);
+  const description = match ? match[1].trim().replace(/^["']|["']$/g, "") : "";
+  return { description, body };
+}
+
+/** Première ligne non vide et non titrée, pour servir de description de repli. */
+function firstMeaningfulLine(body: string): string {
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const text = trimmed.replace(/^#+\s*/, "");
+    if (text.length > 0) return text.slice(0, 140);
+  }
+  return "";
 }
 
 /** Normalise une erreur inconnue en message court (jamais un objet vivant). */

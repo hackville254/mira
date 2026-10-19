@@ -47,7 +47,7 @@ const TODO_STATUSES: TodoStatus[] = ["pending", "in_progress", "done", "cancelle
 
 /** Outils exposés en mode Agent (act), dans l'ordre de présentation. */
 export const FULL_TOOL_NAMES =
-  "read_files, search_codebase, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload";
+  "read_files, search_codebase, codebase_search, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload";
 
 /** Outils exposés en mode Plan / ASK (read-only) : aucune écriture possible. */
 export const READ_ONLY_TOOL_NAMES =
@@ -78,6 +78,7 @@ export const TOOL_CONTRACT_FULL = [
   "## Tools",
   "- `read_files`: read one or more files. Prefer one call with several paths over one call per file.",
   "- `search_codebase`: search the workspace by pattern or meaning. Use it before opening files to locate what matters.",
+  "- `codebase_search`: search the LOCAL codebase index (fast, offline, ranked workspace-relative paths). Use it FIRST to locate code.",
   "- `editor`: the primary way to create or edit files. Match the call to your intent:",
   "  - CREATE a file: `path` + `new_text`, and NO `old_text`.",
   "  - REPLACE in an existing file: `path` + `old_text` + `new_text` (omitting `old_text` on an existing file fails).",
@@ -112,3 +113,78 @@ export const ASK_MODE_FILES_NOTE = [
   "## Changes in ASK mode",
   "ASK mode is read-only: you have no editing tool here. When the user asks you to change code, explain WHAT to change and WHERE (file and lines) instead of writing it, so they can switch to Agent mode to apply it.",
 ].join("\n");
+
+// ── Contrats filtrés par les préférences d'outils (Settings › Agent) ──────────
+//
+// Chaque famille d'outils de la section Agent est associée à ses puces de
+// contrat. Les puces sont retirées du prompt quand l'outil est désactivé : le
+// modèle ne voit plus l'outil et ne l'appelle plus. Les entrées non
+// désactivables (todo_*, skills, ask_question) ne figurent pas ici et restent
+// TOUJOURS annoncées.
+
+/** Puce(s) de contrat par famille d'outil désactivable. */
+const CONTRACT_LINES_BY_TOOL: Record<string, string[]> = {
+  read_files: [
+    "- `read_files`: read one or more files. Prefer one call with several paths over one call per file.",
+  ],
+  search_codebase: [
+    "- `search_codebase`: search the workspace by pattern or meaning. Use it before opening files to locate what matters.",
+    "- `codebase_search`: search the LOCAL codebase index (fast, offline, ranked workspace-relative paths). Use it FIRST to locate code.",
+  ],
+  editor: [
+    "- `editor`: the primary way to create or edit files. Match the call to your intent:",
+    "  - CREATE a file: `path` + `new_text`, and NO `old_text`.",
+    "  - REPLACE in an existing file: `path` + `old_text` + `new_text` (omitting `old_text` on an existing file fails).",
+    "  - APPEND at end: `path` + `new_text` + `insert_line = line_count + 1`.",
+    "  - `insert_line` is one-based (1 to `line_count + 1`); `new_text` is inserted BEFORE that line.",
+    "  - HARD LIMIT: `old_text` and `new_text` are each capped at 6000 characters. Never send a whole large file at once: create it with a first chunk, then append the rest via `insert_line = line_count + 1`.",
+    "  - `old_text` must be copied VERBATIM (indentation included) and match EXACTLY ONE location (3 to 5 lines of unique context): 0 matches fail with \"text not found\", more than 1 with \"multiple occurrences\".",
+  ],
+  run_commands: [
+    "- `run_commands`: run shell commands in the workspace (builds, tests, git, package managers).",
+  ],
+  fetch_web_content: [
+    "- `fetch_web_content`: fetch and read content from URLs (documentation, references).",
+  ],
+  browser: [], // géré à part (BROWSER_CONTRACT_ACT / READ_ONLY)
+};
+
+/**
+ * Construit le contrat d'outils du mode Agent en omettant les familles
+ * désactivées par l'utilisateur.
+ */
+export function buildFullToolContract(disabled: ReadonlySet<string> = new Set()): string {
+  const lines: string[] = [
+    "## Tools",
+    ...flattenFamilies(["read_files", "search_codebase", "editor", "run_commands", "fetch_web_content"], disabled),
+    "- `skills`: invoke a configured skill by name when it matches the task.",
+    `- \`todo_write\`: publish the live task checklist. Call it with the FULL list; each item has an \`id\`, a \`content\` (one line), and a \`status\` (${TODO_STATUSES.join(" | ")}).`,
+    "- `todo_read`: re-read the current checklist (rarely needed: the list is shown to the user).",
+  ];
+  if (!disabled.has("browser")) lines.push(BROWSER_CONTRACT_ACT);
+  return lines.join("\n");
+}
+
+/** Variante read-only (mode Plan / ASK) filtrée par les préférences d'outils. */
+export function buildReadOnlyToolContract(disabled: ReadonlySet<string> = new Set()): string {
+  const lines: string[] = [
+    "## Tools (read-only)",
+    ...flattenFamilies(["read_files", "search_codebase", "run_commands", "fetch_web_content"], disabled),
+    "- `skills`: invoke a configured skill by name when it matches the task.",
+    `- \`todo_write\`: publish the live task checklist (items have \`id\`, \`content\`, \`status\` = ${TODO_STATUSES.join(" | ")}).`,
+    "- `todo_read`: re-read the current checklist.",
+  ];
+  if (!disabled.has("browser")) lines.push(BROWSER_CONTRACT_READ_ONLY);
+  lines.push("- There is NO file-editing tool in this mode: do not attempt to write, create, or modify files. Produce an answer or a plan instead.");
+  return lines.join("\n");
+}
+
+/** Concatène les puces de contrat des familles ACTIVES, dans l'ordre donné. */
+function flattenFamilies(ids: string[], disabled: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const id of ids) {
+    if (disabled.has(id)) continue;
+    out.push(...(CONTRACT_LINES_BY_TOOL[id] ?? []));
+  }
+  return out;
+}

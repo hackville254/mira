@@ -122,6 +122,12 @@ export interface ClineStartParams {
    * transporte qu'un `kind` fermé — jamais de code exécutable (voir le sidecar).
    */
   extraTools?: ClineExtraToolSpecAny[];
+  /**
+   * Liste d'autorisation des serveurs MCP pour cette session (dotation d'un
+   * agent personnalisé). `undefined` = tous les serveurs configurés sont
+   * autorisés (comportement par défaut) ; un tableau VIDE = aucun.
+   */
+  enabledMcpServers?: string[];
 }
 
 /** Spécification déclarative d'un outil custom attendu par le sidecar. */
@@ -132,19 +138,24 @@ export interface ClineExtraToolSpec {
 }
 
 /**
- * Spécification d'un outil custom. Aujourd'hui : la todo list (`todo`) et le
- * navigateur piloté (`browser`). On ne transporte qu'un `kind` fermé — jamais de
- * code exécutable (voir le sidecar).
+ * Spécification d'un outil custom. Aujourd'hui : la todo list (`todo`), le
+ * navigateur piloté (`browser`), la recherche dans l'index de codebase
+ * (`code_index`) et la demande d'escalade d'équipe (`team_escalate`). On ne
+ * transporte qu'un `kind` fermé — jamais de code exécutable (voir le sidecar).
  */
 export type ClineExtraToolSpecAny =
   | ClineExtraToolSpec
-  | { kind: "browser"; sessionId: string; panelId: string };
+  | { kind: "browser"; sessionId: string; panelId: string }
+  | { kind: "code_index"; sessionId: string }
+  | { kind: "team_escalate"; sessionId: string };
 
 /** Effet d'un outil custom, relayé par le sidecar (`kind:"tool_event"`). */
 export interface ClineToolEvent {
   tool: string;
   sessionId: string;
   todos?: { id: string; content: string; status: "pending" | "in_progress" | "done" | "cancelled" }[];
+  /** Justification d'une demande d'escalade (`tool: "team_escalate"`). */
+  reason?: string;
 }
 
 /**
@@ -448,6 +459,7 @@ export async function startClineRun(
         ...(initialMessages ? { initialMessages } : {}),
         ...(typeof params.maxIterations === "number" ? { maxIterations: params.maxIterations } : {}),
         ...(params.extraTools && params.extraTools.length > 0 ? { extraTools: params.extraTools } : {}),
+        ...(params.enabledMcpServers ? { enabledMcpServers: params.enabledMcpServers } : {}),
       },
     });
     const newId = result?.sessionId;
@@ -510,6 +522,56 @@ export async function startClineRun(
 }
 
 /**
+ * Nom de l'événement `window` signalant que la surface d'extension (skills,
+ * commands) a changé sur disque (création/édition/suppression depuis les
+ * Settings). L'UI qui affiche ces extensions (input de l'agent) s'y réabonne
+ * pour relancer `listExtensions` sans attendre un nouveau run. Un `CustomEvent`
+ * natif suffit : aucun état partagé, aucun couplage entre les modules.
+ */
+export const EXTENSIONS_CHANGED_EVENT = "mira:extensions-changed";
+
+/** Émet le signal de rafraîchissement des extensions (best-effort). */
+export function notifyExtensionsChanged(): void {
+  try {
+    window.dispatchEvent(new CustomEvent(EXTENSIONS_CHANGED_EVENT));
+  } catch {
+    /* environnement sans `window` (tests) : sans effet */
+  }
+}
+
+/**
+ * Résout la surface d'extension (skills, slash-commands) SANS démarrer de session.
+ *
+ * POURQUOI : une session n'est établie qu'au premier `send`. Si on attendait ce
+ * moment pour découvrir les skills, l'UI afficherait « aucun skill » tant que
+ * l'utilisateur n'a rien envoyé — l'auto-complétion `#`/`/` serait morte au
+ * repos. On interroge donc le sidecar à la demande, dès qu'un workspace est
+ * connu, en réutilisant le MÊME normaliseur que `start` (source unique de
+ * vérité sur la forme). Non fatal : une erreur renvoie une surface vide.
+ */
+export async function listExtensions(cwd: string): Promise<ClineSessionExtensions> {
+  try {
+    const result = await invoke<unknown>("cline_sidecar_send", {
+      command: { type: "listExtensions", cwd },
+    });
+    return normalizeExtensions(result);
+  } catch (error) {
+    // `SIDECAR_NOT_RUNNING` est un état ATTENDU (sidecar pas encore spawné au
+    // montage de l'UI, ou aperçu navigateur sans backend Tauri) : le repli
+    // « surface vide » est le comportement nominal, pas une anomalie. On le
+    // journalise en `debug` pour ne pas polluer la console avec un faux
+    // warning ; toute AUTRE erreur reste un `warn` (vraie anomalie).
+    const message = describeError(error);
+    if (describeErrorCode(error) === "SIDECAR_NOT_RUNNING") {
+      log.debug("agent/clineClient", `listExtensions: sidecar indisponible, surface vide (${message})`);
+    } else {
+      log.warn("agent/clineClient", `listExtensions ignoré: ${message}`);
+    }
+    return { skills: [], commands: [], issues: [] };
+  }
+}
+
+/**
  * Traite une demande bloquante du sidecar et envoie la réponse attendue.
  *
  * Toute erreur est journalisée mais JAMAIS jetée : une exception remonterait
@@ -557,6 +619,10 @@ const INVOKE_ALLOWLIST = new Set<string>([
   "browser_type",
   "browser_press_key",
   "browser_screenshot",
+  // Recherche dans l'index local (outil `codebase_search`). LECTURE seule :
+  // renvoie une liste de chemins relatifs issus de l'index du workspace, sans
+  // jamais lire le disque ni écrire quoi que ce soit.
+  "search_index",
 ]);
 
 /**
@@ -580,6 +646,14 @@ async function respondToInvoke(request: { requestId: string; command: string; ar
     return;
   }
   try {
+    // `search_index` renvoie directement une liste JSON de hits (`{rel, score}`),
+    // que l'outil `codebase_search` consomme telle quelle. On la sérialise en
+    // texte sans la transformer : le format navigateur ne s'applique pas.
+    if (request.command === "search_index") {
+      const hits = await invoke<unknown>("search_index", request.args);
+      await reply({ output: JSON.stringify(hits ?? []) });
+      return;
+    }
     const result = await invoke<{ ok?: boolean; value?: string; url?: string | null; truncated?: boolean }>(
       request.command,
       request.args,
@@ -664,6 +738,31 @@ function describeError(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Extrait le `code` d'une erreur Tauri si elle en porte un.
+ *
+ * Rust renvoie ses erreurs applicatives sous forme d'objet `{ code, message }`
+ * (cf. `sidecar.rs::sidecar_error`). Selon le chemin IPC, cet objet arrive soit
+ * tel quel, soit sérialisé en JSON dans le message. On couvre les deux formes —
+ * sans jamais jeter : une erreur sans code exploitable renvoie `null`.
+ */
+function describeErrorCode(error: unknown): string | null {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { code?: unknown };
+      if (parsed && typeof parsed.code === "string") return parsed.code;
+    } catch {
+      /* message non-JSON : pas de code, on continue */
+    }
+  }
+  return null;
 }
 
 /**
@@ -755,7 +854,13 @@ function extractToolEvent(raw: unknown): ClineToolEvent | null {
         )
         .map((t) => ({ id: t.id, content: t.content, status: t.status }))
     : undefined;
-  return { tool, sessionId, ...(todos ? { todos } : {}) };
+  // Justification d'escalade : chaîne bornée. On tronque défensivement côté
+  // front aussi (le sidecar le fait déjà) — l'UI n'affiche jamais un pavé.
+  const reason =
+    typeof o.reason === "string" && o.reason.trim().length > 0
+      ? o.reason.slice(0, 400)
+      : undefined;
+  return { tool, sessionId, ...(todos ? { todos } : {}), ...(reason ? { reason } : {}) };
 }
 
 /** Parse JSON tolérant (renvoie `null` au lieu de jeter). */

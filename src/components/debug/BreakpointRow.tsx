@@ -95,14 +95,14 @@ export default function BreakpointRow({
           <input
             value={logMessage}
             spellCheck={false}
-            placeholder="e.g. i={i} (arrête si vide)"
+            placeholder="e.g. i={i} (stops if empty)"
             onChange={e => setLogMessage(e.target.value)}
             onBlur={() => onLogMessage(logMessage)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onLogMessage(logMessage); } }}
             style={fieldStyle}
           />
           <span style={{ fontSize: 9, color: 'var(--origin-fg-subtle)' }} title={filePath}>
-            Un log point n'interrompt pas l'exécution — la condition et le hit count, si.
+            A log point does not interrupt execution — the condition and hit count do.
           </span>
         </div>
       )}

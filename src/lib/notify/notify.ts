@@ -79,7 +79,7 @@ export function planNotification(
       return {
         playSound: soundPart,
         toast: ctx.toastEnabled
-          ? { text: ctx.isDisplayed ? "Tâche terminée" : `${label} terminée`, type: "success" }
+          ? { text: ctx.isDisplayed ? "Task finished" : `${label} finished`, type: "success" }
           : null,
       };
 
@@ -87,7 +87,7 @@ export function planNotification(
       return {
         playSound: soundPart,
         toast: ctx.toastEnabled
-          ? { text: ctx.isDisplayed ? "L'agent attend ta réponse" : `${label} attend ta réponse`, type: "info" }
+          ? { text: ctx.isDisplayed ? "The agent is waiting for your reply" : `${label} is waiting for your reply`, type: "info" }
           : null,
       };
 
@@ -98,7 +98,7 @@ export function planNotification(
           ? {
               text: ctx.errorMessage
                 ? `${label} : ${ctx.errorMessage}`
-                : `${label} a échoué`,
+                : `${label} failed`,
               type: "error",
             }
           : null,

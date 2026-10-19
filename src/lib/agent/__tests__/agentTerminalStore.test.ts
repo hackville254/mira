@@ -49,7 +49,7 @@ describe("agentTerminalStore", () => {
   it("signale un code de sortie non nul", () => {
     agentTerminalCommandStart(S, "false");
     agentTerminalCommandEnd(S, 1);
-    expect(getAgentTerminal(S).transcript).toContain("code de sortie 1");
+    expect(getAgentTerminal(S).transcript).toContain("exit code 1");
   });
 
   it("accumule plusieurs commandes dans l'ordre", () => {

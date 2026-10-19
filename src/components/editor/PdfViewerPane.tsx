@@ -74,7 +74,7 @@ export default function PdfViewerPane({ base64, fileName }: Props) {
             onMouseEnter={e => { e.currentTarget.style.background = 'var(--origin-bg-hover)'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
           >
-            <ExternalLink size={12} /> Ouvrir
+            <ExternalLink size={12} /> Open
           </a>
         )}
       </div>
@@ -85,7 +85,7 @@ export default function PdfViewerPane({ base64, fileName }: Props) {
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--origin-fg-subtle)' }}>
             <FileWarning size={28} />
-            <span style={{ fontSize: '12px' }}>Impossible d'afficher ce PDF</span>
+            <span style={{ fontSize: '12px' }}>Cannot display this PDF</span>
           </div>
         ) : (
           <embed

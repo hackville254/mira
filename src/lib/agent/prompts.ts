@@ -67,6 +67,32 @@ export const CONCISION = [
 ].join("\n");
 
 /**
+ * Cadre de PERSÉVÉRANCE — placer avant toute mécanique d'outil.
+ *
+ * BUT : garantir que l'objectif de l'utilisateur est atteint, en mobilisant TOUT
+ * ce qui est disponible. Ce bloc est volontairement NEUTRE sur la MÉTHODE : il ne
+ * dit ni « fais-le seul » ni « délègue » (ces choix sont portés par les blocs de
+ * délégation, qui raisonnent sur le COÛT). Ici on ne fixe qu'une finalité —
+ * satisfaire la demande réelle — sans prescrire de moyen, pour ne pas créer de
+ * biais qui entrerait en conflit avec les autres consignes.
+ *
+ * Les règles sont formulées comme des GARDE-FOUS anti-échec silencieux, pas comme
+ * une injonction à en faire trop : on interdit le faux « done », on exige la
+ * vérification, et on autorise explicitement le travail long quand la tâche
+ * l'exige. Aucune recherche d'outil supplémentaire n'est encouragée si elle ne
+ * sert pas l'objectif : « tous les moyens » signifie les moyens PERTINENTS.
+ */
+export const OBJECTIVE_PURSUIT = [
+  "## Objective",
+  "- Success is ONE thing: the user's goal genuinely achieved. Understand the real intent behind the request — including a loosely worded one — before choosing an approach.",
+  "- Solve the problem, don't just transcribe the instruction. If the obvious path is blocked, find another: another file, another tool, a workaround, a simpler route to the same goal.",
+  "- Use every relevant tool when it moves the goal forward (read, search, run, browse, ask); never add steps that don't serve it.",
+  "- Don't stop at a plausible result: verify it works before declaring success. An unverified claim is a failure, not a result.",
+  "- If truly blocked, state precisely what you tried and what stops you — never pass off unfinished work as done. Escalating a real user decision via `ask_question` is progress, not defeat.",
+  "- A long task isn't a broken task: persevere when the goal demands it, but never pad work — the shortest path that fully satisfies the user wins.",
+].join("\n");
+
+/**
  * Batching des appels d'outils (porté de Cline, `act.ts`).
  *
  * Un aller-retour modèle coûte plusieurs secondes : si le modèle demande
@@ -166,13 +192,14 @@ export const STYLE_GUARDRAIL = [
  * porté par la description des outils `team_*` — ici on motive le POURQUOI.
  */
 export const DELEGATION_GUIDANCE_TEAMS = [
-  "## Delegation (you run with a team of teammates)",
-  "- You have a team. Broad, self-contained investigations MUST go to a teammate instead of filling your own context: finding where something is defined, used, or configured across a large tree; understanding a flow end to end; reviewing a change for risk; mapping test coverage; assessing doc or API impact. The larger or fuzzier the search, the stronger the reason to delegate.",
-  "- Context is your scarcest resource. Every raw search dump, file read, or grep you keep for yourself is context you cannot spend on reasoning. A teammate's transcript never enters your context: you only get back a bounded report. That asymmetry is the whole point of delegating.",
+  "## Delegation (you run with a team of teammates — use it judiciously)",
+  "- You have a team, but spawning a teammate is EXPENSIVE: it costs an extra model loop plus coordination round-trips (spawn → task → await → read → shutdown). Only delegate when that cost is clearly repaid.",
+  "- Delegate ONLY when the investigation is genuinely broad AND self-contained: locating something across a large tree, following a flow end to end, reviewing a change for risk, mapping test coverage, assessing doc or API impact. The larger the search, the stronger the reason.",
+  "- Do NOT delegate by default. Most requests — a specific file, a known location, a targeted edit, a short question — are FASTER done yourself with one or two direct reads. A single round-trip beats an orchestration every time.",
+  "- Context is your scarcest resource: every raw search dump, file read, or grep you keep for yourself is context you cannot spend on reasoning. A teammate's transcript never enters your context — you only get back a bounded report. That asymmetry is the reason to delegate, when it applies.",
   "- Use `team_spawn_teammate` to create a teammate, then `team_task` / `team_run_task` to give it a specific, self-contained task. Poll or await results with `team_status` / `team_await_runs`, and read their findings before acting. When the work is done, shut idle teammates down with `team_shutdown_teammate`.",
-  "- Do it yourself when the answer is one or two targeted reads whose location you already know: the round-trip would cost more than it saves. The judgment is about relative context cost, not a fixed count.",
+  "- Never leave a teammate running idle: a spawned teammate that finished its task must be shut down, and you must not spawn a new one for work you can finish yourself in a couple of tool calls.",
   "- A teammate's report is a strong lead, not ground truth: verify anything you act on before relying on it.",
-  "- Delegation is how you keep working on a very large repository without losing the thread. Reach for it by default on broad work; skip it only when it clearly costs more than it saves.",
 ].join("\n");
 
 /**
@@ -214,7 +241,7 @@ export function composeSystemPrompt({ blocks, style = STYLE_GUARDRAIL, extra }: 
 
 // ── Presets par mode ───────────────────────────────────────────────────────────
 
-import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY, ASK_MODE_FILES_NOTE } from "./toolPresentation";
+import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY, ASK_MODE_FILES_NOTE, buildFullToolContract, buildReadOnlyToolContract } from "./toolPresentation";
 
 /** Plan de sortie structuré attendu en mode PLAN. */
 const PLAN_OUTPUT_FULL = [
@@ -265,8 +292,13 @@ export function buildSystemPrompt(
   isMax: boolean,
   workspaceNote = "",
   withTeams = false,
+  disabledTools: ReadonlySet<string> = new Set(),
 ): string {
-  const blocks: string[] = [identity(mode), CONCISION];
+  // Contrat d'outils filtré par les préférences (Settings › Agent) : les outils
+  // désactivés sont retirés du prompt, donc jamais appelés par le modèle.
+  const fullContract = disabledTools.size > 0 ? buildFullToolContract(disabledTools) : TOOL_CONTRACT_FULL;
+  const readOnlyContract = disabledTools.size > 0 ? buildReadOnlyToolContract(disabledTools) : TOOL_CONTRACT_READ_ONLY;
+  const blocks: string[] = [identity(mode), CONCISION, OBJECTIVE_PURSUIT];
 
   if (mode === "agent") {
     // Principes d'abord…
@@ -280,14 +312,14 @@ export function buildSystemPrompt(
     // …mécanique ensuite : le contrat d'outils documente chaque outil RÉELLEMENT
     // exposé en mode Agent (dont la limite de 6000 car. de `editor`), puis les
     // règles d'édition détaillées.
-    blocks.push(TOOL_CONTRACT_FULL, isMax ? EDIT_RULES_FULL : EDIT_RULES_LITE);
+    blocks.push(fullContract, isMax ? EDIT_RULES_FULL : EDIT_RULES_LITE);
   } else if (mode === "ask") {
     // ASK répond aux questions : on cadre d'abord COMMENT répondre (principe),
     // puis le cycle de revue des changements. `isMax` fait varier le niveau de
     // détail du cycle de revue (un seul bloc vs. règles d'édition complètes).
-    blocks.push(ASK_ANSWER_RULES, ASK_MODE_FILES_NOTE, TOOL_CONTRACT_READ_ONLY);
+    blocks.push(ASK_ANSWER_RULES, ASK_MODE_FILES_NOTE, readOnlyContract);
   } else {
-    blocks.push(TOOL_CONTRACT_READ_ONLY, isMax ? PLAN_OUTPUT_FULL : PLAN_OUTPUT_LITE);
+    blocks.push(readOnlyContract, isMax ? PLAN_OUTPUT_FULL : PLAN_OUTPUT_LITE);
   }
 
   return composeSystemPrompt({ blocks, extra: workspaceNote });

@@ -70,7 +70,7 @@ export default function TurnReviewCard({
       {/* Barre de statut : toujours visible, cliquable pour déplier/replier. */}
       <button
         onClick={() => setExpanded(v => !v)}
-        title={expanded ? "Replier la revue" : "Déplier la revue"}
+        title={expanded ? "Collapse review" : "Expand review"}
         style={{
           width: "100%", display: "flex", alignItems: "center", gap: "10px",
           padding: "9px 10px", border: "none", cursor: "pointer",

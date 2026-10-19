@@ -86,6 +86,12 @@ export interface ClineHarnessOptions {
    */
   extraTools?: ClineExtraToolSpecAny[];
   /**
+   * Liste d'autorisation des serveurs MCP (dotation d'un agent personnalisé).
+   * `undefined` = tous les serveurs configurés ; tableau vide = aucun. Les
+   * serveurs non autorisés sont masqués côté sidecar par des outils « refus ».
+   */
+  enabledMcpServers?: string[];
+  /**
    * Reçoit les EFFETS d'outils custom (ex. mise à jour de la todo list) pour
    * que le front les applique dans son store réactif. Optionnel.
    */
@@ -115,22 +121,37 @@ export interface ClineHarnessOptions {
  *
  * Applique `permissions.ts` au mode courant (localStorage, lu à l'instant T —
  * un changement de mode est donc pris en compte immédiatement, sans recréer le
- * run). Un `ask` est **refusé** faute de canal de confirmation : c'est le seul
- * comportement sûr tant que la carte UI n'est pas branchée sur ce canal.
+ * run).
+ *
+ * TROIS ISSUES :
+ *   - `block` : refus d'office (garde anti-catastrophe) — signalé, jamais exécuté.
+ *   - `approve` : exécution immédiate, sans UI.
+ *   - `ask` : **le run se met en PAUSE** et une carte de confirmation est émise
+ *     dans le fil (`emitAsk`). La décision (Approve / Reject / Always allow)
+ *     résout la promesse et débloque l'outil. C'est le canal qui manquait :
+ *     auparavant un `ask` était refusé d'office, ce qui faisait échouer les
+ *     commandes au lieu de demander l'accord de l'utilisateur.
+ *
+ * Si `emitAsk` n'est pas fourni (aucun canal UI), on retombe sur le refus sûr :
+ * jamais d'exécution non confirmée en silence.
  */
 export function makeApprovalDecider(
   workspace: string,
   onBlocked?: (action: PendingAction, reason: string) => void,
-): (action: PendingAction) => HarnessDecision {
-  return (action: PendingAction): HarnessDecision => {
+  emitAsk?: (action: PendingAction) => Promise<boolean>,
+): (action: PendingAction) => HarnessDecision | Promise<HarnessDecision> {
+  return (action: PendingAction): HarnessDecision | Promise<HarnessDecision> => {
     const verdict = decideApproval(action, { mode: loadPermissionMode(), workspace });
     if (verdict.decision === "block") {
       onBlocked?.(action, verdict.reason);
       return { approved: false, reason: verdict.reason };
     }
     if (verdict.decision === "approve") return { approved: true };
-    // `ask` : pas encore de carte de confirmation sur ce canal → refus sûr.
-    return { approved: false, reason: "approval_required" };
+    // `ask` : on demande l'accord à l'utilisateur si un canal UI est branché.
+    if (!emitAsk) return { approved: false, reason: "approval_required" };
+    return emitAsk(action).then(
+      (approved) => (approved ? { approved: true } : { approved: false, reason: "rejected_by_user" }),
+    );
   };
 }
 
@@ -154,9 +175,38 @@ export async function startClineHarness(
     ...(typeof options.maxIterations === "number" ? { maxIterations: options.maxIterations } : {}),
     ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
     ...(options.extraTools && options.extraTools.length > 0 ? { extraTools: options.extraTools } : {}),
+    ...(options.enabledMcpServers ? { enabledMcpServers: options.enabledMcpServers } : {}),
   };
 
-  const decider = makeApprovalDecider(options.workspace, options.onBlocked);
+  // ── Pont d'approbation (ask → carte UI) ────────────────────────────────────
+  // Le canal Cline attend une réponse via `decideApproval` (délai sidecar 120 s).
+  // Pour un verdict `ask`, on émet un event `approval-required` DANS LE FIL et on
+  // renvoie une promesse résolue par les boutons de la carte (Approve / Reject).
+  // Un id local suffit : l'acquittement réel passe par le canal `decideApproval`,
+  // pas par cet id (purement UI, pour cibler la bonne carte).
+  let approvalSeq = 0;
+  const emitAsk = (action: PendingAction): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const id = `harness-approval-${++approvalSeq}`;
+      let settled = false;
+      const settle = (approved: boolean) => {
+        if (settled) return;
+        settled = true;
+        // On fige la carte du fil (sinon elle resterait bloquée en
+        // « Approval required » après un clic) PUIS on débloque l'outil.
+        options.onEvent({ type: "approval-resolved", id, status: approved ? "approved" : "rejected" });
+        resolve(approved);
+      };
+      options.onEvent({
+        type: "approval-required",
+        id,
+        action,
+        approve: () => settle(true),
+        reject: () => settle(false),
+      });
+    });
+
+  const decider = makeApprovalDecider(options.workspace, options.onBlocked, emitAsk);
 
   const handle = await startClineRun(params, options.onEvent, {
     decideApproval: (action) => decider(action),

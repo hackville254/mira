@@ -137,7 +137,28 @@ export default function MessageBubble({
       )}
 
       {isEmpty && message.streaming ? (
-        <span style={{ display: "inline-block", width: "2px", height: "13px", backgroundColor: "var(--origin-fg-muted)", verticalAlign: "text-bottom", animation: "blink 1s step-end infinite" }} />
+        // TTFT : entre l'envoi et le premier token, la bulle est vide. On affiche
+        // un indicateur d'ACTIVITÉ explicite (« Working » + points animés) plutôt
+        // qu'un simple curseur de 2px : en mode IA, l'orchestration d'équipe rend
+        // cette attente plus longue, et un trait minuscule laissait croire à un
+        // blocage (« on ne voit rien »).
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", minHeight: "20px" }}>
+          <span style={{ fontSize: "13px", color: "var(--origin-fg-muted)" }}>Working</span>
+          <span style={{ display: "inline-flex", gap: "3px" }}>
+            {[0, 1, 2].map(i => (
+              <span
+                key={i}
+                style={{
+                  width: 4, height: 4, borderRadius: "50%",
+                  backgroundColor: "var(--origin-fg-muted)",
+                  display: "inline-block",
+                  animation: "pulse 1.2s ease-in-out infinite",
+                  animationDelay: `${i * 0.2}s`,
+                }}
+              />
+            ))}
+          </span>
+        </div>
       ) : isUser ? (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           {/* La réserve de hauteur (`paddingTop`) fait partie de la zone de
@@ -154,7 +175,7 @@ export default function MessageBubble({
               <div style={{ position: "absolute", top: "0", right: "0", zIndex: 2, height: "26px", display: "flex", alignItems: "center" }}>
                 {reviewState?.kept ? (
                   <span
-                    title={reviewState.files.length > 0 ? `${reviewState.files.length} fichier(s) conservé(s)` : "Modifications conservées"}
+                    title={reviewState.files.length > 0 ? `${reviewState.files.length} file(s) kept` : "Changes kept"}
                     style={{
                       display: "inline-flex", alignItems: "center", gap: "4px",
                       fontSize: "11px", fontFamily: "var(--font-mono)",
@@ -292,7 +313,7 @@ export default function MessageBubble({
       {showActions && !isUser && onPin && message.content && (
         <button
           onClick={() => onPin(message.content)}
-          title="Épingler au Pinboard"
+          title="Pin to Pinboard"
           style={{
             display: "inline-flex", alignItems: "center", gap: "4px", marginTop: "2px",
             background: "none", border: "none", padding: "2px 4px", borderRadius: "4px",

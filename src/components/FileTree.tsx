@@ -19,6 +19,12 @@ interface Props {
   /** Ouvre le fichier dans un nouvel onglet à droite (Open to the Side). */
   onFileOpenToSide?: (path: string) => void;
   refreshKey?: number;
+  /**
+   * Signale des fichiers modifiés/supprimés à l'extérieur de l'éditeur.
+   * Utilisé après une suppression depuis l'arbre pour fermer les onglets des
+   * fichiers réellement supprimés (comportement VS Code).
+   */
+  onExternalFileChanges?: (paths: string[]) => void;
 }
 
 /**
@@ -27,7 +33,7 @@ interface Props {
  * inline, raccourcis clavier et menu contextuel complet.
  */
 export default function FileTree({
-  onFileOpen, onMarkdownPreview = () => {}, onFileOpenToSide, refreshKey,
+  onFileOpen, onMarkdownPreview = () => {}, onFileOpenToSide, refreshKey, onExternalFileChanges,
 }: Props) {
   const { folderPath } = useWorkspace();
   const { showToast } = useToast();
@@ -87,12 +93,15 @@ export default function FileTree({
     const results = await deleteEntries(ctx, paths);
     const failed = results.filter(r => !r.ok);
     if (failed.length) showToast(String(failed[0].error), "error");
+    const deleted = results.filter(r => r.ok && r.path).map(r => r.path as string);
     // Retire de la sélection les chemins réellement supprimés, sinon l'action
     // suivante (supprimer, couper…) viserait des chemins devenus inexistants.
-    pruneSelection(results.filter(r => r.ok && r.path).map(r => r.path as string));
+    pruneSelection(deleted);
+    // Ferme les onglets des fichiers réellement supprimés (comportement VS Code).
+    onExternalFileChanges?.(deleted);
     // Le refresh global recharge les dossiers parents touchés.
     refresh();
-  }, [folderPath, showToast, refresh, pruneSelection]);
+  }, [folderPath, showToast, refresh, pruneSelection, onExternalFileChanges]);
 
   // ── Copier / couper / coller ──────────────────────────────────────────────────
   const doCopy = useCallback((paths: string[], mode: "copy" | "cut") => {

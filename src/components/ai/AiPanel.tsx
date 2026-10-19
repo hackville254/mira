@@ -35,10 +35,12 @@ import { ensurePricing, computeCost } from "../../lib/pricing";
 import { recordUsage } from "../../lib/usage";
 import { loadApiKey } from "../../lib/secrets";
 import { readFile } from "../../lib/fs";
+import { invoke } from "@tauri-apps/api/core";
 import { resolveClineProvider } from "../../lib/agent/providers";
 import { type AgentEvent } from "../../lib/agent/run";
 import { startClineHarness } from "../../lib/agent/clineHarness";
 import { PREVIEW_PANEL_ID } from "../editor/WebPreviewPane";
+import { listExtensions as listClineExtensions, EXTENSIONS_CHANGED_EVENT } from "../../lib/agent/clineClient";
 import type { ClineRunHandle, ClineSessionExtensions } from "../../lib/agent/clineClient";
 import { isWriteTool } from "../../lib/agent/clineBridge";
 import { toPendingAction } from "../../lib/agent/clineApproval";
@@ -51,6 +53,9 @@ import { beginTaskRun, markTaskWaiting, markTaskRunning, type RegisterRunHandle 
 import { planNotification, isToastEnabled } from "../../lib/notify/notify";
 import { playSound, isSoundEnabled, primeSound } from "../../lib/notify/sound";
 import { startSubAgent, stepSubAgent, endSubAgent, clearSubAgents } from "../../lib/agent/swarmStore";
+import { isBuiltinControlEnabled } from "../../lib/browserPrefs";
+import { getDisabledTools, AGENT_TOOLS } from "../../lib/agent/agentToolPrefs";
+import { listAgents, readSelectedAgentId, resolveSelectedAgent, CUSTOM_AGENTS_EVENT, type CustomAgent } from "../../lib/agent/customAgents";
 import { finalizeTodos, setTodos, clearTodos } from "../../lib/agent/todoStore";
 import { enqueueMessage, dequeueMessage } from "../../lib/agent/messageQueue";
 import { shouldPreCompact, estimateTokensWithOverhead, contextStatusPrompt, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
@@ -82,6 +87,9 @@ import {
   restoreSession,
 } from "../../lib/sessionStore";
 import { pbRead, pbWrite, pinPreview, NOTES_KEY } from "../../lib/pinboardStore";
+import type { ContextRef } from "../../lib/contextMentions";
+import { serializeContextRefs, parseContextRef } from "../../lib/contextMentions";
+import { useDiagnostics, type DiagnosticEntry } from "../../context/DiagnosticsContext";
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -257,13 +265,15 @@ function formatRelativeTime(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Table de correspondance extension → langage de fence Markdown (partagée). */
+const FENCE_MAP: Record<string, string> = {
+  ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", rs: "rs",
+  py: "python", css: "css", html: "html", json: "json", md: "markdown",
+};
+
 function buildContextPrefix(ctx: EditorContext, displayPath?: string): string {
   const ext = ctx.filename.split(".").pop()?.toLowerCase() ?? "";
-  const fenceMap: Record<string, string> = {
-    ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", rs: "rs",
-    py: "python", css: "css", html: "html", json: "json", md: "markdown",
-  };
-  const fence = fenceMap[ext] ?? ext;
+  const fence = FENCE_MAP[ext] ?? ext;
   const label = ctx.type === "selection" ? "Selected code" : "Visible code";
   return `[${label} in ${displayPath ?? ctx.filename}]\n\`\`\`${fence}\n${ctx.code}\n\`\`\`\n\n`;
 }
@@ -272,6 +282,49 @@ function toWorkspaceRelPath(fullPath: string, folderPath: string): string {
   const fpNorm = folderPath.replace(/\\/g, "/").replace(/\/$/, "") + "/";
   const spNorm = fullPath.replace(/\\/g, "/");
   return spNorm.startsWith(fpNorm) ? spNorm.slice(fpNorm.length) : spNorm.split("/").pop() ?? fullPath;
+}
+
+/** Réponse de `expand_context_folder` / `expand_context_workspace` (cf. context.rs). */
+interface ContextExpansionFile { name: string; path: string; rel: string; content: string; skipped: boolean }
+interface ContextExpansion { files: ContextExpansionFile[]; truncated: boolean; included: number }
+
+/** Réponse de `read_rule` (cf. extensions_store.rs). */
+interface RuleContent { name: string; content: string; scope: string }
+
+/**
+ * Formate les diagnostics LSP en bloc texte pour `#Problems`.
+ * Groupé par fichier, erreur d'abord : le modèle voit d'emblée ce qui casse.
+ * Renvoie `""` si aucun problème (on n'injecte alors aucun bruit).
+ */
+function formatDiagnostics(byFile: Map<string, DiagnosticEntry[]>): string {
+  const rows: string[] = [];
+  for (const [path, entries] of byFile) {
+    if (entries.length === 0) continue;
+    const rel = path.split(/[\\/]/).slice(-3).join("/");
+    for (const d of entries) {
+      rows.push(`${rel}:${d.line}:${d.col} ${d.severity}${d.code ? ` [${d.code}]` : ""} ${d.message}`);
+    }
+  }
+  if (rows.length === 0) return "";
+  return `\n\n[Problems — ${rows.length} diagnostic(s)]\n${rows.join("\n")}`;
+}
+
+/**
+ * Formate une expansion de dossier/workspace en blocs `[File: rel]` + fence.
+ * On préfère `rel` (court, lisible) au chemin absolu, et on signale la troncature
+ * pour que le modèle sache que la vue est partielle.
+ */
+function formatExpansion(
+  title: string,
+  exp: ContextExpansion,
+  fenceFor: (name: string) => string,
+): string {
+  let out = `\n\n[${title} — ${exp.included} file(s)${exp.truncated ? ", truncated" : ""}]`;
+  for (const f of exp.files) {
+    if (f.skipped) continue;
+    out += `\n\n[File: ${f.rel || f.name}]\n\`\`\`${fenceFor(f.name)}\n${f.content}\n\`\`\``;
+  }
+  return out;
 }
 
 
@@ -425,6 +478,8 @@ export default function AiPanel({
   useEffect(() => { onActiveSessionChangeRef.current = onActiveSessionChange; }, [onActiveSessionChange]);
 
   const isAgent = renderMode === "agent";
+  // Diagnostics LSP : source du contexte `#Problems`.
+  const diagnostics = useDiagnostics();
   const effMin = isAgent ? AGENT_MIN_WIDTH : MIN_WIDTH;
   const effMax = isAgent ? AGENT_MAX_WIDTH : MAX_WIDTH;
   const effDefault = isAgent ? AGENT_DEFAULT_WIDTH : DEFAULT_WIDTH;
@@ -488,6 +543,9 @@ export default function AiPanel({
   const onApplyCodeRef             = useRef(onApplyCode);
   const onOpenDiffTabRef           = useRef(onOpenDiffTab);
   const currentModeRef             = useRef<"agent" | "plan">("agent");
+  // Agent personnalisé actif au moment de l'envoi (résolu depuis la sélection
+  // persistée + la liste chargée). `null` = aucun agent perso (mode intégré).
+  const activeAgentRef             = useRef<CustomAgent | null>(null);
   // Modèle/provider du dernier envoi : « régénérer » rejoue avec la même cible
   // sans dépendre d'un état local exposé par le ChatBox.
   const activeModelIdRef           = useRef<string>("");
@@ -498,7 +556,7 @@ export default function AiPanel({
   // depuis les handlers de fin de tour sans créer de dépendance circulaire dans
   // les `useCallback` (pattern « ref mirroring » utilisé pour les callbacks
   // sensibles de ce fichier).
-  const handleSendRef              = useRef<((text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: "agent" | "ask" | "plan") => Promise<void>) | null>(null);
+  const handleSendRef              = useRef<((text: string, modelId: string, providerId: string, fileMentions: string[], editorContext: EditorContext | null, mode: "agent" | "ask" | "plan", contextRefs: ContextRef[]) => Promise<void>) | null>(null);
   // Empêche un double dépilage (ex. `finish` suivi immédiatement d'un stop).
   const dequeuingRef               = useRef<boolean>(false);
   // Miroir réactif de `queuedMessage` : `flushQueue` est appelé depuis des
@@ -755,6 +813,30 @@ export default function AiPanel({
     setNotesValue(localStorage.getItem(NOTES_KEY(fp)) ?? "");
   }, [folderPath]);
 
+  // Chargement AUTOMATIQUE de la surface d'extension (skills, slash-commands) dès
+  // qu'un workspace est connu, SANS attendre le premier envoi. Sinon l'input
+  // afficherait « aucun skill » tant qu'aucune session n'a démarré. On relance
+  // aussi à chaque changement de workspace (les skills sont projet-scopées) et
+  // sur l'événement `EXTENSIONS_CHANGED_EVENT` (mutation depuis les Settings).
+  // Course possible avec `onExtensions` (résolution au `start`) : les deux
+  // écrivent la même forme normalisée, le dernier arrivé gagne — inoffensif.
+  useEffect(() => {
+    const fp = folderPath ?? "";
+    if (!fp) return;
+    let cancelled = false;
+    const reload = () => {
+      listClineExtensions(fp)
+        .then((ext) => { if (!cancelled) setSessionExtensions(ext); })
+        .catch(() => {});
+    };
+    reload();
+    window.addEventListener(EXTENSIONS_CHANGED_EVENT, reload);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(EXTENSIONS_CHANGED_EVENT, reload);
+    };
+  }, [folderPath]);
+
   // Reconstruction de l'état de revue au démarrage et à chaque changement de
   // dossier/projet : le disque redevient la source de vérité (cf. hydrateReviews).
   // On attend le tick suivant le mount pour que `messagesRef` porte l'historique
@@ -946,6 +1028,75 @@ export default function AiPanel({
     if (plan.toast) showToast(plan.toast.text, plan.toast.type);
   }, [showToast]);
 
+  /**
+   * Résout les références de contexte `#` en un bloc de texte injectable.
+   *
+   * ── Pourquoi ici et pas dans ChatBox ────────────────────────────────────────
+   * ChatBox ne connaît que la *référence* (`#Folder src`, `#Rule project:x`) : il
+   * lui manque le disque et les diagnostics. La résolution est donc faite au
+   * moment de l'envoi, là où l'on dispose du workspace et du contexte LSP.
+   *
+   * ── Sécurité ────────────────────────────────────────────────────────────────
+   *  - `#Folder`/`#Workspace` passent par les commands Rust (`context.rs`) qui
+   *    confinent le chemin au workspace et bornent fichiers/octets. On ne lit
+   *    JAMAIS d'arborescence arbitraire depuis le front.
+   *  - `#Rule` n'accepte qu'une rule déjà listée (identifiant `scope:rel`),
+   *    relue via `read_rule` — pas de chemin disque brut.
+   *  - `#Problems` vient des diagnostics déjà calculés (aucun accès disque).
+   *  - `#Code` est la sélection éditeur déjà capturée par l'app.
+   * Un échec de résolution est TOLÉRÉ (on l'ignore) : un contexte indisponible ne
+   * doit jamais faire échouer l'envoi du message.
+   */
+  const resolveContextRefs = useCallback(async (
+    refs: ContextRef[],
+    wsRoot: string,
+    editorContext: EditorContext | null,
+  ): Promise<string> => {
+    if (refs.length === 0) return "";
+    let out = "";
+
+    const fenceFor = (name: string): string => {
+      const ext = name.split(".").pop()?.toLowerCase() ?? "";
+      return FENCE_MAP[ext] ?? ext;
+    };
+
+    for (const ref of refs) {
+      try {
+        if (ref.kind === "workspace") {
+          const exp = await invoke<ContextExpansion>("expand_context_workspace", { workspaceRoot: wsRoot });
+          out += formatExpansion(`Workspace: ${wsRoot}`, exp, fenceFor);
+        } else if (ref.kind === "folder") {
+          if (!ref.path) continue;
+          const exp = await invoke<ContextExpansion>("expand_context_folder", { path: ref.path, workspaceRoot: wsRoot });
+          out += formatExpansion(`Folder: ${ref.label || ref.path}`, exp, fenceFor);
+        } else if (ref.kind === "file") {
+          if (!ref.path) continue;
+          const content = await readFile(ref.path);
+          out += `\n\n[File: ${ref.path}]\n\`\`\`${fenceFor(ref.label || ref.path)}\n${content}\n\`\`\``;
+        } else if (ref.kind === "rule") {
+          // `path` porte l'identifiant `scope:rel` produit par le RulePicker.
+          const [scope, ...rest] = (ref.path ?? "").split(":");
+          const relPath = rest.join(":");
+          if (!relPath) continue;
+          const rule = await invoke<RuleContent>("read_rule", { scope, workspace: wsRoot, relPath });
+          out += `\n\n[Rule: ${ref.label || relPath}]\n${rule.content}`;
+        } else if (ref.kind === "problems") {
+          const block = formatDiagnostics(diagnostics.byFile);
+          if (block) out += block;
+        } else if (ref.kind === "code") {
+          if (editorContext && editorContext.code.trim()) {
+            const activePath = getActiveFilePathRef.current?.();
+            const rel = activePath ? toWorkspaceRelPath(activePath, wsRoot) : undefined;
+            out += `\n\n${buildContextPrefix(editorContext, rel)}`;
+          }
+        }
+      } catch {
+        // Contexte indisponible : on l'ignore silencieusement (jamais bloquant).
+      }
+    }
+    return out;
+  }, [diagnostics]);
+
   const handleSend = useCallback(async (
     text: string,
     modelId: string,
@@ -953,6 +1104,7 @@ export default function AiPanel({
     fileMentions: string[] = [],
     editorContext: EditorContext | null = null,
     mode: "agent" | "ask" | "plan" = "agent",
+    contextRefs: ContextRef[] = [],
   ) => {
     // MULTITASKING : l'état du run est propre à la session (cf. runState.ts).
     // On résout la session AVANT tout : sans session existante, on en crée une
@@ -1137,12 +1289,18 @@ export default function AiPanel({
       const relPath = sourceFilePath ? toWorkspaceRelPath(sourceFilePath, fp) : undefined;
       apiText = buildContextPrefix(editorContext, relPath) + apiText;
     }
-    const fenceMap: Record<string, string> = { ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", rs: "rs", py: "python", css: "css", html: "html", json: "json", md: "markdown" };
+    // Contexte `#` : résolu et concaténé dans `apiText` (même canal que les `@`).
+    // On ignore le `#Code` ici pour ne pas dupliquer le préfixe « Selected code »
+    // déjà injecté juste au-dessus depuis `editorContext`.
+    const hashRefs = contextRefs.filter(r => r.kind !== "code");
+    if (hashRefs.length > 0) {
+      apiText += await resolveContextRefs(hashRefs, fp, editorContext);
+    }
     for (const file of await mentionedFilesPromise) {
       if (!file) continue;
       const fname = file.filepath.split(/[\\/]/).pop() ?? file.filepath;
       const ext = fname.split(".").pop()?.toLowerCase() ?? "";
-      apiText += `\n\n[File: ${file.filepath}]\n\`\`\`${fenceMap[ext] ?? ext}\n${file.content}\n\`\`\``;
+      apiText += `\n\n[File: ${file.filepath}]\n\`\`\`${FENCE_MAP[ext] ?? ext}\n${file.content}\n\`\`\``;
     }
 
     const modelMessages: ModelMessage[] = [
@@ -1163,13 +1321,35 @@ export default function AiPanel({
     const customAgent = localStorage.getItem("origin-ai-system-prompt");
     const customAsk   = localStorage.getItem("origin-ai-ask-prompt");
     const customPlan  = localStorage.getItem("origin-ai-plan-prompt");
+    // Agent personnalisé actif (sélectionné dans l'input) : son prompt de rôle
+    // est INJECTÉ dans le prompt système de base (jamais en remplacement), et sa
+    // liste d'outils se COMBINE (intersection) avec les préférences globales de
+    // Settings › Agent. Un agent vide = aucun effet : comportement inchangé.
+    const selectedAgent = activeAgentRef.current;
+    const agentPromptBlock = selectedAgent?.prompt?.trim();
+    const baseDisabled = getDisabledTools();
+    // Outils désactivés = préférences globales ∪ (outils NON retenus par l'agent).
+    // On n'ajoute « tout ce qui n'est pas listé » que si l'agent déclare des
+    // outils : un agent sans outils garde la dotation complète par défaut.
+    const disabledTools: ReadonlySet<string> =
+      selectedAgent && selectedAgent.tools.length > 0
+        ? new Set<string>([
+            ...baseDisabled,
+            ...AGENT_TOOLS.filter(t => !selectedAgent.tools.includes(t.id)).map(t => t.id),
+          ])
+        : baseDisabled;
+    // Injecte le prompt d'agent (rôle) en tête des blocs, puis le reste.
+    const withAgentPrompt = (base: string) =>
+      agentPromptBlock ? `${base}\n\n---\n\n# Agent Role\n\n${agentPromptBlock}` : base;
     // Le mode IA (conversation créée en AI) tourne avec des coéquipiers Cline
     // (`team_*`) : on annonce TOUJOURS la délégation dans ce cas, indépendamment
     // de l'effort. En IDE il n'y a qu'un agent : la consigne de sous-agents serait
     // trompeuse, on ne l'inclut qu'à l'effort max (variante `spawn_agent`).
-    const systemPrompt     = withOriginMd(customAgent ?? buildSystemPrompt("agent", isMax, "", convIsAgent));
-    const askSystemPrompt  = withOriginMd(customAsk   ?? buildSystemPrompt("ask",   isMax));
-    const planSystemPrompt = withOriginMd(customPlan  ?? buildSystemPrompt("plan",  isMax));
+    // Un agent personnalisé est SINGULIER : on coupe les équipes pour que « son »
+    // identité et sa dotation d'outils restent respectées.
+    const systemPrompt     = withOriginMd(withAgentPrompt(customAgent ?? buildSystemPrompt("agent", isMax, "", convIsAgent, disabledTools)));
+    const askSystemPrompt  = withOriginMd(withAgentPrompt(customAsk   ?? buildSystemPrompt("ask",   isMax, "", false, disabledTools)));
+    const planSystemPrompt = withOriginMd(withAgentPrompt(customPlan  ?? buildSystemPrompt("plan",  isMax, "", false, disabledTools)));
 
     // ── Checkpoint du tour ───────────────────────────────────────────────────
     // Ouvre un checkpoint dès qu'un tour peut écrire (Agent) ; en Ask, aucun
@@ -1884,28 +2064,70 @@ export default function AiPanel({
       systemPrompt: string;
       sdkMode: "act" | "plan";
       enableTeams: boolean;
+      /** Expose l'outil léger `escalate_to_team` (mode IA sans agent perso). */
+      enableEscalate: boolean;
       prompt: string;
     }): Promise<ClineRunHandle | null> => {
       const clineSessionId = sessionId ? await getClineSessionId(sessionId) : null;
-      const needsTodoTools = !clineSessionId && !!sessionId;
       // Session NEUVE : la surface d'extension (skills/commands) va être
       // rescanée par le sidecar. On repart d'une base propre pour ne pas
       // afficher les extensions d'une session précédente en attendant la
       // réponse (le callback `onExtensions` la repeuplera).
       if (!clineSessionId) setSessionExtensions(null);
+      // OUTILS CUSTOM : envoyés à CHAQUE `start`, PAS seulement à la création.
+      //
+      // POURQUOI (bug corrigé) — la « reprise » n'est PAS une réutilisation : le
+      // SDK ne garde ses sessions qu'en mémoire vive, et la continuité se fait
+      // par RE-SEED (un nouveau `start` avec `initialMessages`, cf.
+      // `clineClient.startClineRun`). Un `start` reconstruit le runtime à zéro :
+      // les outils custom d'une session précédente n'existent donc PLUS. Les
+      // omettre sur reprise les faisait disparaître silencieusement (todo,
+      // navigateur, index de code) dès le 2ᵉ tour. On les redéclare donc
+      // systématiquement — sans risque de doublon, puisque le runtime est neuf.
+      const needsTodoTools = !!sessionId;
       // Navigateur piloté : on déclare le panel de prévisualisation comme cible
-      // de l'agent (parité Trae SOLO). Comme pour la todo, les outils ne sont
-      // injectés qu'à la CRÉATION de la session (un `start`) — sur une reprise,
-      // ils existent déjà côté SDK.
-      const wantsBrowser = !clineSessionId && !!sessionId;
+      // de l'agent (parité Trae SOLO).
+      const wantsBrowser = !!sessionId;
+      // Browser › « Allow AI to Control Built-in Browser » : si l'utilisateur a
+      // coupé le pilotage du navigateur intégré, on n'expose pas les outils
+      // browser_* à l'agent (le contrat système reste cohérent côté prompts).
+      const browserAllowed = wantsBrowser && isBuiltinControlEnabled();
+      // Recherche dans l'index local : exposée à l'agent UNIQUEMENT en mode
+      // Agent/SOLO (`act`). En plan/ask (lecture seule sans action), l'index
+      // n'est pas branché — parité avec le comportement attendu, et on évite
+      // d'ajouter un outil de recherche à des modes qui n'agissent pas.
+      const wantsCodeIndex = !!sessionId && opts.sdkMode === "act";
+      // Escalade d'équipe « à la demande » : en mode IA et sans agent
+      // personnalisé, on offre TOUJOURS l'outil léger `escalate_to_team`. Le
+      // modèle l'appelle s'il juge la tâche trop large, ce qui déclenche une
+      // relance AVEC les équipes (voir plus bas). Présent même quand les équipes
+      // sont déjà actives : un appel devient alors un no-op côté front.
+      const wantsEscalate = opts.enableEscalate;
       const extraTools = [
         ...(needsTodoTools ? [{ kind: "todo" as const, sessionId }] : []),
-        ...(wantsBrowser
+        ...(browserAllowed
           ? [{ kind: "browser" as const, sessionId, panelId: PREVIEW_PANEL_ID }]
           : []),
+        ...(wantsCodeIndex ? [{ kind: "code_index" as const, sessionId }] : []),
+        ...(wantsEscalate ? [{ kind: "team_escalate" as const, sessionId }] : []),
       ];
+      // Dotation MCP d'un agent personnalisé : on n'autorise que les serveurs
+      // explicitement cochés. RÉAPPLIQUÉE à chaque `start` (même raison que les
+      // outils custom : le re-seed reconstruit le runtime, donc l'autorisation
+      // doit être réaffirmée, sinon un agent restreint ré-verrait tous les
+      // serveurs au 2ᵉ tour — régression de sécurité).
+      // `undefined` (pas d'agent) → tous les serveurs restent exposés.
+      const enabledMcpServers = activeAgentRef.current ? activeAgentRef.current.mcp : undefined;
+      // Poignée d'annulation du tour EN COURS, partagée avec le callback
+      // d'escalade : `onToolEvent` peut se déclencher pendant le `start`, donc on
+      // ne peut pas capturer `handle` (encore non assigné) dans sa closure.
+      // Conteneur (et non simple variable) : TypeScript n'analyserait qu'une
+      // variable affectée après coup comme `never` dans la closure.
+      const self: { abort: (() => Promise<void>) | null } = { abort: null };
       const handle = await startClineHarness({
-        workspace: fp || ".",
+        // `fp` est garanti non vide par la garde-fou workspace ci-dessus : pas de
+        // fallback `.` (qui pointerait sur le cwd du process, hors projet).
+        workspace: fp,
         providerId: clineProvider.providerId,
         baseUrl: clineProvider.baseUrl,
         apiKey: apiKey ?? "",
@@ -1915,11 +2137,51 @@ export default function AiPanel({
         enableTeams: opts.enableTeams,
         ...(clineSessionId ? { resumeSessionId: clineSessionId } : {}),
         ...(extraTools.length > 0 ? { extraTools } : {}),
+        ...(enabledMcpServers ? { enabledMcpServers } : {}),
         onEvent: handleEvent,
         onToolEvent: (evt) => {
           // Effets d'outils custom (todo_write) : on applique dans le store
           // réactif de la session UI pour que la liste épinglée se rafraîchisse.
           if (evt.tool === "todo" && evt.todos) setTodos(evt.sessionId, evt.todos as import("../../lib/agent/todoStore").TodoItem[]);
+          // ESCALADE D'ÉQUIPE (pilotée par le modèle) : le modèle, en plein tour
+          // léger, juge la tâche trop large et demande les équipes. On marque la
+          // conversation COLLANTE puis on relance à froid AVEC les équipes.
+          //
+          // Le travail du tour léger n'est PAS perdu : il a déjà été écrit dans
+          // `run.messages` (via `updateThread`) et persisté en DB, et la relance
+          // part de ce même fil (`resumeSessionId` → re-seed `initialMessages`).
+          // Le nouveau tour reprend donc exactement là où le modèle s'est arrêté.
+          // Garde-fous :
+          //  - un seul déclenchement par escalade (`teamsEnabled` fait office de
+          //    verrou : toute demande ultérieure est un no-op) → pas de boucle ;
+          //  - on ABANDONNE le tour léger (il a fini son travail utile ; le SDk le
+          //    laisse sinon poursuivre sans les outils d'équipe, en divergence).
+          if (evt.tool === "team_escalate" && !run.teamsEnabled && opts.enableEscalate) {
+            run.teamsEnabled = true;
+            const r = evt.reason?.trim();
+            showToast(r ? `Working with a team: ${neutralizeForClient(r)}` : "Working with a team on this task.", "info");
+            void (async () => {
+              try {
+                // Abandon du tour léger via la poignée partagée (pas `handle` :
+                // encore non assigné au moment où `onToolEvent` est câblé).
+                await self.abort?.();
+                // Nouveau run à froid (`enableTeams:true`) sur la MÊME session : la
+                // reprise re-seede l'historique, donc le travail du tour léger est
+                // conservé. `enableEscalate:false` : les équipes sont là, plus rien
+                // à escalader. On ne renvoie AUCUN texte — tout est déjà dans
+                // l'historique re-seedé.
+                await runCline({
+                  systemPrompt: opts.systemPrompt,
+                  sdkMode: opts.sdkMode,
+                  enableTeams: true,
+                  enableEscalate: false,
+                  prompt: "",
+                });
+              } catch (err) {
+                log.error("ai/panel", `escalade d'équipe échouée : ${(err as Error)?.message ?? String(err)}`);
+              }
+            })();
+          }
         },
         onExtensions: (ext) => {
           // Surface d'extension résolue au `start` : on l'expose à l'input
@@ -1937,12 +2199,14 @@ export default function AiPanel({
           void action;
           showToast(reason, "error");
         },
-        onBeforeWrite: (path, ws) => touchTurn(path, ws ?? fp ?? "."),
+        onBeforeWrite: (path, ws) => touchTurn(path, ws ?? fp),
       });
       if (!handle) {
-        handleEvent({ type: "error", message: "Le moteur d'agent n'a pas démarré (sidecar indisponible)." });
+        handleEvent({ type: "error", message: "The agent engine did not start (sidecar unavailable)." });
         return null;
       }
+      // Expose la poignée d'annulation du tour vivant au callback d'escalade.
+      self.abort = () => handle.abort();
       // Persiste la session SDK attribuée : les tours suivants la reprendront.
       if (sessionId && handle.sessionId && handle.sessionId !== clineSessionId) {
         setClineSessionId(sessionId, handle.sessionId)
@@ -1983,18 +2247,18 @@ export default function AiPanel({
 
         const phase2IsMax = (localStorage.getItem("origin-ai-effort") ?? "normal") === "max";
         const phase2SystemPrompt = withOriginMd(localStorage.getItem("origin-ai-system-prompt") ?? buildSystemPrompt("agent", phase2IsMax));
-        const handle = await runCline({ systemPrompt: phase2SystemPrompt, sdkMode: "act", enableTeams: false, prompt: "" });
+        const handle = await runCline({ systemPrompt: phase2SystemPrompt, sdkMode: "act", enableTeams: false, enableEscalate: false, prompt: "" });
         // `mode:"act"` explicite : la session a été créée en lecture seule pour
         // le plan ; on la bascule en exécution pour la phase d'implémentation.
         if (handle) await handle.send("The plan has been approved. Proceed with the implementation now.", "act");
       };
 
       // Phase 1 : plan en lecture seule.
-      const handle = await runCline({ systemPrompt: planSystemPrompt, sdkMode: "plan", enableTeams: false, prompt: "" });
+      const handle = await runCline({ systemPrompt: planSystemPrompt, sdkMode: "plan", enableTeams: false, enableEscalate: false, prompt: "" });
       if (handle) await handle.send(apiText);
     } else if (mode === "ask") {
       // Ask : lecture seule (le SDK en mode `plan` ne modifie aucun fichier).
-      const handle = await runCline({ systemPrompt: askSystemPrompt, sdkMode: "plan", enableTeams: false, prompt: "" });
+      const handle = await runCline({ systemPrompt: askSystemPrompt, sdkMode: "plan", enableTeams: false, enableEscalate: false, prompt: "" });
       if (handle) await handle.send(apiText);
     } else {
       // ── Modes IDE et IA : exécution complète ─────────────────────────────────
@@ -2011,7 +2275,25 @@ export default function AiPanel({
 
       if (convIsAgent) run.spawned = 0;
 
-      const handle = await runCline({ systemPrompt: rootSystemPrompt, sdkMode: "act", enableTeams: convIsAgent, prompt: "" });
+      // ── ÉQUIPES « À LA DEMANDE » (pilotées par le MODÈLE) ───────────────────
+      // En mode IA, exposer les 18 outils `team_*` alourdit CHAQUE requête (coût
+      // de TTFT fixe imposé par le SDK). On ne les ouvre donc PAS d'emblée : on
+      // démarre LÉGER (comme l'IDE) et on expose un unique outil `escalate_to_team`.
+      //
+      // POURQUOI PAS UN CLASSIFICATEUR DE TEXTE : juger la forme d'une demande
+      // (longueur, mots-clés, puces) ne dit RIEN de la complexité réelle du
+      // travail à fournir. Seul le modèle, une fois face au code, sait s'il bute
+      // sur l'ampleur. L'escalade est donc décidée PENDANT le run : s'il juge la
+      // tâche trop large, il appelle `escalate_to_team`, le front coupe ce tour et
+      // relance AVEC les équipes en réinjectant l'historique (le travail déjà fait
+      // est conservé — cf. `onToolEvent`).
+      // `run.teamsEnabled` reste COLLANT : une conversation déjà passée en équipes
+      // ne rebascule pas en runtime allégé en plein travail d'équipe.
+      const wantTeams = convIsAgent && !selectedAgent && run.teamsEnabled;
+      // Un agent personnalisé est SINGULIER : jamais d'équipes ni d'escalade.
+      const enableEscalate = convIsAgent && !selectedAgent && !wantTeams;
+
+      const handle = await runCline({ systemPrompt: rootSystemPrompt, sdkMode: "act", enableTeams: wantTeams, enableEscalate, prompt: "" });
       if (handle) await handle.send(apiText);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getFileContents is read fresh at call time; including it would churn this callback
@@ -2019,6 +2301,26 @@ export default function AiPanel({
 
   // Maintient le miroir de `handleSend` à jour (cf. déclaration de la ref).
   useEffect(() => { handleSendRef.current = handleSend; }, [handleSend]);
+
+  // Charge les agents personnalisés et garde `activeAgentRef` aligné sur la
+  // sélection de l'input (`origin-ai-agent`). On recharge aussi à chaque
+  // changement (événement `CUSTOM_AGENTS_EVENT`, émis par le store front) : un
+  // agent supprimé/renommé est immédiatement reflété.
+  useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      void listAgents().then(list => {
+        if (cancelled) return;
+        activeAgentRef.current = resolveSelectedAgent(list, readSelectedAgentId());
+      });
+    };
+    reload();
+    window.addEventListener(CUSTOM_AGENTS_EVENT, reload);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CUSTOM_AGENTS_EVENT, reload);
+    };
+  }, []);
   // Maintient le miroir `queuedMessageRef` synchronisé avec l'état.
   useEffect(() => { queuedMessageRef.current = queuedMessage; }, [queuedMessage]);
 
@@ -2030,8 +2332,12 @@ export default function AiPanel({
   const handleQueue = useCallback((
     text: string, modelId: string, providerId: string,
     fileMentions: string[], editorContext: EditorContext | null, mode: "agent" | "ask" | "plan",
+    contextRefs: ContextRef[],
   ): boolean => {
-    setQueuedMessage(enqueueMessage(null, { text, modelId, providerId, fileMentions, editorContext, mode }));
+    setQueuedMessage(enqueueMessage(null, {
+      text, modelId, providerId, fileMentions, editorContext, mode,
+      contextRefs: contextRefs.length > 0 ? serializeContextRefs(contextRefs) : undefined,
+    }));
     return true;
   }, []);
 
@@ -2050,7 +2356,12 @@ export default function AiPanel({
     // relancer, pour que `isStreaming` soit bien recalculé côté rendu.
     setTimeout(() => {
       dequeuingRef.current = false;
-      handleSendRef.current?.(next.text, next.modelId, next.providerId, next.fileMentions, next.editorContext, next.mode);
+      // Les refs `#` sont stockées sérialisées dans la file ; on les reparse en
+      // `ContextRef` avant l'envoi (même canal que l'envoi direct).
+      const refs = (next.contextRefs ?? [])
+        .map(parseContextRef)
+        .filter((r): r is ContextRef => r !== null);
+      handleSendRef.current?.(next.text, next.modelId, next.providerId, next.fileMentions, next.editorContext, next.mode, refs);
     }, 0);
   }, []);
 
@@ -2859,8 +3170,8 @@ export default function AiPanel({
               {showJumpToBottom && (
                 <button
                   onClick={jumpToBottom}
-                  title="Descendre en bas"
-                  aria-label="Descendre en bas"
+                  title="Scroll to bottom"
+                  aria-label="Scroll to bottom"
                   style={{
                     position: "absolute", bottom: "10px", left: "50%", transform: "translateX(-50%)",
                     display: "flex", alignItems: "center", justifyContent: "center",

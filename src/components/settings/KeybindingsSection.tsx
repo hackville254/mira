@@ -263,7 +263,9 @@ export default function KeybindingsSection() {
             No VS Code, Cursor, or Windsurf installation detected on this machine.
           </p>
         ) : (
-          <ImportEditorRow detected={detected} onImported={refresh} />
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <ImportEditorRow detected={detected} onImported={refresh} />
+          </div>
         )}
       </div>
 
@@ -338,9 +340,27 @@ export default function KeybindingsSection() {
         ))
       )}
 
-      <div style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", marginTop: "4px" }}>
-        {userCount > 0 ? `${userCount} custom binding${userCount !== 1 ? "s" : ""}` : "Using all defaults"}
-        {" · "}Click a keybinding to rebind · Esc to cancel
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--origin-fg-subtle)", marginTop: "4px" }}>
+        <span>
+          {userCount > 0 ? `${userCount} custom binding${userCount !== 1 ? "s" : ""}` : "Using all defaults"}
+          {" · "}Click a keybinding to rebind · Esc to cancel
+        </span>
+        {userCount > 0 && (
+          <button
+            onClick={handleResetAll}
+            title="Reset all keybindings to defaults"
+            style={{
+              display: "flex", alignItems: "center", gap: "5px",
+              padding: "5px 10px", borderRadius: "6px", fontSize: "12px",
+              border: "1px solid var(--origin-border-default)",
+              background: "transparent",
+              color: "var(--origin-fg-muted)",
+              cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+            }}
+          >
+            <RotateCcw size={12} /> Reset all
+          </button>
+        )}
       </div>
     </div>
   );

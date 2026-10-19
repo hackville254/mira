@@ -63,6 +63,98 @@ export function isWriteTool(toolName: string | undefined | null): boolean {
   return typeof toolName === "string" && WRITE_TOOL_NAMES.includes(toolName);
 }
 
+// ── NOMS D'OUTILS : SOURCE DE VÉRITÉ UNIQUE ──────────────────────────────────
+//
+// POURQUOI CE BLOC
+// ----------------
+// Le SDK Cline émet des noms CANONIQUES (`read_files`, `search_codebase`,
+// `fetch_web_content`, `web_search`, `run_commands`, `editor`, `apply_patch`,
+// `team_*`…) différents des noms du harness historique (`read_file`, `grep`,
+// `glob`, `edit`…). Plusieurs listes du front doivent connaître ces familles —
+// regroupement visuel (`toolGroups`), libellés (`ToolCallCard`), détection de
+// shell… Avant, chacune re-listait à la main et DÉRIVAIT : en mode IA, aucune
+// lecture n'était regroupée (« Read 2 files » n'apparaissait jamais) et un
+// fichier édité n'était pas cliquable, faute de reconnaître `read_files`/
+// `editor`. C'est le même piège que `WRITE_TOOL_NAMES` ci-dessus.
+//
+// On centralise donc ICI les familles, et le reste du front les consomme. Un
+// nom manquant se corrige à UN endroit, pour toute l'UI.
+
+/** Outils de LECTURE de fichiers (ouvrent/consultent le disque, sans écrire). */
+export const READ_TOOL_NAMES: readonly string[] = [
+  "read_files",  // SDK Cline (canonique)
+  "read_file",   // harness historique
+];
+
+/** Outils de RECHERCHE DANS LE CODE (index local ou recherche plein texte). */
+export const SEARCH_TOOL_NAMES: readonly string[] = [
+  "search_codebase",      // SDK Cline (recherche plein texte)
+  "codebase_search",      // outil CUSTOM Origin (index local)
+  "grep",                 // harness historique
+];
+
+/** Outils d'ÉNUMÉRATION de fichiers/dossiers (listage). */
+export const LIST_TOOL_NAMES: readonly string[] = [
+  "list_directory",       // harness historique
+  "glob",                 // harness historique
+];
+
+/** Outils web (récupération de contenu ou recherche). Auto-approuvés. */
+export const WEB_TOOL_NAMES: readonly string[] = [
+  "fetch_web_content",    // SDK Cline (canonique)
+  "web_search",           // SDK Cline (canonique)
+  "web_fetch",            // alias observés
+];
+
+/**
+ * Outils d'ORCHESTRATION d'équipe (`team_*`) du SDK Cline. Ils ne font pas de
+ * travail visible : ils pilotent des coéquipiers dont le travail arrive par
+ * `team_progress`. On les reconnaît pour : (1) les libeller proprement dans le
+ * fil, (2) rattacher la carte d'un coéquipier au bon tool-call parent, (3) les
+ * distinguer du travail réel de l'agent.
+ */
+export const TEAM_TOOL_NAMES: readonly string[] = [
+  "team_spawn_teammate",
+  "team_shutdown_teammate",
+  "team_status",
+  "team_task",
+  "team_run_task",
+  "team_cancel_run",
+  "team_list_runs",
+  "team_await_runs",
+  "team_send_message",
+  "team_broadcast",
+  "team_read_mailbox",
+  "team_mission_log",
+  "team_cleanup",
+  "team_create_outcome",
+  "team_attach_outcome_fragment",
+  "team_review_outcome_fragment",
+  "team_finalize_outcome",
+  "team_list_outcomes",
+];
+
+/** `true` si l'outil relève de l'orchestration d'équipe (`team_*`). */
+export function isTeamTool(toolName: string | undefined | null): boolean {
+  return typeof toolName === "string" && toolName.startsWith("team_");
+}
+
+/**
+ * Cible fichier exploitable d'un tool-call (chemin workspace-relatif), pour
+ * ouvrir le fichier dans l'éditeur au clic. Renvoie `""` si l'outil n'a pas de
+ * cible fichier unique (recherche, listage, commande…).
+ */
+export function toolFilePath(toolName: string, args: unknown): string {
+  const a = (args ?? {}) as Record<string, unknown>;
+  // Écritures et lectures : `path` (SDK `editor`/`apply_patch`/`write_to_file`)
+  // ou `paths[0]` (SDK `read_files`, qui prend un TABLEAU de chemins).
+  if (WRITE_TOOL_NAMES.includes(toolName) || READ_TOOL_NAMES.includes(toolName)) {
+    const raw = Array.isArray(a.paths) ? a.paths[0] : a.path;
+    return typeof raw === "string" ? raw : "";
+  }
+  return "";
+}
+
 // ── Lignes de CONTRÔLE du sidecar (hors flux d'agent) ────────────────────────
 //
 // Le sidecar émet deux familles de lignes :

@@ -176,9 +176,14 @@ describe("MÉTRIQUES — mesure objective des prompts", () => {
     }
   });
 
-  it("chaque preset reste sous 6000 caractères (~1500 tokens) — budget de prompt", () => {
+  // Budget de prompt : garde-fou ANTI-DÉRIVE, pas une cible. Le seuil est passé
+  // de 6000 à 8000 quand le preset agent/max a gagné le bloc « Objective »
+  // (poursuite de l'objectif). 8000 « ~2000 tokens » laisse la marge nécessaire
+  // au preset IA réel (qui ajoute en plus la délégation d'équipe, non mesurée
+  // ici) tout en continuant à signaler une inflation anormale.
+  it("chaque preset reste sous 8000 caractères (~2000 tokens) — budget de prompt", () => {
     for (const r of rows) {
-      expect(r.chars).toBeLessThan(6000);
+      expect(r.chars).toBeLessThan(8000);
     }
   });
 

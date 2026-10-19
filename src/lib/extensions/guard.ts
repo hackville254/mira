@@ -40,8 +40,8 @@ export function checkPrerequisites(
   return { satisfied: missing.length === 0, missing };
 }
 
-/** Phrase courte pour l'UI : « Requiert : a, b ». Vide si aucun prérequis. */
+/** Phrase courte pour l'UI : « Requires: a, b ». Vide si aucun prérequis. */
 export function describeMissing(missing: string[]): string {
   if (missing.length === 0) return '';
-  return `Requiert : ${missing.join(', ')}`;
+  return `Requires: ${missing.join(', ')}`;
 }

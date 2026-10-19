@@ -2,6 +2,12 @@ pub(crate) const SEARCH_IGNORE: &[&str] = &[
     ".git", "node_modules", "target", ".next", "dist", "build",
     ".cache", "__pycache__", ".venv", "venv", ".turbo", "coverage",
     "out", ".parcel-cache", ".svelte-kit",
+    // Caches de gestionnaires de paquets : hors code source, et volumineux au
+    // point de saturer l'index (constaté en E2E : `.pnpm-store` seul remplissait
+    // le plafond de 20 000 fichiers et écrasait tout le code du projet).
+    ".pnpm-store", ".yarn", ".npm", ".pnpm", "vendor", "bower_components",
+    // Artefacts de build / dépendances natifs et mobiles.
+    ".gradle", ".dart_tool", "Pods", ".idea", ".vscode",
 ];
 
 // ── Text search ───────────────────────────────────────────────────────────────

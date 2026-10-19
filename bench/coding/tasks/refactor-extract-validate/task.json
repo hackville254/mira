@@ -1,0 +1,20 @@
+{
+  "id": "refactor-extract-validate",
+  "title": "Extraire une validation dupliquée dans un helper exporté",
+  "kind": "refactor",
+  "instruction": "Dans src/user.mjs, la validation d'entrée (objet requis, champs `name` et `email` non vides de type string) est DUPLIQUÉE dans createUser et updateUser. Extrais-la dans une fonction exportée `validateUserInput(input)` qui renvoie `{ name, email }` déjà trimmés, et fais appeler cette fonction par createUser et updateUser pour supprimer la duplication. Les messages d'erreur doivent rester identiques : « invalid input » pour un input non-objet, « fields must be strings » pour un champ invalide. Ne modifie pas les tests. Tous les tests doivent passer.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "validateUserInput returns trimmed fields",
+      "validateUserInput rejects non-object input",
+      "validateUserInput rejects empty fields"
+    ],
+    "passToPass": [
+      "createUser builds a user from valid input",
+      "updateUser merges and validates"
+    ]
+  },
+  "agentTimeoutMs": 180000,
+  "testTimeoutMs": 30000
+}

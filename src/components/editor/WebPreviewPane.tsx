@@ -574,7 +574,7 @@ export default function WebPreviewPane() {
 
         {/* Badge « agent » : visible quand un agent pilote la prévisualisation. */}
         {agentActive && (
-          <Tooltip content="Cet aperçu est piloté par l'agent" side="bottom">
+          <Tooltip content="This preview is driven by the agent" side="bottom">
             <div style={{
               display: 'flex', alignItems: 'center', gap: '4px',
               padding: '2px 8px', flexShrink: 0,

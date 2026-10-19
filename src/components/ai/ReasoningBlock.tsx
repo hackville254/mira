@@ -32,7 +32,7 @@ export default function ReasoningBlock({ content, streaming }: {
       >
         <ChevronRight size={11} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.12s" }} />
         <Brain size={12} style={{ flexShrink: 0 }} />
-        <span>{streaming ? "Raisonnement…" : "Raisonnement"}</span>
+        <span>{streaming ? "Reasoning…" : "Reasoning"}</span>
       </button>
       {open && (
         <div style={{

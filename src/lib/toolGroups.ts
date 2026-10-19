@@ -1,4 +1,11 @@
 import type { MessagePart, ToolCallDisplay } from "./aiTypes";
+import {
+  READ_TOOL_NAMES,
+  SEARCH_TOOL_NAMES,
+  LIST_TOOL_NAMES,
+  WEB_TOOL_NAMES,
+  toolFilePath,
+} from "./agent/clineBridge";
 
 // ── Regroupement des outils par « tour visuel » ────────────────────────────────
 //
@@ -6,12 +13,18 @@ import type { MessagePart, ToolCallDisplay } from "./aiTypes";
 //   « Read 2 files › », « Read 3 files ⌄ », « Searched files 1 time › ».
 //
 // On reproduit ce comportement : une séquence de tool-calls CONSÉCUTIFS portant
-// le même verbe (read/grep/glob/…) est fusionnée en un groupe. Un groupe
+// le même verbe (read/search/list/fetch…) est fusionnée en un groupe. Un groupe
 // interrompu par du texte ou par un outil d'un autre verbe en démarre un autre.
 //
 // Les outils « sensibles » (écriture, commande, question) ne sont JAMAIS
 // regroupés : ils gardent leur carte dédiée, car l'utilisateur doit les voir
 // individuellement (approbation, diff, question).
+//
+// SOURCE DES NOMS : `clineBridge.ts` (READ_/SEARCH_/LIST_/WEB_TOOL_NAMES). On ne
+// re-liste JAMAIS les noms ici : le SDK Cline émet des noms canoniques
+// (`read_files`, `search_codebase`…) différents du harness historique
+// (`read_file`, `grep`…), et une liste locale périmée faisait disparaître les
+// regroupements en mode IA.
 
 export type ToolGroupRenderer =
   | { kind: "single"; tc: ToolCallDisplay }
@@ -19,39 +32,28 @@ export type ToolGroupRenderer =
 
 /** Verbe visuel d'un outil — détermine les regroupements possibles. */
 export function toolVerb(toolName: string): string {
-  switch (toolName) {
-    case "read_file":       return "read";
-    case "grep":            return "search";
-    case "glob":            return "list";
-    case "list_directory":  return "list";
-    default:                return toolName;
-  }
+  if (READ_TOOL_NAMES.includes(toolName)) return "read";
+  if (SEARCH_TOOL_NAMES.includes(toolName)) return "search";
+  if (LIST_TOOL_NAMES.includes(toolName)) return "list";
+  if (WEB_TOOL_NAMES.includes(toolName)) return "fetch";
+  return toolName;
 }
 
 /** Un outil est-il regroupable ? (lecture seule, non sensible) */
 export function isGroupable(toolName: string): boolean {
-  return toolName === "read_file"
-      || toolName === "grep"
-      || toolName === "glob"
-      || toolName === "list_directory";
+  return READ_TOOL_NAMES.includes(toolName)
+      || SEARCH_TOOL_NAMES.includes(toolName)
+      || LIST_TOOL_NAMES.includes(toolName)
+      || WEB_TOOL_NAMES.includes(toolName);
 }
 
 /**
  * Chemin workspace-relatif exploitable d'un outil (pour ouvrir le fichier dans
- * l'éditeur). Renvoie `""` si l'outil n'a pas de cible fichier (grep, glob…).
- * Le chemin est renvoyé tel quel (relatif au workspace), pas réduit au basename.
+ * l'éditeur). Délègue à `toolFilePath` (source de vérité des noms) : renvoie `""`
+ * si l'outil n'a pas de cible fichier (recherche, listage, commande…).
  */
 export function toolTargetPath(tc: ToolCallDisplay): string {
-  const a = (tc.args ?? {}) as Record<string, unknown>;
-  switch (tc.toolName) {
-    case "read_file":
-    case "write_file":
-    case "edit":
-    case "multi_edit":
-      return String(a.path ?? "");
-    default:
-      return "";
-  }
+  return toolFilePath(tc.toolName, tc.args);
 }
 
 /**
@@ -66,6 +68,8 @@ export function groupLabel(verb: string, count: number): string {
       return count === 1 ? "Searched files 1 time" : `Searched files ${count} times`;
     case "list":
       return count === 1 ? "Listed 1 folder" : `Listed ${count} folders`;
+    case "fetch":
+      return count === 1 ? "Fetched 1 page" : `Fetched ${count} pages`;
     default:
       return `${count} calls`;
   }

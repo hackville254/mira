@@ -80,6 +80,8 @@ export interface QueuedMessage {
   fileMentions: string[];
   editorContext: EditorContext | null;
   mode: "agent" | "ask" | "plan";
+  /** Références de contexte `#` attachées (serialisées `kind:path`). */
+  contextRefs?: string[];
 }
 
 export interface SessionMeta {

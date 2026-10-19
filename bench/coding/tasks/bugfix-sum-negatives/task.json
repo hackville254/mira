@@ -1,0 +1,17 @@
+{
+  "id": "bugfix-sum-negatives",
+  "title": "Corriger sum() qui ignore les nombres négatifs",
+  "kind": "bugfix",
+  "instruction": "Dans src/math.mjs, la fonction sum(a, b) est censée renvoyer la somme de ses deux arguments, mais elle traite mal les nombres négatifs. Corrige-la pour qu'elle renvoie toujours a + b. Ne modifie pas les tests existants.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "sum returns the arithmetic sum with a negative operand"
+    ],
+    "passToPass": [
+      "sum adds two positive numbers"
+    ]
+  },
+  "agentTimeoutMs": 120000,
+  "testTimeoutMs": 30000
+}

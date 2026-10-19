@@ -89,8 +89,8 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "agent", label: "Agent", description: "Reads, edits and runs tools", action: { kind: "set-mode", mode: "agent" }, source: "builtin" },
   { name: "plan",  label: "Plan",  description: "Read-only, proposes a plan",  action: { kind: "set-mode", mode: "plan" },  source: "builtin" },
   { name: "ask",   label: "Chat",  description: "Answers about the code",      action: { kind: "set-mode", mode: "ask" },   source: "builtin" },
-  { name: "chat",  label: "Chat",  description: "Alias de /ask",               action: { kind: "set-mode", mode: "ask" },   source: "builtin" },
-  { name: "skill", label: "Skill", description: "Charge une skill (skills du projet)", action: { kind: "insert", text: "/skill " }, source: "builtin" },
+  { name: "chat",  label: "Chat",  description: "Alias for /ask",              action: { kind: "set-mode", mode: "ask" },   source: "builtin" },
+  { name: "skill", label: "Skill", description: "Load a skill (project skills)", action: { kind: "insert", text: "/skill " }, source: "builtin" },
 ] as const;
 
 /** Forme minimale d'une commande runtime telle que renvoyée par le sidecar. */

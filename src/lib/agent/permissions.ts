@@ -21,6 +21,63 @@ export type PermissionMode = "manual" | "auto" | "full";
 export const PERMISSION_MODE_KEY = "origin-ai-permission-mode";
 export const DEFAULT_PERMISSION_MODE: PermissionMode = "manual";
 
+// ── « Always allow » — mémoire des commandes approuvées explicitement ─────────
+//
+// Bouton « Always allow » de la carte d'approbation : l'utilisateur autorise une
+// COMMANDE EXACTE une fois pour toutes (pas un motif large, pas d'écriture).
+// Portée volontairement étroite :
+//   - **commande exacte** (égalité stricte, espaces normalisés) — jamais un
+//     préfixe, qui ouvrirait l'exécution de variantes injectées (`rm -rf` via
+//     `rm -rf ; ...` déjà couvert par la garde anti-catastrophe) ;
+//   - **ne court-circuite JAMAIS la garde anti-catastrophe** (vérifiée en amont) ;
+//   - **persistée** en localStorage : survit au redémarrage, comme Trae.
+export const ALWAYS_ALLOW_COMMANDS_KEY = "origin-ai-always-allow-commands";
+const MAX_ALWAYS_ALLOW = 200;
+
+/** Normalise une commande pour comparaison (espaces multiples repliés). */
+function normalizeCommand(cmd: string): string {
+  return cmd.trim().replace(/\s+/g, " ");
+}
+
+/** Lit l'ensemble des commandes « toujours autorisées ». */
+export function loadAlwaysAllowCommands(): Set<string> {
+  try {
+    const raw = localStorage.getItem(ALWAYS_ALLOW_COMMANDS_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Autorise définitivement une commande exacte (idempotent, borné). */
+export function addAlwaysAllowCommand(cmd: string): void {
+  const norm = normalizeCommand(cmd);
+  if (!norm) return;
+  try {
+    const set = loadAlwaysAllowCommands();
+    set.add(norm);
+    // Borne : on évince les plus anciennes (insertion-ordre du Set).
+    const list = [...set].slice(-MAX_ALWAYS_ALLOW);
+    localStorage.setItem(ALWAYS_ALLOW_COMMANDS_KEY, JSON.stringify(list));
+  } catch {
+    /* localStorage indisponible → best-effort, non bloquant */
+  }
+}
+
+/** Révoque une commande précédemment autorisée. */
+export function removeAlwaysAllowCommand(cmd: string): void {
+  try {
+    const set = loadAlwaysAllowCommands();
+    set.delete(normalizeCommand(cmd));
+    localStorage.setItem(ALWAYS_ALLOW_COMMANDS_KEY, JSON.stringify([...set]));
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Décision d'approbation pour une action donnée. */
 export type ApprovalDecision =
   | { decision: "approve" }              // exécuter sans demander
@@ -117,6 +174,14 @@ export function decideApproval(action: PendingAction, ctx: ApprovalContext): App
     return { decision: "approve" };
   }
 
+  // « Always allow » : l'utilisateur a déjà autorisé CETTE commande exacte via la
+  // carte d'approbation. On l'honore dans tous les modes non-`full`. Placé APRÈS
+  // la garde anti-catastrophe (qui n'est donc jamais court-circuitée) et APRÈS
+  // le court-circuit `full` (inutile de consulter l'allowlist).
+  if (action.type === "bash_run" && loadAlwaysAllowCommands().has(normalizeCommand(action.command))) {
+    return { decision: "approve" };
+  }
+
   // Une question à l'utilisateur n'est jamais auto-approuvée : elle DOIT lui être
   // posée (l'approuver reviendrait à annuler la question).
   if (action.type === "ask_user") {
@@ -144,9 +209,9 @@ export function decideApproval(action: PendingAction, ctx: ApprovalContext): App
 
 /** Libellé + description d'un mode (pour l'UI sélecteur et les réglages). */
 export const PERMISSION_MODE_INFO: Record<PermissionMode, { label: string; desc: string }> = {
-  manual: { label: "Manual Approval", desc: "Tu confirmes chaque écriture et commande" },
-  auto:   { label: "Auto Approval",   desc: "Auto pour les éditions dans le projet, demande sinon" },
-  full:   { label: "Full Access",     desc: "Exécute directement, sans confirmation" },
+  manual: { label: "Manual Approval", desc: "You confirm every write and command" },
+  auto:   { label: "Auto Approval",   desc: "Auto for edits in the project, asks otherwise" },
+  full:   { label: "Full Access",     desc: "Runs directly, without confirmation" },
 };
 
 /** Lit le mode depuis localStorage (avec repli sûr sur `manual`). */

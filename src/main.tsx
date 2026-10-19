@@ -28,6 +28,13 @@ addCollection(lucideIcons);
   root.setAttribute("data-status-bar", localStorage.getItem("origin-ui-status-bar") ?? "true");
 })();
 
+// DEV-ONLY : hook de benchmark exposé sur `window.__runBench`. Il exécute les
+// tâches de codage versionnées avec le VRAI moteur (sidecar Cline) — seul chemin
+// honnête pour mesurer la boucle d'outils réelle. Absent du bundle de production.
+if (import.meta.env.DEV) {
+  void import("../bench/coding/benchWebview").then((m) => m.installBenchHook());
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>

@@ -61,13 +61,13 @@ export default function TaskProgressBar({
         }}
       />
       <span style={{ flexShrink: 0, fontWeight: 600 }}>
-        {active.length} tâches actives
+        {active.length} active tasks
       </span>
       {(running > 0 || waiting > 0) && (
         <span style={{ flexShrink: 0, color: "var(--origin-fg-subtle)" }}>
-          {running > 0 ? `${running} en cours` : ""}
+          {running > 0 ? `${running} running` : ""}
           {running > 0 && waiting > 0 ? " · " : ""}
-          {waiting > 0 ? `${waiting} en attente` : ""}
+          {waiting > 0 ? `${waiting} waiting` : ""}
         </span>
       )}
 
@@ -76,13 +76,13 @@ export default function TaskProgressBar({
           const isShown = t.sessionId === activeSessionId;
           const label =
             t.status === "waiting"
-              ? `${titleById.get(t.sessionId) ?? t.sessionId} · ${t.waitingTool ?? "attente"}`
+              ? `${titleById.get(t.sessionId) ?? t.sessionId} · ${t.waitingTool ?? "waiting"}`
               : titleById.get(t.sessionId) ?? t.sessionId;
           return (
             <button
               key={t.sessionId}
               onClick={() => onSelect(t.sessionId)}
-              title={isShown ? "Tâche affichée" : "Afficher cette tâche"}
+              title={isShown ? "Task shown" : "Show this task"}
               style={{
                 display: "flex", alignItems: "center", gap: 5,
                 flexShrink: 0, maxWidth: 240,

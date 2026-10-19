@@ -133,10 +133,17 @@ export function contextStatusPrompt(messages: ModelMessage[], budget = DEFAULT_T
       : level === "compact"
         ? "getting full - prefer delegating broad investigations instead of filling it further"
         : "comfortable";
+  // À contexte CONFORTABLE, on n'incline PAS vers la délégation : c'est là que le
+  // modèle spawnait des coéquipiers par réflexe pour du travail qu'il finissait
+  // plus vite seul. La pression à déléguer n'apparaît qu'au moment où elle est
+  // réellement justifiée (contexte qui se remplit).
+  const delegationHint = level === "ok"
+    ? "You have plenty of room: handle the work directly unless an investigation is genuinely broad."
+    : "A sub-agent's exploration never counts against this budget - only its bounded report does. " +
+      "Use that: keep your context for reasoning and edits, and push broad read-only investigation to sub-agents.";
   return (
     `Your context budget: ~${budget.toLocaleString()} tokens, currently ~${used.toLocaleString()} used (${pct}%, ${pressure}).\n` +
-    `A sub-agent's exploration never counts against this budget - only its bounded report does. ` +
-    `Use that: keep your context for reasoning and edits, and push broad read-only investigation to sub-agents.`
+    delegationHint
   );
 }
 

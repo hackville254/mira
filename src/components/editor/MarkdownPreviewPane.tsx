@@ -130,10 +130,10 @@ export default function MarkdownPreviewPane({ content, fileName, syncLine, syncT
         backgroundColor: 'var(--origin-bg-base)',
         fontSize: '11px', color: 'var(--origin-fg-subtle)',
       }}>
-        <span>{stats.words} mots</span>
-        <span>{stats.chars} caractères</span>
+        <span>{stats.words} words</span>
+        <span>{stats.chars} characters</span>
         <div style={{ flex: 1 }} />
-        <span style={{ opacity: 0.7 }}>GFM · tables · tâches</span>
+        <span style={{ opacity: 0.7 }}>GFM · tables · tasks</span>
       </div>
     </div>
   );

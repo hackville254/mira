@@ -67,7 +67,7 @@ export default function AudioViewerPane({ base64, mime, fileName }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column',
             alignItems: 'center', gap: '8px', color: 'var(--origin-fg-subtle)' }}>
             <FileWarning size={28} />
-            <span style={{ fontSize: '12px' }}>Impossible de lire cet audio</span>
+            <span style={{ fontSize: '12px' }}>Cannot play this audio</span>
           </div>
         ) : (
           <>

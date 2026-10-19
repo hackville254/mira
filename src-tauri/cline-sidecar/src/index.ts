@@ -67,8 +67,11 @@ import type { SkillConfig } from "@cline/core";
 import type { ToolApprovalRequest, ToolApprovalResult } from "@cline/shared";
 import { buildToolExecutors, type ApprovalTransport } from "./approval";
 import { buildTodoTools } from "./todoTool";
+import { buildTeamEscalateTool } from "./teamEscalateTool";
 import { buildBrowserTools, type BrowserInvokeRequest } from "./browserTool";
+import { buildCodeIndexTool } from "./codeIndexTool";
 import { resolveSessionExtensions, type SessionExtensions } from "./instructions";
+import { buildBlockedTools } from "./blockedTool";
 import { neutralizeForClient } from "./brand";
 
 // ── Types du protocole (miroir de `src-tauri/src/sidecar.rs`) ────────────────
@@ -127,13 +130,20 @@ interface StartCommand {
    * l'interprète, donc aucun risque de désalignement de schéma.
    */
   initialMessages?: unknown[];
+  /**
+   * Serveurs MCP AUTORISÉS pour cette session (agent personnalisé). Absent =
+   * tous les serveurs configurés. Les outils des serveurs NON listés sont
+   * remplacés par des outils « refus » (voir `./blockedTool`) : la dotation de
+   * l'agent est ainsi respectée sans modifier le fichier de réglages global.
+   */
+  enabledMcpServers?: string[];
   /** Garde-fou anti-boucle. */
   maxIterations?: number;
 }
 
 /** Spécification déclarative d'un outil custom (pas de code exécutable). */
 interface ExtraToolSpec {
-  kind: "todo" | "browser";
+  kind: "todo" | "browser" | "code_index" | "team_escalate";
   /** Id de session UI, pour attribuer les todos côté front. */
   sessionId: string;
   /**
@@ -203,6 +213,22 @@ interface SimpleCommand {
 }
 
 /**
+ * Liste les extensions (skills/commands) SANS démarrer de session.
+ *
+ * POURQUOI
+ * --------
+ * Les extensions ne sont résolues qu'au `start` d'une session. Avant le premier
+ * envoi, l'UI (menu `#` / `+`) restait donc vide — « No skills found » — alors
+ * que des skills existent sur le disque. Cette commande permet au front de
+ * peupler la liste **dès qu'un workspace est connu**, sans attendre un run, et
+ * de la rafraîchir après création/édition d'un skill.
+ */
+interface ListExtensionsCommand {
+  type: "listExtensions";
+  cwd: string;
+}
+
+/**
  * Réponses du front aux demandes bloquantes émises par le sidecar.
  *
  * Le sidecar ne peut pas décider seul si l'agent a le droit d'écrire ou
@@ -244,6 +270,7 @@ type IncomingCommand = { id: string | number } & (
   | UpdateModelCommand
   | RestoreCommand
   | SimpleCommand
+  | ListExtensionsCommand
   | ApprovalResponseCommand
   | WriteResponseCommand
   | InvokeResponseCommand
@@ -451,6 +478,36 @@ function browserInvoke(panelId: string): (req: BrowserInvokeRequest) => Promise<
   };
 }
 
+/**
+ * Pont d'INVOKE générique pour les outils custom qui interrogent le backend
+ * Rust (ex. `codebase_search` → `search_index`).
+ *
+ * POURQUOI UN PONT SÉPARÉ DE `browserInvoke`
+ * ------------------------------------------
+ * `browserInvoke` injecte un `panelId` (cible webview) et restreint la commande
+ * aux `BROWSER_COMMANDS`. Ici, aucune notion de panel : on relaie simplement
+ * `{ command, args }`. Le nom de commande est **figé par l'appelant** (jamais
+ * fourni par le modèle) et reste vérifié côté front par `INVOKE_ALLOWLIST` —
+ * double barrière : le sidecar ne peut pas viser hors allowlist, et le front
+ * refuse toute commande non listée.
+ */
+function originInvoke(command: string, args: Record<string, unknown>): Promise<string> {
+  const requestId = nextRequestId("invoke");
+  const promise = new Promise<string>((resolve) => {
+    pendingInvokes.set(requestId, resolve);
+  });
+  emit({ kind: "tool_invoke", requestId, command, args });
+  return withTimeout(promise, "__origin_invoke_timeout__").then((value) => {
+    if (value === "__origin_invoke_timeout__") {
+      pendingInvokes.delete(requestId);
+      throw Object.assign(new Error("invoke command timed out"), {
+        code: "INVOKE_TIMEOUT",
+      });
+    }
+    return value;
+  });
+}
+
 // ── Construction du moteur ───────────────────────────────────────────────────
 
 /**
@@ -467,7 +524,7 @@ function browserInvoke(panelId: string): (req: BrowserInvokeRequest) => Promise<
  * Les EFFETS des outils (ex. la todo list) sont ré-émis vers l'UI via
  * `emit({ kind: "tool_event", ... })`, que `clineClient` applique côté front.
  */
-function buildExtraTools(specs: ExtraToolSpec[] | undefined) {
+function buildExtraTools(specs: ExtraToolSpec[] | undefined, cwd: string) {
   const tools: unknown[] = [];
   for (const spec of specs ?? []) {
     if (spec.kind === "todo") {
@@ -491,9 +548,69 @@ function buildExtraTools(specs: ExtraToolSpec[] | undefined) {
         const { tools: browserTools } = buildBrowserTools(browserInvoke(spec.panelId));
         tools.push(...browserTools);
       }
+    } else if (spec.kind === "code_index") {
+      // Recherche dans l'index local du workspace : l'outil relaie la requête
+      // vers la commande Tauri `search_index` via le pont `originInvoke`
+      // (`tool_invoke` → front → Rust). Le workspace est FIGÉ ici (cwd de la
+      // session) : le modèle ne peut viser un autre dossier.
+      tools.push(buildCodeIndexTool(cwd, originInvoke));
+    } else if (spec.kind === "team_escalate") {
+      // Escalade d'équipe « à la demande » : l'outil ne fait que REMONTER une
+      // intention au front (`tool_event`). C'est le front qui coupe le run léger
+      // et relance avec les équipes — le sidecar ne peut pas re-seeder sa propre
+      // session en plein run. Voir `./teamEscalateTool`.
+      tools.push(
+        ...buildTeamEscalateTool((reason) => {
+          emit({ kind: "tool_event", tool: "team_escalate", sessionId: spec.sessionId, reason });
+        }).tools,
+      );
     }
   }
   return tools;
+}
+
+/**
+ * Calcule les outils MCP à BLOQUER pour la session à partir de la liste
+ * d'autorisation de l'agent.
+ *
+ * POURQUOI CE CHEMIN
+ * ------------------
+ * Le SDK enregistre tous les serveurs MCP du fichier de réglages et expose
+ * leurs outils. Pour respecter la dotation d'un agent, on ne peut pas filtrer la
+ * config du SDK côté front : on MASQUE donc, par un outil « refus » de même nom,
+ * chaque outil MCP d'un serveur non autorisé (voir `./blockedTool`). Sans liste
+ * d'autorisation (`undefined`), on ne bloque RIEN : le comportement par défaut
+ * reste inchangé.
+ *
+ * Le serveur d'un outil est déduit de son nom `mcp__<server>__<tool>` (préfixe
+ * posé par `instructions.ts`), ce qui évite de dépendre de la forme interne du
+ * SDK.
+ */
+function blockedMcpSpecs(
+  mcpTools: unknown[],
+  enabledServers: string[] | undefined,
+): { name: string; server: string }[] {
+  // `undefined` = tous autorisés ; un tableau VIDE = aucun serveur autorisé.
+  if (!enabledServers) return [];
+  const allowed = new Set(enabledServers);
+  const specs: { name: string; server: string }[] = [];
+  for (const tool of mcpTools) {
+    const name = (tool as { name?: unknown })?.name;
+    if (typeof name !== "string") continue;
+    const server = mcpServerOf(name);
+    if (!server || allowed.has(server)) continue;
+    specs.push({ name, server });
+  }
+  return specs;
+}
+
+/** Extrait `<server>` d'un nom d'outil `mcp__<server>__<tool>`, ou `null`. */
+function mcpServerOf(toolName: string): string | null {
+  if (!toolName.startsWith("mcp__")) return null;
+  const rest = toolName.slice("mcp__".length);
+  const sep = rest.indexOf("__");
+  if (sep <= 0) return null;
+  return rest.slice(0, sep);
 }
 
 /**
@@ -549,6 +666,29 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
     case "ping":
       return { pong: true, dataDir: resolveDataDir(), pid: process.pid };
 
+    case "listExtensions": {
+      // Résolution À LA DEMANDE (sans session) : skills + slash-commands +
+      // commandes custom, dans la MÊME forme que le retour de `start`, pour que
+      // le front réutilise son normaliseur. Non fatal : un service vide suffit.
+      const extensions = await resolveSessionExtensions(cmd.cwd);
+      return {
+        skills: extensions.userInstructionService
+          .listRecords<SkillConfig>("skill")
+          .map((record) => ({ name: record.item.name, description: record.item.description ?? "" })),
+        commands: extensions.userInstructionService.listRuntimeCommands().map((c) => ({
+          id: c.id,
+          name: c.name,
+          kind: c.kind,
+          description: c.description,
+        })),
+        customCommands: extensions.customCommands,
+        extensionIssues: extensions.issues.map((issue) => ({
+          scope: issue.scope,
+          message: neutralizeForClient(issue.message),
+        })),
+      };
+    }
+
     case "start": {
       const engine = await ensureCore();
       // Résolution des extensions AVANT le démarrage : skills/rules/workflows,
@@ -564,8 +704,13 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
       // auto-approuvé de `TOOL_POLICIES` (chaque appel MCP passe par la
       // politique d'approbation d'Origin).
       const mcpTools = extensions.mcpTools;
-      // Outils custom déclaratifs du front (todo, navigateur), résolus UNE fois.
-      const customTools = buildExtraTools(cmd.extraTools);
+      // Dotation MCP de l'agent : si une liste d'autorisation est fournie, on
+      // calcule les outils MCP NON autorisés et on injecte autant d'outils
+      // « refus » qui MASQUENT leur définition (noms uniques par session).
+      const blockedMcpTools = buildBlockedTools(blockedMcpSpecs(extensions.mcpTools, cmd.enabledMcpServers));
+      // Outils custom déclaratifs du front (todo, navigateur, index), résolus UNE
+      // fois.
+      const customTools = buildExtraTools(cmd.extraTools, cmd.cwd);
       // IMPORTANT : on ne passe **jamais** `prompt` à `start()`.
       //
       // POURQUOI
@@ -597,7 +742,7 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
         // fourni dès qu'UNE de ces briques existe : les skills ne dépendent pas
         // des outils custom, et les hooks non plus.
         localRuntime: {
-          extraTools: [...customTools, ...mcpTools],
+          extraTools: [...customTools, ...mcpTools, ...blockedMcpTools],
           // Le service d'instructions fournit l'outil `skills` + l'expansion des
           // slash-commands `/skill`. Sans lui, les skills découvertes ne sont
           // jamais visibles du modèle.
@@ -643,6 +788,11 @@ async function handle(cmd: IncomingCommand): Promise<unknown> {
           kind: c.kind,
           description: c.description,
         })),
+        // Slash-commands PERSONNALISÉES (`.mira/commands/*.md`) : surface propre à
+        // Mira, absente du SDK. On transporte `instructions` (le prompt) — le
+        // front les invoque et l'utilisateur doit pouvoir les éditer dans
+        // Settings, contrairement aux skills dont le corps reste côté modèle.
+        customCommands: extensions.customCommands,
         // Problèmes d'extensions NON fatals (skills illisibles, MCP en échec,
         // plugins invalides). On UNIFIE les diagnostics de plugins du SDK dans
         // cette même liste : le front n'a ainsi qu'une seule forme à afficher.
@@ -883,6 +1033,15 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
   // entrée, le joker `"*"` les refuserait (autoApprove: false).
   todo_write: { autoApprove: true },
   todo_read: { autoApprove: true },
+  // Outil CUSTOM `codebase_search` (voir `./codeIndexTool`) : recherche dans
+  // l'index local, LECTURE seule, aucun effet de bord. Auto-approuvé comme les
+  // autres lectures — sinon une carte de confirmation à chaque recherche.
+  codebase_search: { autoApprove: true },
+  // Outil CUSTOM `escalate_to_team` (voir `./teamEscalateTool`) : simple demande
+  // d'escalade, AUCUN effet de bord. Auto-approuvé, sinon une carte de
+  // confirmation apparaîtrait au moment précis où le modèle veut gagner en
+  // capacité — contre-productif.
+  escalate_to_team: { autoApprove: true },
   // Outils NAVIGATEUR (voir `./browserTool`). On distingue LECTURE et ACTION :
   //   - `browser_status`/`browser_read_text`/`browser_read_dom`/`browser_query`
   //     et `browser_screenshot` n'ont aucun effet de bord : auto-approuvés, comme
@@ -992,6 +1151,10 @@ function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | nu
 function expandRuntimeSlashCommand(prompt: string): string {
   const trimmed = prompt.trimStart();
   if (!trimmed.startsWith("/")) return prompt;
+  // 1. Nos commands utilisateur (`.mira/commands`) : le SDK ne les connaît pas,
+  //    on les développe donc nous-mêmes AVANT de lui céder la main.
+  const custom = expandCustomSlashCommand(trimmed);
+  if (custom !== null) return custom;
   const service = sessionExtensions?.userInstructionService;
   if (!service) return prompt;
   try {
@@ -1000,6 +1163,25 @@ function expandRuntimeSlashCommand(prompt: string): string {
     // Une commande inconnue reste inchangée : le modèle la recevra littéralement.
     return prompt;
   }
+}
+
+/**
+ * Développe `/nom [args]` vers le prompt de la commande utilisateur.
+ *
+ * Renvoie `null` si le nom ne correspond à aucune commande de `.mira/commands` :
+ * l'appelant laisse alors le SDK traiter la commande (skills/workflows). Les
+ * arguments éventuels sont concaténés APRÈS le corps, séparés par une ligne
+ * vide, pour que le modèle distingue l'instruction du paramétrage.
+ */
+function expandCustomSlashCommand(prompt: string): string | null {
+  const commands = sessionExtensions?.customCommands;
+  if (!commands || commands.length === 0) return null;
+  const match = /^\/([A-Za-z0-9._-]+)(?:\s+([\s\S]*))?$/.exec(prompt);
+  if (!match) return null;
+  const command = commands.find((c) => c.name === match[1]);
+  if (!command) return null;
+  const args = (match[2] ?? "").trim();
+  return args.length > 0 ? `${command.instructions}\n\n${args}` : command.instructions;
 }
 
 /** Arrête proprement le moteur et libère l'abonnement aux événements. */

@@ -39,10 +39,10 @@ export default function UnsupportedFilePane({ fileName, reason }: Props) {
       }}>
         <FileWarning size={32} />
         <p style={{ fontSize: '13px', margin: 0, color: 'var(--origin-fg-default)' }}>
-          Ce fichier ne peut pas être affiché
+          This file cannot be displayed
         </p>
         <p style={{ fontSize: '12px', margin: 0, maxWidth: '360px', textAlign: 'center' }}>
-          {reason ?? "Mira ne dispose pas de lecteur pour ce format binaire. Ouvre-le avec une application externe."}
+          {reason ?? "Mira does not have a viewer for this binary format. Open it with an external application."}
         </p>
       </div>
     </div>

@@ -289,7 +289,7 @@ export function runAgent(options: RunAgentOptions): { cancel: () => void; status
         emit({
           type: "notice",
           kind: "compaction",
-          detail: level === "critical" ? "Contexte critique : compaction + troncature" : "Compaction de l'historique",
+          detail: level === "critical" ? "Critical context: compaction + truncation" : "History compaction",
           savedTokens: saved,
         });
       }
@@ -616,7 +616,7 @@ export function runAgent(options: RunAgentOptions): { cancel: () => void; status
           onEvent({
             type: "notice",
             kind: "retry",
-            detail: `Modèle ${modelIds[next] || next + 1} (bascule après ${kind})`,
+            detail: `Model ${modelIds[next] || next + 1} (switching after ${kind})`,
           });
           onEvent({ type: "token", delta: "" }); // keep-alive : laisse l'UI en streaming
           continue; // nouvelle tentative, sans backoff
@@ -644,7 +644,7 @@ export function runAgent(options: RunAgentOptions): { cancel: () => void; status
       onEvent({
         type: "notice",
         kind: "retry",
-        detail: `Reprise automatique (tentative ${attempt + 1}/${MAX_ATTEMPTS + 1}) — ${kind}`,
+        detail: `Automatic retry (attempt ${attempt + 1}/${MAX_ATTEMPTS + 1}) — ${kind}`,
       });
       onEvent({ type: "token", delta: "" }); // keep-alive : laisse l'UI en streaming
       await sleep(delay, controller.signal);

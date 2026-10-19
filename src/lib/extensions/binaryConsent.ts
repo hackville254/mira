@@ -49,7 +49,7 @@ export function missingBinaryConsent(
 export function describeBinaries(missing: readonly string[]): string {
   const list = normalizeBinaryList(missing);
   if (list.length === 0) return "";
-  return `Binaires tiers à approuver : ${list.join(", ")}`;
+  return `Third-party binaries to approve: ${list.join(", ")}`;
 }
 
 // ── Persistance du consentement ───────────────────────────────────────────────

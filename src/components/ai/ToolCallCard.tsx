@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronDown, Check, ShieldAlert, HelpCircle } from "lucide-react";
 import type { ToolCallDisplay } from "../../lib/aiTypes";
 import { toolTargetPath } from "../../lib/toolGroups";
+import { addAlwaysAllowCommand } from "../../lib/agent/permissions";
 import AskUserCard from "./AskUserCard";
 import SubAgentCard from "./SubAgentCard";
 
@@ -9,11 +10,34 @@ const TOOL_LABELS: Record<string, string> = {
   // Noms du SDK Cline (moteur actuel).
   read_files: "Read files",
   search_codebase: "Search codebase",
+  codebase_search: "Search codebase index",
   editor: "Edit file",
+  apply_patch: "Apply patch",
   run_commands: "Run command",
   fetch_web_content: "Fetch web content",
+  web_search: "Web search",
   skills: "Skill",
   ask_question: "Question",
+  // Outils d'orchestration d'équipe (mode IA) : sans libellé, ils afficheraient
+  // leur nom brut (`team_spawn_teammate`) — illisible pour l'utilisateur.
+  team_spawn_teammate: "Spawn teammate",
+  team_shutdown_teammate: "Shutdown teammate",
+  team_status: "Team status",
+  team_task: "Assign task",
+  team_run_task: "Run teammate task",
+  team_cancel_run: "Cancel teammate run",
+  team_list_runs: "List teammate runs",
+  team_await_runs: "Wait for teammates",
+  team_send_message: "Message teammate",
+  team_broadcast: "Broadcast to team",
+  team_read_mailbox: "Read teammate mailbox",
+  team_mission_log: "Team mission log",
+  team_cleanup: "Clean up team",
+  team_create_outcome: "Create outcome",
+  team_attach_outcome_fragment: "Attach outcome fragment",
+  team_review_outcome_fragment: "Review outcome fragment",
+  team_finalize_outcome: "Finalize outcome",
+  team_list_outcomes: "List outcomes",
   // Noms du harness historique (conservés pour les tours déjà en base).
   read_file: "Read file",
   list_directory: "List directory",
@@ -30,8 +54,8 @@ function toolLabel(name: string) { return TOOL_LABELS[name] ?? name; }
 
 /** Outils qui visent UN fichier : on affiche son nom de base en aperçu. */
 const FILE_TOOLS = new Set([
-  "read_file", "list_directory", "write_file", "edit", "multi_edit",
-  "editor",
+  "read_file", "read_files", "list_directory", "write_file", "edit", "multi_edit",
+  "editor", "apply_patch", "write_to_file",
 ]);
 
 function argsPreview(toolName: string, args: unknown): string {
@@ -44,9 +68,16 @@ function argsPreview(toolName: string, args: unknown): string {
     return p.split(/[/\\]/).pop() ?? p;
   }
   if (toolName === "search_codebase") return `"${String(a.query ?? a.pattern ?? "")}"`;
+  if (toolName === "codebase_search") return `"${String(a.query ?? "")}"`;
   if (toolName === "grep") return `"${a.query}"`;
   if (toolName === "bash_run" || toolName === "run_commands") return String(a.command ?? "").slice(0, 60);
   if (toolName === "glob") return String(a.folder ?? "workspace");
+  // Outils web : on montre l'URL (récupération) ou la requête (recherche), pour
+  // que l'utilisateur voie CE QUE l'agent consulte — sinon la carte est muette.
+  if (toolName === "fetch_web_content" || toolName === "web_fetch") {
+    return String(a.url ?? a.query ?? "").slice(0, 80);
+  }
+  if (toolName === "web_search") return `"${String(a.query ?? a.search_query ?? "")}"`;
   return "";
 }
 
@@ -245,6 +276,22 @@ export default function ToolCallCard({
                     onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
                   >
                     Reject
+                  </button>
+                  {/* « Always allow » : mémorise CETTE commande exacte (allowlist
+                      locale, survit au redémarrage) puis approuve. Ne contourne
+                      jamais la garde anti-catastrophe, évaluée en amont. */}
+                  <button
+                    onClick={() => { addAlwaysAllowCommand(action.command); tc.approve?.(); }}
+                    title="Always allow this exact command"
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-border-default)",
+                      background: "transparent", color: "var(--origin-fg-default)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                  >
+                    Always allow
                   </button>
                   <button
                     onClick={() => tc.approve?.()}

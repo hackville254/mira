@@ -57,7 +57,7 @@ export default function VideoViewerPane({ base64, mime, fileName }: Props) {
         }}>
           {fileName}
         </span>
-        <span style={{ fontSize: '11px', color: 'var(--origin-fg-subtle)' }}>· Vidéo</span>
+        <span style={{ fontSize: '11px', color: 'var(--origin-fg-subtle)' }}>· Video</span>
       </div>
 
       {/* Contenu */}
@@ -68,7 +68,7 @@ export default function VideoViewerPane({ base64, mime, fileName }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--origin-fg-subtle)' }}>
             <FileWarning size={28} />
-            <span style={{ fontSize: '12px' }}>Impossible de lire cette vidéo</span>
+            <span style={{ fontSize: '12px' }}>Cannot play this video</span>
           </div>
         ) : (
           <video

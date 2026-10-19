@@ -127,8 +127,8 @@ export function agentTerminalCommandEnd(sessionKey: string, exitCode: number): v
   b.running = false;
   const ok = exitCode === 0;
   b.transcript += ok
-    ? "\x1b[90m[terminé]\x1b[0m\r\n"
-    : `\x1b[31m[code de sortie ${exitCode}]\x1b[0m\r\n`;
+    ? "\x1b[90m[done]\x1b[0m\r\n"
+    : `\x1b[31m[exit code ${exitCode}]\x1b[0m\r\n`;
   trim(b);
   refresh(b);
   emit();

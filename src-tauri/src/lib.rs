@@ -2,7 +2,9 @@ mod ai;
 mod ai_env;
 mod browser;
 mod checkpoint;
+mod context;
 mod dap;
+mod default_skills;
 // `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
 // réseau (`tests/lsp_install_e2e.rs`) de télécharger réellement un binaire LSP
 // et de vérifier son empreinte. Cela n'ajoute aucune commande `invoke`.
@@ -10,8 +12,10 @@ pub mod downloader;
 mod env;
 mod env_path;
 mod extensions;
+mod extensions_store;
 mod fs;
 mod git;
+mod indexing;
 mod keychain;
 mod log;
 mod lsp;
@@ -20,6 +24,7 @@ mod migration;
 mod node_runtime;
 mod search;
 mod sidecar;
+mod skills_import;
 mod system;
 mod terminal;
 mod tree;
@@ -230,6 +235,16 @@ pub fn run() {
             // l'item natif SelectAll, pour que Cmd+A / Ctrl+A atteigne la webview
             // et soit géré par notre logique (sélection confinée à l'éditeur).
             build_app_menu(app)?;
+            // Skills livrés avec l'app (HyperFrames, media-use, InsForge,
+            // copywriting…). Installation **idempotente** dans `~/.mira/skills` :
+            // un skill déjà présent (ou désactivé dans l'UI) n'est jamais écrasé.
+            // Best-effort : ne bloque jamais le démarrage.
+            default_skills::install_default_skills_silent(app.handle());
+            // Fichier de réglages MCP : provisionné vide s'il est absent. Le SDK
+            // le lit de façon non tolérante au démarrage d'une session ; sans ce
+            // fichier, l'agent échoue avec ENOENT (« erreur du moteur d'agent »).
+            // Idempotent : un fichier existant n'est jamais écrasé.
+            extensions_store::ensure_mcp_settings_file(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -287,6 +302,33 @@ pub fn run() {
             git::git_stash_apply,
             git::git_stash_drop,
             git::git_blame,
+            extensions_store::list_skills,
+            extensions_store::read_skill,
+            extensions_store::write_skill,
+            extensions_store::delete_skill,
+            extensions_store::list_commands,
+            extensions_store::read_command,
+            extensions_store::write_command,
+            extensions_store::delete_command,
+            extensions_store::list_rules,
+            extensions_store::read_rule,
+            extensions_store::write_rule,
+            extensions_store::delete_rule,
+            extensions_store::read_memories,
+            extensions_store::write_memories,
+            extensions_store::list_hooks,
+            extensions_store::read_hook,
+            extensions_store::write_hook,
+            extensions_store::delete_hook,
+            extensions_store::list_mcp_servers,
+            extensions_store::write_mcp_server,
+            extensions_store::set_mcp_server_disabled,
+            extensions_store::delete_mcp_server,
+            extensions_store::list_agents,
+            extensions_store::read_agent,
+            extensions_store::write_agent,
+            extensions_store::delete_agent,
+            skills_import::import_skills_from_repo,
             system::sys_memory,
             env::detect_dev_environment,
             terminal::terminal_create,
@@ -300,6 +342,13 @@ pub fn run() {
             search::replace_one,
             search::search_symbols,
             search::list_workspace_files,
+            context::expand_context_folder,
+            context::expand_context_workspace,
+            indexing::index_status,
+            indexing::index_build,
+            indexing::index_cancel,
+            indexing::index_clear,
+            indexing::search_index,
             tree::get_file_tree,
             tree::get_import_edges,
             ai::agent_bash_run,

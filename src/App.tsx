@@ -132,6 +132,7 @@ function App() {
   const [paletteMode,    setPaletteMode]   = useState<'quickopen' | 'command' | 'line' | 'symbol' | 'workspace-symbol'>('command');
   const [paletteSymbols, setPaletteSymbols] = useState<OutlineSymbol[]>([]);
   const [settingsOpen,   setSettingsOpen]  = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // Apparence de l'éditeur — pilotée par les commandes « Toggle … » de la palette.
   const [minimap,            setMinimap]            = useState(true);
   const [stickyScroll,       setStickyScroll]       = useState(true);
@@ -224,6 +225,8 @@ function App() {
   const getAiCompletion = useMemo<AiCompletionFn>(() => {
     return async function* (prefix, suffix, signal) {
       if (localStorage.getItem('origin-editor-ai-autocomplete') === 'false') return;
+      // CUE › Tab-Cue : coupe réellement les requêtes de complétion inline.
+      if (localStorage.getItem('origin-cue-tab') === 'false') return;
       const providerId = await resolveDefaultProvider('anthropic');
       const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
       const apiKey = await loadApiKey(providerId);
@@ -373,6 +376,18 @@ function App() {
     stepOut:           () => debugCtx.stepOut?.(),
   });
 
+  // L'input chat (et d'autres composants) peuvent demander l'ouverture des
+  // Réglages : `origin-open-settings` ouvre le panneau avec l'onglet voulu.
+  useEffect(() => {
+    function onOpen(e: Event) {
+      const detail = (e as CustomEvent<{ section?: string }>).detail;
+      setSettingsSection(detail?.section);
+      setSettingsOpen(true);
+    }
+    window.addEventListener("origin-open-settings", onOpen);
+    return () => window.removeEventListener("origin-open-settings", onOpen);
+  }, []);
+
   async function completeOnboarding() {
     localStorage.setItem('origin-onboarding', 'true');
     setOnboardingDone(true);
@@ -502,12 +517,12 @@ function App() {
           : info.needs === 'NEEDS_LLVM_TOOLCHAIN'
             ? 'LLVM toolchain required (clangd ships with LLVM)'
             : 'Java toolchain required (install a JDK, then jdtls)';
-      showToast(`${info.label} : ${reason}`, 'info');
+      showToast(`${info.label}: ${reason}`, 'info');
       return;
     }
 
     showToast(`${info.label} language server not found`, 'info', {
-      label: 'Installer',
+      label: 'Install',
       onClick: () => {
         const label = info.label;
         // Progression live : Rust émet `lsp://install-progress`. Le toast se met
@@ -517,7 +532,7 @@ function App() {
           'lsp://install-progress',
           ev => {
             if (ev.payload.serverId !== info.id) return;
-            showToast(`Installation de ${label}… ${ev.payload.percent}%`, 'info');
+            showToast(`Installing ${label}… ${ev.payload.percent}%`, 'info');
           },
         ).then(fn => { unlisten = fn; });
 
@@ -525,7 +540,7 @@ function App() {
           .then(() => {
             invalidateLspClient(info.id);
             setLspGeneration(g => g + 1);
-            showToast(`${label} installé avec succès`, 'success');
+            showToast(`${label} installed successfully`, 'success');
           })
           .catch((e: unknown) => {
             // Rust renvoie un JSON structuré { code, reason } : on le traduit en
@@ -542,18 +557,18 @@ function App() {
             }
             if (reason === 'NEEDS_PYTHON') {
               showToast(
-                `${label} : Python introuvable, installe Python 3 puis réessaie (le serveur s'installera automatiquement).`,
+                `${label}: Python not found. Install Python 3 and try again (the server will install automatically).`,
                 'error',
               );
             } else if (reason === 'NEEDS_NODE') {
               showToast(
-                `${label} : Node.js introuvable, installe Node puis réessaie (le serveur s'installera automatiquement).`,
+                `${label}: Node.js not found. Install Node and try again (the server will install automatically).`,
                 'error',
               );
             } else if (code === 'LSP_NOT_AUTO_INSTALLABLE') {
-              showToast(`${label} ne s'installe pas automatiquement.`, 'info');
+              showToast(`${label} cannot be installed automatically.`, 'info');
             } else {
-              showToast(`Échec de l'installation : ${raw}`, 'error');
+              showToast(`Installation failed: ${raw}`, 'error');
             }
           })
           .finally(() => { unlisten?.(); });
@@ -765,7 +780,7 @@ function App() {
       { id: 'origin.zoomReset',      title: 'Reset Zoom',         category: 'View', run: () => handleZoomReset() },
       // Appearance — on expose ce qui est réellement câblé (pas de commande factice).
       { id: 'origin.toggleMinimap',  title: 'Toggle Minimap',      category: 'View', keywords: 'appearance editor overview', run: () => setMinimap(v => !v) },
-      { id: 'origin.toggleStickyScroll', title: 'Toggle Sticky Scroll', category: 'View', keywords: 'appearance bonds en-tête', run: () => setStickyScroll(v => !v) },
+      { id: 'origin.toggleStickyScroll', title: 'Toggle Sticky Scroll', category: 'View', keywords: 'appearance bonds header', run: () => setStickyScroll(v => !v) },
       { id: 'origin.toggleBracketColorization', title: 'Toggle Bracket Pair Colorization', category: 'View', keywords: 'appearance rainbow brackets', run: () => setBracketColorization(v => !v) },
       // Ouvre la prévisualisation Markdown de l'onglet actif (si c'est un fichier .md).
       { id: 'origin.openMarkdownPreview', title: 'Open Markdown Preview', category: 'View', keywords: 'markdown preview rendu md', enabled: !!activeTabRef.current && /\.mdx?$/i.test(activeTabRef.current), run: () => { const p = activeTabRef.current; if (p && /\.mdx?$/i.test(p)) openMarkdownPreviewTab(p); } },
@@ -858,7 +873,7 @@ function App() {
         />
       ) : (
         <div className="flex flex-1 overflow-hidden gap-1">
-            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} onFilesChanged={reloadFilesFromDisk} activePath={activeTab ?? undefined} activeContent={activeTab ? fileContents[activeTab] : undefined} rootPath={folderPath ?? undefined} />}
+            {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} onFilesChanged={reloadFilesFromDisk} onExternalFileChanges={applyExternalFileChanges} activePath={activeTab ?? undefined} activeContent={activeTab ? fileContents[activeTab] : undefined} rootPath={folderPath ?? undefined} />}
             <div className="flex flex-1 overflow-hidden gap-1">
               <div className="flex-1 flex flex-col overflow-hidden gap-1">
                 <TabBar
@@ -1037,7 +1052,7 @@ function App() {
           sidebarOpen={sidebarOpen}
         />
       )}
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsPanel initialSection={settingsSection} onClose={() => { setSettingsOpen(false); setSettingsSection(undefined); }} />}
       {trustPrompt && (
         <div
           style={{

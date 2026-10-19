@@ -62,6 +62,7 @@ const READ_TOOLS = new Set([
   "read_files",
   "read_file",
   "search_codebase",
+  "codebase_search",
   "search_files",
   "list_code_definition_names",
   "fetch_web_content",
