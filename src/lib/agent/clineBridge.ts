@@ -91,6 +91,13 @@ export const SEARCH_TOOL_NAMES: readonly string[] = [
   "search_codebase",      // SDK Cline (recherche plein texte)
   "codebase_search",      // outil CUSTOM Origin (index local)
   "grep",                 // harness historique
+  // Outils de compréhension du projet (cf. `projectTools` côté sidecar) :
+  // regroupés avec la recherche pour l'affichage (même nature : reconnaissance).
+  "project_overview",
+  "git_status",
+  "git_diff",
+  "search_symbols",
+  "find_imports",
 ];
 
 /** Outils d'ÉNUMÉRATION de fichiers/dossiers (listage). */

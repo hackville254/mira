@@ -178,12 +178,15 @@ describe("MÉTRIQUES — mesure objective des prompts", () => {
 
   // Budget de prompt : garde-fou ANTI-DÉRIVE, pas une cible. Le seuil est passé
   // de 6000 à 8000 quand le preset agent/max a gagné le bloc « Objective »
-  // (poursuite de l'objectif). 8000 « ~2000 tokens » laisse la marge nécessaire
-  // au preset IA réel (qui ajoute en plus la délégation d'équipe, non mesurée
-  // ici) tout en continuant à signaler une inflation anormale.
-  it("chaque preset reste sous 8000 caractères (~2000 tokens) — budget de prompt", () => {
+  // (poursuite de l'objectif), puis à 8600 avec le contrat des OUTILS DE
+  // COMPRÉHENSION DU PROJET (`project_overview`, `git_status`, `git_diff`,
+  // `search_symbols`, `find_imports`) : 5 capacités réelles exposées à l'agent,
+  // comprimées au strict nécessaire (~250 caractères). On relève le garde-fou
+  // d'autant au lieu de tordre le contrat, tout en continuant à signaler une
+  // inflation anormale.
+  it("chaque preset reste sous 8600 caractères (~2150 tokens) — budget de prompt", () => {
     for (const r of rows) {
-      expect(r.chars).toBeLessThan(8000);
+      expect(r.chars).toBeLessThan(8600);
     }
   });
 

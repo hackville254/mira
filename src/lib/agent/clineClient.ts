@@ -148,13 +148,15 @@ export interface ClineExtraToolSpec {
 /**
  * Spécification d'un outil custom. Aujourd'hui : la todo list (`todo`), le
  * navigateur piloté (`browser`), la recherche dans l'index de codebase
- * (`code_index`) et la demande d'escalade d'équipe (`team_escalate`). On ne
- * transporte qu'un `kind` fermé — jamais de code exécutable (voir le sidecar).
+ * (`code_index`), la compréhension du projet (`project`) et la demande
+ * d'escalade d'équipe (`team_escalate`). On ne transporte qu'un `kind` fermé —
+ * jamais de code exécutable (voir le sidecar).
  */
 export type ClineExtraToolSpecAny =
   | ClineExtraToolSpec
   | { kind: "browser"; sessionId: string; panelId: string }
   | { kind: "code_index"; sessionId: string }
+  | { kind: "project"; sessionId: string }
   | { kind: "team_escalate"; sessionId: string };
 
 /** Effet d'un outil custom, relayé par le sidecar (`kind:"tool_event"`). */
@@ -639,6 +641,14 @@ const INVOKE_ALLOWLIST = new Set<string>([
   // renvoie une liste de chemins relatifs issus de l'index du workspace, sans
   // jamais lire le disque ni écrire quoi que ce soit.
   "search_index",
+  // Compréhension du projet (outil `project_*` côté sidecar, cf. `projectTools`).
+  // TOUTES en LECTURE seule : arborescence, statut git, diff, symboles, imports.
+  // Aucune n'écrit sur le disque ni n'exécute de commande arbitraire.
+  "get_file_tree",
+  "git_status_files",
+  "git_diff",
+  "search_symbols",
+  "get_import_edges",
 ]);
 
 /**
@@ -746,6 +756,26 @@ async function respondToInvoke(request: { requestId: string; command: string; ar
     if (request.command === "search_index") {
       const hits = await invoke<unknown>("search_index", request.args);
       await reply({ output: JSON.stringify(hits ?? []) });
+      return;
+    }
+    // Outils de COMPRÉHENSION DU PROJET (`project_overview`, `git_status`,
+    // `search_symbols`, `find_imports`). Ils consomment des structures JSON
+    // (`{…}` / `[…]`) : on sérialise sans transformation, comme `search_index`.
+    if (
+      request.command === "get_file_tree" ||
+      request.command === "git_status_files" ||
+      request.command === "search_symbols" ||
+      request.command === "get_import_edges"
+    ) {
+      const result = await invoke<unknown>(request.command, request.args);
+      await reply({ output: JSON.stringify(result ?? null) });
+      return;
+    }
+    // `git_diff` renvoie une CHAÎNE de diff (pas de JSON) : on la transmet telle
+    // quelle pour ne pas l'altérer (le diff est affiché au modèle verbatim).
+    if (request.command === "git_diff") {
+      const diff = await invoke<string>("git_diff", request.args);
+      await reply({ output: typeof diff === "string" ? diff : "" });
       return;
     }
     // Gestion des ONGLETS (`browser_list_tabs`, `browser_open_tab`, …).

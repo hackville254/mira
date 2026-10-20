@@ -69,6 +69,14 @@ const READ_TOOLS = new Set([
   "web_fetch",
   "web_search",
   "fetch",
+  // Outils de compréhension du projet (cf. `projectTools` côté sidecar) :
+  // arborescence, statut git, diff, symboles, imports. LECTURE seule, aucun
+  // effet de bord → jamais de carte de confirmation.
+  "project_overview",
+  "git_status",
+  "git_diff",
+  "search_symbols",
+  "find_imports",
 ]);
 
 /** Noms d'outils Cline qui posent une question à l'utilisateur. */

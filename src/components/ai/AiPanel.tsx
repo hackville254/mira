@@ -57,7 +57,7 @@ import { planNotification, isToastEnabled } from "../../lib/notify/notify";
 import { playSound, isSoundEnabled, primeSound } from "../../lib/notify/sound";
 import { startSubAgent, stepSubAgent, endSubAgent, clearSubAgents } from "../../lib/agent/swarmStore";
 import { isBuiltinControlEnabled } from "../../lib/browserPrefs";
-import { getDisabledTools, AGENT_TOOLS } from "../../lib/agent/agentToolPrefs";
+import { getDisabledTools, isFamilyEnabled, AGENT_TOOLS } from "../../lib/agent/agentToolPrefs";
 import { listAgents, readSelectedAgentId, resolveSelectedAgent, CUSTOM_AGENTS_EVENT, type CustomAgent } from "../../lib/agent/customAgents";
 import { finalizeTodos, setTodos, clearTodos } from "../../lib/agent/todoStore";
 import { enqueueMessage, dequeueMessage } from "../../lib/agent/messageQueue";
@@ -2317,6 +2317,19 @@ export default function AiPanel({
       // n'est pas branché — parité avec le comportement attendu, et on évite
       // d'ajouter un outil de recherche à des modes qui n'agissent pas.
       const wantsCodeIndex = !!sessionId && opts.sdkMode === "act";
+      // Outils de COMPRÉHENSION DU PROJET (arborescence, git, symboles, imports) :
+      // exposés dans les mêmes conditions que l'index — modes qui AGISSENT
+      // (`act`). Inutiles en ask/plan (pas d'action), donc on ne les branche pas
+      // là pour ne pas élargir inutilement la surface d'outils du modèle.
+      // DE PLUS, on respecte la préférence Settings › Agent : si la famille est
+      // coupée, elle n'est pas seulement masquée du prompt, elle n'est PAS
+      // branchée côté sidecar. Sinon deux dérives : (a) le modèle disposerait
+      // d'outils absents de son contrat (incohérence prompt/outils), (b) le
+      // client croirait avoir désactivé une capacité qui reste appelable.
+      const wantsProjectTools =
+        !!sessionId
+        && opts.sdkMode === "act"
+        && isFamilyEnabled(["project_overview", "git_status", "git_diff", "search_symbols", "find_imports"]);
       // Escalade d'équipe « à la demande » : en mode IA et sans agent
       // personnalisé, on offre TOUJOURS l'outil léger `escalate_to_team`. Le
       // modèle l'appelle s'il juge la tâche trop large, ce qui déclenche une
@@ -2329,6 +2342,7 @@ export default function AiPanel({
           ? [{ kind: "browser" as const, sessionId, panelId: PREVIEW_ACTIVE_TARGET }]
           : []),
         ...(wantsCodeIndex ? [{ kind: "code_index" as const, sessionId }] : []),
+        ...(wantsProjectTools ? [{ kind: "project" as const, sessionId }] : []),
         ...(wantsEscalate ? [{ kind: "team_escalate" as const, sessionId }] : []),
       ];
       // Dotation MCP d'un agent personnalisé : on n'autorise que les serveurs

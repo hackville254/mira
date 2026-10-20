@@ -40,6 +40,12 @@ export const AGENT_TOOLS: AgentToolDef[] = [
     tools: ["search_codebase", "codebase_search"],
   },
   {
+    id: "project",
+    label: "Project comprehension",
+    description: "Inspect the project structure: file tree, git status/diff, symbols and imports.",
+    tools: ["project_overview", "git_status", "git_diff", "search_symbols", "find_imports"],
+  },
+  {
     id: "editor",
     label: "Edit files",
     description: "Create and edit files in the workspace.",

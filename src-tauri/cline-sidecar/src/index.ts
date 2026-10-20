@@ -71,6 +71,7 @@ import { buildTeamEscalateTool } from "./teamEscalateTool";
 import { buildBrowserTools, type BrowserInvokeRequest } from "./browserTool";
 import { buildTabTools, type TabInvokeRequest } from "./tabTool";
 import { buildCodeIndexTool } from "./codeIndexTool";
+import { buildProjectTools } from "./projectTools";
 import { resolveSessionExtensions, type SessionExtensions } from "./instructions";
 import { buildBlockedTools } from "./blockedTool";
 import { neutralizeForClient } from "./brand";
@@ -144,7 +145,7 @@ interface StartCommand {
 
 /** Spécification déclarative d'un outil custom (pas de code exécutable). */
 interface ExtraToolSpec {
-  kind: "todo" | "browser" | "code_index" | "team_escalate";
+  kind: "todo" | "browser" | "code_index" | "team_escalate" | "project";
   /** Id de session UI, pour attribuer les todos côté front. */
   sessionId: string;
   /**
@@ -563,6 +564,12 @@ function buildExtraTools(specs: ExtraToolSpec[] | undefined, cwd: string) {
       // (`tool_invoke` → front → Rust). Le workspace est FIGÉ ici (cwd de la
       // session) : le modèle ne peut viser un autre dossier.
       tools.push(buildCodeIndexTool(cwd, originInvoke));
+    } else if (spec.kind === "project") {
+      // Outils de COMPRÉHENSION DU PROJET (arborescence, git status/diff,
+      // symboles, imports). Lecture seule, workspace FIGÉ (cwd de la session),
+      // noms de commandes Tauri FIGÉS dans `./projectTools` : le modèle ne peut
+      // choisir que les paramètres (requête, chemin relatif borné).
+      tools.push(...buildProjectTools(cwd, originInvoke));
     } else if (spec.kind === "team_escalate") {
       // Escalade d'équipe « à la demande » : l'outil ne fait que REMONTER une
       // intention au front (`tool_event`). C'est le front qui coupe le run léger
@@ -1046,6 +1053,15 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
   // l'index local, LECTURE seule, aucun effet de bord. Auto-approuvé comme les
   // autres lectures — sinon une carte de confirmation à chaque recherche.
   codebase_search: { autoApprove: true },
+  // Outils CUSTOM de COMPRÉHENSION DU PROJET (voir `./projectTools`) :
+  // arborescence, statut git, diff, symboles, imports. TOUS en LECTURE seule,
+  // aucun effet de bord → auto-approuvés, sinon une carte de confirmation à
+  // chaque coup d'œil rendrait la reconnaissance de projet impraticable.
+  project_overview: { autoApprove: true },
+  git_status: { autoApprove: true },
+  git_diff: { autoApprove: true },
+  search_symbols: { autoApprove: true },
+  find_imports: { autoApprove: true },
   // Outil CUSTOM `escalate_to_team` (voir `./teamEscalateTool`) : simple demande
   // d'escalade, AUCUN effet de bord. Auto-approuvé, sinon une carte de
   // confirmation apparaîtrait au moment précis où le modèle veut gagner en
