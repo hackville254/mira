@@ -412,6 +412,10 @@ interface AiPanelProps {
   onExternalFileChanges?: (paths: string[]) => Promise<void>;
   /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin dans le chat). */
   onOpenFile?: (path: string, line?: number, col?: number) => void;
+  /** Exécute une commande d'un bloc shell du chat dans le terminal (bouton `Run`). */
+  onRunCommand?: (command: string) => void;
+  /** Insère un texte dans le terminal actif, sans l'exécuter. */
+  onInsertTerminal?: (text: string) => void;
   /**
    * Ouvre le sélecteur de répertoire natif (définit le workspace courant).
    * Utilisé pour FORCER le choix d'un dossier de travail avant de lancer
@@ -476,6 +480,7 @@ function buildModelHistory(messages: DisplayMessage[]): ModelMessage[] {
 export default function AiPanel({
   getEditorContext, getActiveFilePath, forcedContext, onForcedContextConsumed,
   getFileContents, onOpenDiffTab, onOpenFile,
+  onRunCommand, onInsertTerminal,
   onExternalFileChanges, onOpenFolder,
   openSessionId = null,
   newChatNonce = 0,
@@ -3496,6 +3501,8 @@ export default function AiPanel({
                       onInsert={() => handleInsertMessage(msg.content)}
                       onOpenFile={handleOpenFile}
                       onOpenPath={handleOpenPath}
+                      onRunCommand={onRunCommand}
+                      onInsertTerminal={onInsertTerminal}
                       canRegenerate={!isStreaming && i === messages.length - 1}
                       onActionCopy={handleMessageAction}
                       vote={feedbackByIndex[i] ?? null}

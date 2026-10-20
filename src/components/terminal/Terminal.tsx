@@ -21,6 +21,14 @@ interface Props {
   active: boolean;
   clearKey?: number;
   pendingInput?: string;
+  /**
+   * Texte à INJECTER dans le PTY sans l'exécuter : la commande apparaît sur la
+   * ligne courante, l'utilisateur garde le dernier mot (il peut l'éditer puis
+   * valider avec Entrée). Distinct de `pendingInput`, qui envoie un `\r`.
+   * `nonce` change à chaque demande : le texte peut être identique d'une fois à
+   * l'autre, c'est le nonce qui déclenche la réinjection.
+   */
+  insertRequest?: { text: string; nonce: number };
   /** Lancement d'une tâche « Run » : spawn direct (argv), sans shell interactif. */
   task?: { program: string; args: string[] } | null;
   onCwdChange?: (cwd: string) => void;
@@ -63,7 +71,7 @@ function buildTheme() {
   };
 }
 
-export default function Terminal({ cwd, active, clearKey, pendingInput, task, onCwdChange, onShellState, onAddSelectionToAi }: Props) {
+export default function Terminal({ cwd, active, clearKey, pendingInput, insertRequest, task, onCwdChange, onShellState, onAddSelectionToAi }: Props) {
   const { theme } = useTheme();
   const containerRef    = useRef<HTMLDivElement>(null);
   const xtermRef        = useRef<XTerm | null>(null);
@@ -90,6 +98,19 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
     if (!clearKey) return;
     xtermRef.current?.clear();
   }, [clearKey]);
+
+  // Insertion sans exécution : on écrit le texte tel quel dans le PTY (sans `\r`).
+  // Déclenché par le `nonce` (et non par le texte), sinon deux insertions
+  // successives du MÊME bloc ne produiraient qu'un seul effet.
+  const lastInsertNonceRef = useRef(0);
+  useEffect(() => {
+    if (!insertRequest) return;
+    if (insertRequest.nonce === lastInsertNonceRef.current) return;
+    lastInsertNonceRef.current = insertRequest.nonce;
+    if (termIdRef.current !== null) {
+      terminalWrite(termIdRef.current, insertRequest.text).catch(() => { /* terminal fermé */ });
+    }
+  }, [insertRequest]);
 
   // Create the xterm instance once on mount
   useEffect(() => {

@@ -40,6 +40,11 @@ export interface TerminalPanelHandle {
   runInNewTab: (command: string) => void;
   /** Lance une tâche « Run » dans un nouvel onglet (spawn argv, sans shell). */
   runTaskInNewTab: (name: string, program: string, args: string[]) => void;
+  /**
+   * Injecte un texte dans le terminal ACTIF sans l'exécuter : la commande est
+   * écrite dans le PTY, sans touche Entrée. L'utilisateur garde le dernier mot.
+   */
+  insertIntoActive: (text: string) => void;
   /** Ouvre l'onglet Problems dans le panneau bas. */
   showProblems: () => void;
   /** Ouvre l'onglet Output dans le panneau bas. */
@@ -233,6 +238,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const prevCwdRef = useRef(cwd);
   const [clearKeys, setClearKeys] = useState<Record<number, number>>({});
   const [pendingInputs, setPendingInputs] = useState<Record<number, string>>({});
+  // Insertion sans exécution (bouton « insérer dans le terminal » d'un bloc de
+  // code) : texte injecté dans le PTY de l'onglet VISÉ, sans `\r`. Le `nonce`
+  // force la réinjection même si deux demandes portent le même texte.
+  const insertNonceRef = useRef(0);
+  const [pendingInserts, setPendingInserts] = useState<Record<number, { text: string; nonce: number }>>({});
   const [taskSpawns, setTaskSpawns] = useState<Record<number, { program: string; args: string[] }>>({});
   const [shellInfos, setShellInfos] = useState<Record<number, TabShellInfo>>({});
   const [hoveredTab, setHoveredTab] = useState<number | null>(null);
@@ -261,6 +271,13 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       setTabs((prev) => [...prev, { id, name, cwd }]);
       setActiveId(id);
       setTaskSpawns(prev => ({ ...prev, [id]: { program, args } }));
+      setView('terminal');
+    },
+    insertIntoActive(text: string) {
+      // On écrit dans l'onglet ACTIF : pas de nouvel onglet (l'utilisateur veut
+      // compléter une ligne de commande existante, pas en ouvrir une autre).
+      const nonce = ++insertNonceRef.current;
+      setPendingInserts(prev => ({ ...prev, [activeId]: { text, nonce } }));
       setView('terminal');
     },
     showProblems() { setView('problems'); },
@@ -560,6 +577,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
                 active={tab.id === activeId}
                 clearKey={clearKeys[tab.id] ?? 0}
                 pendingInput={pendingInputs[tab.id]}
+                insertRequest={pendingInserts[tab.id]}
                 task={taskSpawns[tab.id]}
                 onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
                 onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}

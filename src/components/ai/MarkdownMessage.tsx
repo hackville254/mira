@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState, type ReactNode } from "react";
-import { Check, Copy, FolderOpen } from "lucide-react";
+import { Check, Copy, Terminal, TerminalSquare, Play, FolderOpen } from "lucide-react";
 import type { Components } from "react-markdown";
 import { sanitizeProse } from "../../lib/textStyle";
 import { routeMarkdownLink } from "../../lib/ai/linkRouting";
@@ -57,6 +57,16 @@ interface Props {
    * ouverture arbitraire : l'existence est vérifiée côté appelant.
    */
   onOpenPath?: (path: string) => void;
+  /**
+   * Exécute une commande dans un terminal (bouton `Run` d'un bloc shell).
+   * Absent = pas de bouton `Run` (ex. aperçu Markdown d'un fichier).
+   */
+  onRunCommand?: (command: string) => void;
+  /**
+   * Insère un texte dans le terminal actif sans l'exécuter (bouton dédié d'un
+   * bloc shell). Absent = pas de bouton d'insertion.
+   */
+  onInsertTerminal?: (text: string) => void;
 }
 
 /** Rend un token « chemin » sous forme de bouton texte, ou null si ce n'en est pas un. */
@@ -128,16 +138,44 @@ function linkifyChildren(
 }
 
 /**
- * Bloc de code d'un message de l'agent.
- *
- * Rendu volontairement sobre (« pro ») : une barre d'en-tête discrète avec le
- * langage à gauche et l'unique action utile (copier) à droite, puis le code
- * dans un cadre à fond sombre. Pas de coloration syntaxique : le contenu est
- * arbitraire (extraits, arborescences, sorties de commandes) et un highlighter
- * mal calibré produirait plus de bruit que de signal.
+ * Langages « shell » pour lesquels on propose l'action `Run` : ce sont des
+ * commandes exécutables, pas un extrait de code à lire. Sans cette liste, un
+ * bloc `bash` n'aurait que `Copy`, alors que l'utilisateur veut d'abord
+ * l'EXÉCUTER (parité Trae).
  */
-function CodeBlock({ language, code }: { language: string; code: string }) {
+const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console", "terminal"]);
+
+/** Nom affiché du langage : capitalisé, jamais vide. */
+function langLabel(language: string): string {
+  if (!language) return "Code";
+  if (SHELL_LANGS.has(language)) return "Bash";
+  return language.charAt(0).toUpperCase() + language.slice(1);
+}
+
+/**
+ * Bloc de code d'un message de l'agent (parité Trae).
+ *
+ * Une barre d'en-tête porte l'icône du langage, son nom et les actions utiles :
+ * `Copy` toujours ; `Run` (accent) pour les commandes shell, avec au préalable
+ * l'insertion dans un terminal visible. Le corps est volontairement sans
+ * coloration syntaxique : le contenu est arbitraire (extraits, arborescences,
+ * sorties) et un highlighter mal calibré produirait plus de bruit que de signal.
+ */
+function CodeBlock({
+  language,
+  code,
+  onRun,
+  onInsertTerminal,
+}: {
+  language: string;
+  code: string;
+  /** Exécute le bloc dans un terminal (blocs shell uniquement). */
+  onRun?: (command: string) => void;
+  /** Insère le texte dans le terminal actif, sans l'exécuter. */
+  onInsertTerminal?: (text: string) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const isShell = SHELL_LANGS.has(language);
 
   function handleCopy() {
     void navigator.clipboard.writeText(code);
@@ -149,7 +187,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
     <div
       style={{
         margin: "10px 0",
-        borderRadius: 6,
+        borderRadius: 8,
         overflow: "hidden",
         border: "1px solid var(--origin-border-default)",
         backgroundColor: "var(--origin-bg-editor)",
@@ -159,24 +197,26 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
         style={{
           display: "flex",
           alignItems: "center",
-          padding: "3px 6px 3px 12px",
+          padding: "4px 6px 4px 10px",
           backgroundColor: "var(--origin-bg-hover)",
           borderBottom: "1px solid var(--origin-border-default)",
-          gap: 4,
+          gap: 6,
         }}
       >
+        {isShell && (
+          <Terminal size={13} style={{ flexShrink: 0, color: "var(--origin-accent-blue)" }} />
+        )}
         <span
           style={{
             flex: 1,
-            fontSize: "11px",
-            letterSpacing: "0.02em",
-            textTransform: "lowercase",
-            color: "var(--origin-fg-muted)",
-            fontFamily: "var(--font-mono)",
+            fontSize: "12px",
+            fontWeight: 500,
+            color: "var(--origin-fg-default)",
+            fontFamily: "var(--font-sans)",
             userSelect: "none",
           }}
         >
-          {language || "code"}
+          {langLabel(language)}
         </span>
 
         <button
@@ -194,9 +234,43 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
             (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
           }}
         >
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          <span>{copied ? "Copied" : "Copy"}</span>
+          {copied ? <Check size={12} /> : <Copy size={12} />}
         </button>
+
+        {onInsertTerminal && (
+          <button
+            type="button"
+            onClick={() => onInsertTerminal(code)}
+            title="Insert into terminal"
+            aria-label="Insert into terminal"
+            style={iconBtnStyle}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-default)";
+              (e.currentTarget as HTMLElement).style.backgroundColor = "var(--origin-bg-active)";
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLElement).style.color = "var(--origin-fg-muted)";
+              (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
+            }}
+          >
+            <TerminalSquare size={12} />
+          </button>
+        )}
+
+        {isShell && onRun && (
+          <button
+            type="button"
+            onClick={() => onRun(code)}
+            title="Run in terminal"
+            aria-label="Run in terminal"
+            style={runBtnStyle}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = "0.9"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
+          >
+            <Play size={11} />
+            <span>Run</span>
+          </button>
+        )}
       </div>
 
       <pre
@@ -204,8 +278,8 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
           margin: 0,
           padding: "10px 14px",
           overflowX: "auto",
-          fontSize: "12px",
-          lineHeight: "1.6",
+          fontSize: "12.5px",
+          lineHeight: "1.65",
           fontFamily: "var(--font-mono)",
           color: "var(--origin-fg-default)",
           tabSize: 2,
@@ -220,18 +294,40 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 const iconBtnStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
+  justifyContent: "center",
   gap: 4,
   fontSize: "11px",
   color: "var(--origin-fg-muted)",
   background: "transparent",
   border: "none",
   cursor: "pointer",
-  padding: "2px 7px",
-  borderRadius: 4,
+  padding: "3px 5px",
+  borderRadius: 5,
   fontFamily: "var(--font-sans)",
 };
 
-export default function MarkdownMessage({ content, onOpenPath }: Props) {
+/** Bouton `Run` : unique action mise en avant d'un bloc shell. */
+const runBtnStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 5,
+  fontSize: "11.5px",
+  fontWeight: 500,
+  color: "var(--origin-fg-default)",
+  background: "var(--origin-bg-active)",
+  border: "1px solid var(--origin-border-default)",
+  cursor: "pointer",
+  padding: "3px 10px",
+  borderRadius: 6,
+  fontFamily: "var(--font-sans)",
+};
+
+export default function MarkdownMessage({
+  content,
+  onOpenPath,
+  onRunCommand,
+  onInsertTerminal,
+}: Props) {
   const components: Components = {
     pre({ children }) {
       return <>{children}</>;
@@ -247,6 +343,8 @@ export default function MarkdownMessage({ content, onOpenPath }: Props) {
           <CodeBlock
             language={match?.[1] ?? ""}
             code={text}
+            onRun={onRunCommand}
+            onInsertTerminal={onInsertTerminal}
           />
         );
       }

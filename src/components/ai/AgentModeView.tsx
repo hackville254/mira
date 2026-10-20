@@ -170,6 +170,25 @@ export default function AgentModeView(props: AgentModeViewProps) {
     openToolTab("editor");
   }, [openTab, openToolTab]);
 
+  // `Run` d'un bloc shell (message de l'agent ou réponse finale) : on affiche le
+  // terminal PUIS on y lance la commande dans un onglet dédié. Le terminal est un
+  // shell RÉEL de l'utilisateur — on ne l'exécute jamais en aveugle : la commande
+  // vient d'un bloc que l'utilisateur a explicitement cliqué, et le Flow est
+  // suspendu pour qu'il voie le résultat.
+  const handleRunCommand = useCallback((command: string) => {
+    flowPausedRef.current = true;
+    openToolTab("terminal");
+    terminalRef.current?.runInNewTab(command);
+  }, [openToolTab, terminalRef]);
+
+  // Insertion sans exécution : la commande atterrit dans le terminal actif,
+  // l'utilisateur garde le dernier mot (il peut l'éditer avant d'appuyer Entrée).
+  const handleInsertTerminal = useCallback((text: string) => {
+    flowPausedRef.current = true;
+    openToolTab("terminal");
+    terminalRef.current?.insertIntoActive(text);
+  }, [openToolTab, terminalRef]);
+
   useEffect(() => {
     const running = surface?.isRunning ?? false;
     // Front montant d'un run : le Flow reprend la main (nouveau tour).
@@ -234,6 +253,11 @@ export default function AgentModeView(props: AgentModeViewProps) {
         getFileContents={() => fileContents}
         onOpenDiffTab={openAiDiffTab}
         onOpenFile={(path, line, col) => openTabAtLine(path, line ?? 1, col ?? 1)}
+        // `Run` d'un bloc shell du chat : on AFFICHE le terminal puis on y lance
+        // la commande dans un nouvel onglet. Comme pour l'explorateur, on
+        // suspend le Flow — l'utilisateur regarde ce qu'il a demandé.
+        onRunCommand={handleRunCommand}
+        onInsertTerminal={handleInsertTerminal}
         onExternalFileChanges={onExternalFileChanges}
         onAgentSurface={setSurface}
       />

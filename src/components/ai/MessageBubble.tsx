@@ -33,6 +33,8 @@ export default function MessageBubble({
   onInsert,
   onOpenFile,
   onOpenPath,
+  onRunCommand,
+  onInsertTerminal,
   canRegenerate = false,
   onActionCopy,
   vote,
@@ -68,6 +70,10 @@ export default function MessageBubble({
    * décide : fichier → éditeur, dossier → révélé dans l'explorateur.
    */
   onOpenPath?: (path: string) => void;
+  /** Exécute une commande d'un bloc shell dans le terminal (bouton `Run`). */
+  onRunCommand?: (command: string) => void;
+  /** Insère un texte dans le terminal actif, sans l'exécuter. */
+  onInsertTerminal?: (text: string) => void;
   /** Faux si un autre tour est en cours : on désactive « régénérer ». */
   canRegenerate?: boolean;
   /** Signale l'usage de « copier » (pour la bannière de checkpoint). */
@@ -248,6 +254,8 @@ export default function MessageBubble({
                 content={r.content}
                 isStreaming={isLastPart && message.streaming}
                 onOpenPath={onOpenPath}
+                onRunCommand={onRunCommand}
+                onInsertTerminal={onInsertTerminal}
               />
             );
           })}
@@ -257,6 +265,8 @@ export default function MessageBubble({
           content={message.content}
           isStreaming={message.streaming}
           onOpenPath={onOpenPath}
+          onRunCommand={onRunCommand}
+          onInsertTerminal={onInsertTerminal}
         />
       ) : null}
 
