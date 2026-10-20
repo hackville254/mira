@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { ClineSidecarClient } from "../headless/clineSidecar";
+import { searchIndex } from "../headless/codeSearch";
 import { resolveClineProvider } from "../../../src/lib/agent/providers";
 import { summarize, writeReport, formatTable, type BenchReport } from "../report";
 import type { AttemptResult } from "../types";
@@ -51,6 +52,7 @@ import {
   validateInstance,
   type LcbInstance,
 } from "./instance";
+import { detectContract } from "./contract";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -103,22 +105,38 @@ interface LcbAttempt extends AttemptResult {
   /** Nombre de cas réussis / total. */
   passed: number;
   total: number;
+  /** Contrat de sortie appliqué (traçabilité du format attendu). */
+  contract?: "functional" | "stdin" | "interactive";
+  /** Vrai si le problème a été EXCLU du score (interactif, non évaluable). */
+  skipped?: boolean;
 }
 
 /**
- * Instruction LiveCodeBench — contrat IDENTIQUE au protocole officiel : énoncé
- * + starter, réponse attendue = un unique bloc de code.
+ * Instruction LiveCodeBench — le contrat de sortie dépend du PROBLÈME :
+ *  - `functional` : la réponse doit définir `class Solution` ;
+ *  - `stdin`      : la réponse doit être un PROGRAMME COMPLET lisant stdin.
+ *
+ * Envoyer la mauvaise consigne provoquait 6 faux négatifs (AtCoder jugé avec le
+ * contrat LeetCode). L'instruction est donc dérivée du même `detectContract()`
+ * que l'évaluateur : consigne et notation ne peuvent plus diverger.
  */
 function lcbInstruction(inst: LcbInstance): string {
-  const lines = [
-    "Résous le problème de programmation suivant en Python.",
-    "Réponds UNIQUEMENT avec un bloc de code Python complet (classe `Solution`).",
-    "N'exécute aucune commande : donne juste la solution.",
-    "",
-    `Titre : ${inst.question_title}`,
-    "",
-    inst.question_content,
-  ];
+  const contract = detectContract(inst);
+  const lines = ["Résous le problème de programmation suivant en Python."];
+  if (contract === "stdin") {
+    lines.push(
+      "Réponds UNIQUEMENT avec un PROGRAMME Python complet.",
+      "Le programme lit ses entrées sur l'entrée standard (sys.stdin) et écrit le résultat",
+      "sur la sortie standard (print). Il ne doit PAS définir de classe Solution.",
+      "N'exécute aucune commande : donne juste le programme.",
+    );
+  } else {
+    lines.push(
+      "Réponds UNIQUEMENT avec un bloc de code Python complet (classe `Solution`).",
+      "N'exécute aucune commande : donne juste la solution.",
+    );
+  }
+  lines.push("", `Titre : ${inst.question_title}`, "", inst.question_content);
   if (inst.starter_code.trim()) {
     lines.push("", "Code de départ :", "```python", inst.starter_code, "```");
   }
@@ -130,6 +148,7 @@ function buildAgentSystemPrompt(): string {
   return [
     "Tu es un expert en algorithmique qui résout des problèmes de programmation.",
     "Tu réponds UNIQUEMENT par un bloc de code Python complet, sans exécuter de commande.",
+    "Adapte le format demandé : classe `Solution` ou programme complet sur stdin selon la consigne.",
   ].join("\n");
 }
 
@@ -224,6 +243,7 @@ async function runOne(
   if (run.metrics.error) attempt.error = `agent : ${run.metrics.error}`;
 
   // ── Notation : code extrait → Docker verrouillé ───────────────────────────
+  attempt.contract = detectContract(inst);
   const code = extractCode(run.finalText ?? "");
   let evalResult: LcbEvalResult;
   const tTest = Date.now();
@@ -242,9 +262,13 @@ async function runOne(
   attempt.testMs = Date.now() - tTest;
   attempt.passed = evalResult.passed;
   attempt.total = evalResult.total;
+  attempt.skipped = evalResult.skipped === true;
   attempt.outcome = isResolved(evalResult) ? "resolved" : "unresolved";
   if (evalResult.error && !attempt.error) attempt.error = evalResult.error;
-  console.log(`   [eval] passed=${evalResult.passed}/${evalResult.total} failed=[${evalResult.failed.join(",")}] err=${evalResult.error ?? "-"}`);
+  console.log(
+    `   [eval] contrat=${attempt.contract} passed=${evalResult.passed}/${evalResult.total} ` +
+    `failed=[${evalResult.failed.join(",")}]${attempt.skipped ? " EXCLU" : ""} err=${evalResult.error ?? "-"}`,
+  );
 
   await rm(workspace, { recursive: true, force: true }).catch(() => {});
   return attempt;
@@ -290,6 +314,16 @@ async function main(): Promise<void> {
     approvalPolicy: req => {
       console.log(`   [approve] ${req.toolName}`);
       return true;
+    },
+    // Recherche de code BM25 en Node pur : rend `codebase_search` fonctionnel en
+    // headless (sans Tauri), comme en production.
+    onToolInvoke: async (command, args) => {
+      if (command !== "search_index") throw new Error(`commande non supportée en headless : ${command}`);
+      const workspace = typeof args.workspace === "string" ? args.workspace : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      const limit = typeof args.limit === "number" ? args.limit : 12;
+      const hits = await searchIndex(workspace, query, limit);
+      return JSON.stringify(hits);
     },
   });
   await client.start();

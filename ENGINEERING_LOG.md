@@ -5,6 +5,66 @@
 
 ---
 
+### [2026-10-20T12:48] | Compaction de contexte sémantique (nettoyage déterministe + résumé LLM persisté)
+
+- **Contexte :** en cliquant « Compact » depuis la jauge de contexte, l'utilisateur
+  obtenait « Aucun résultat de lecture périmé à compacter. » L'ancienne compaction
+  (`compactHistory`) ne retirait QUE les `read_file` périmés (relus plus tard ou
+  invalidés par une écriture). Sur une session majoritairement composée d'écritures,
+  de commandes et de recherches, il n'y avait donc strictement rien à retirer : le
+  bouton semblait cassé. Ce n'était pas la compaction de Trae, qui **résume** via LLM
+  l'historique ancien.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/historySummary.ts` (nouveau) : `SUMMARY_SYSTEM_PROMPT` (préserve
+    intention/décisions/faits, interdit d'inventer, sort uniquement le résumé, langue
+    du fil) ; `recentWindowStart()` (index du premier message de la fenêtre récente,
+    **aligné sur une frontière de tour** pour ne jamais couper un couple
+    assistant/tool-calls ↔ tool-results) ; `renderTranscript()` (rendu texte compact
+    tête 60 % + queue 30 %) ; `summarizeHistory()` (résume la tête, renvoie la queue
+    comme historique compacté + `coveredCount`).
+  - `src/lib/agent/compactionStore.ts` (nouveau) : persistance **par session** dans
+    localStorage (`read/write/clearCompactionSummary`) et `withCompactionSummary()`
+    qui préfixe l'historique modèle d'un unique pont `user`+`assistant` portant le
+    résumé.
+  - `src/lib/agent/compactHistory.ts` : nouvelle `compactLargeToolResults()` —
+    vide le contenu des tool results volumineux (`LARGE_TOOL_RESULT_MAX_CHARS = 6_000`)
+    **hors** fenêtre récente, quels que soient les outils, non destructif pour le fil
+    affiché.
+  - `src/components/ai/AiPanel.tsx` : `handleManualCompact` refondu en deux étages
+    (1. nettoyage déterministe large ; 2. résumé LLM via `generateText` +
+    `buildLanguageModel`), écriture du résumé persisté + `compactionVersion` ;
+    `contextTokens` estimé sur ce qui est RÉELLEMENT envoyé (fenêtre récente +
+    résumé) ; `handleSend` injecte le résumé (`withCompactionSummary`) ; purge du
+    résumé à la suppression de session ; recalcul de la jauge au changement de session.
+
+- **Décisions Techniques :**
+  - **Bulles du fil intactes + résumé injecté à côté** (choix utilisateur) : aucune
+    réécriture destructrice de la conversation affichée. Conséquence directe : le
+    résumé doit être persisté à part (par session) et réinjecté à chaque tour, sinon
+    le prochain envoi repartirait de l'historique complet et le gain disparaîtrait.
+  - **Pas d'undo** (choix utilisateur) : la compaction est volontairement non
+    réversible côté UI ; le résumé reste supprimable via la purge de session.
+  - **Fenêtre récente alignée sur une frontière de tour** : couper au milieu d'un
+    échange `tool-calls`/`tool-results` produirait un historique modèle invalide.
+  - **Source unique du pont de résumé** : `summarizeHistory` ne génère PAS le pont
+    (bug de double-injection corrigé) ; seul le store l'injecte.
+  - **Jauge = envoi réel** : `contextTokens` reflète fenêtre récente + résumé, pas le
+    fil affiché — d'où `compactionVersion` (incrémenté à la compaction ET au
+    changement de session) pour forcer le recalcul.
+
+- **Impacts & Dépendances :** touche `AiPanel.tsx` (compaction, envoi, jauge,
+  cycle de vie des sessions) et trois modules agent. Dépend de
+  `tokenBudget.ts` (`estimateTokens`, `PRESERVE_RECENT_TOKENS`) et de
+  `providers.ts` (`buildLanguageModel`). Aucun fichier Rust modifié.
+
+- **Prochaines étapes :** vérifier en `tauri dev` le cycle complet (clic jauge →
+  Compact → jauge qui baisse durablement + bannière chiffrée + télémétrie
+  `compaction`), y compris la persistance après rechargement et le changement de
+  conversation.
+
+---
+
 ### [2026-10-20T08:56] | Benchmark de génération de fonctions EvalPlus (HumanEval+ / MBPP+) — modes model-only et agent
 
 - **Contexte :** la mission demandait un benchmark de programmation reproductible

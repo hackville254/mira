@@ -39,7 +39,7 @@ import { recordUsage } from "../../lib/usage";
 import { loadApiKey } from "../../lib/secrets";
 import { readFile } from "../../lib/fs";
 import { invoke } from "@tauri-apps/api/core";
-import { resolveClineProvider } from "../../lib/agent/providers";
+import { resolveClineProvider, buildLanguageModel } from "../../lib/agent/providers";
 import { type AgentEvent } from "../../lib/agent/run";
 import { startClineHarness } from "../../lib/agent/clineHarness";
 import { PREVIEW_ACTIVE_TARGET } from "../../lib/ai/previewTabs";
@@ -61,10 +61,12 @@ import { getDisabledTools, AGENT_TOOLS } from "../../lib/agent/agentToolPrefs";
 import { listAgents, readSelectedAgentId, resolveSelectedAgent, CUSTOM_AGENTS_EVENT, type CustomAgent } from "../../lib/agent/customAgents";
 import { finalizeTodos, setTodos, clearTodos } from "../../lib/agent/todoStore";
 import { enqueueMessage, dequeueMessage } from "../../lib/agent/messageQueue";
-import { shouldPreCompact, estimateTokensWithOverhead, contextStatusPrompt, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
-import { compactHistory, findStaleReads, compactDisplayMessages, mutatedPathsOf } from "../../lib/agent/compactHistory";
+import { shouldPreCompact, estimateTokens, estimateTokensWithOverhead, contextStatusPrompt, DEFAULT_TOKEN_BUDGET, PRESERVE_RECENT_TOKENS } from "../../lib/agent/tokenBudget";
+import { compactHistory, findStaleReads, compactDisplayMessages, mutatedPathsOf, compactLargeToolResults } from "../../lib/agent/compactHistory";
+import { summarizeHistory, SUMMARY_SYSTEM_PROMPT, recentWindowStart } from "../../lib/agent/historySummary";
+import { readCompactionSummary, writeCompactionSummary, clearCompactionSummary, withCompactionSummary } from "../../lib/agent/compactionStore";
 import { parsePlan } from "../../lib/agent/planTypes";
-import type { ModelMessage } from "ai";
+import { generateText, type ModelMessage } from "ai";
 import {
   createSession,
   touchSession,
@@ -677,6 +679,9 @@ export default function AiPanel({
   const setActiveSessionId = useCallback((id: string | null) => {
     activeSessionIdRef.current = id;
     setActiveSessionIdState(id);
+    // La jauge de contexte dépend du résumé de compaction persisté PAR session :
+    // au changement de conversation, on force son recalcul.
+    setCompactionVersion((v) => v + 1);
   }, []);
 
   // ── Mode applicatif de la conversation (parité Trae) ─────────────────────
@@ -726,91 +731,149 @@ export default function AiPanel({
   // `setTelemetry` (useState) est stable : on le garde en ref pour que les
   // closures de `handleSend` (mémorisées) y accèdent sans dépendre de lui.
   const setTelemetryRef = useRef(setTelemetry);
+  /**
+   * Incrémenté à chaque écriture/effacement du résumé de compaction. Force le
+   * recalcul de la jauge de contexte, dont la valeur dépend d'un stockage local
+   * (hors du graphe React) que rien d'autre ne signalerait.
+   */
+  const [compactionVersion, setCompactionVersion] = useState(0);
 
-  // Usage du contexte courant : estimation (chars/4 + overhead) de l'historique
-  // modèle. Recalculée à chaque changement de messages ; pilotée par la même
-  // métrique que la compaction, elle sert d'indicateur visuel en pied de fil.
-  const contextTokens = useMemo(
-    () => estimateTokensWithOverhead(buildModelHistory(messages.filter(m => !m.streaming))),
-    [messages],
-  );
+  // Usage du contexte courant : estimation (chars/4 + overhead) de CE QUI EST
+  // RÉELLEMENT ENVOYÉ au modèle. Quand une compaction manuelle a persisté un
+  // résumé, la tête ancienne n'est plus envoyée : on ne compte donc que la
+  // fenêtre récente (+ le résumé lui-même). Sans cela la jauge continuerait
+  // d'afficher la taille du fil AFFICHÉ (intact) et ignorerait le gain réel.
+  // `compactionVersion` force le recalcul quand le résumé persisté change.
+  const contextTokens = useMemo(() => {
+    const full = buildModelHistory(messages.filter(m => !m.streaming));
+    const stored = readCompactionSummary(activeSessionIdRef.current);
+    if (!stored) return estimateTokensWithOverhead(full);
+    const start = recentWindowStart(full, PRESERVE_RECENT_TOKENS, estimateTokens);
+    const tail = start > 0 && start < full.length ? full.slice(start) : full;
+    return estimateTokensWithOverhead(withCompactionSummary(tail, stored));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, compactionVersion]);
 
   /**
    * Compaction MANUELLE, déclenchée par l'utilisateur (bouton « Compact » du
    * menu de la jauge de contexte).
    *
-   * CE QU'ELLE FAIT, ET POURQUOI AINSI
-   * ----------------------------------
-   * Elle applique EXACTEMENT la même compaction déterministe que le chemin
-   * automatique (`findStaleReads` : les `read_file` périmés — remplacés par une
-   * lecture plus récente, ou invalidés par une écriture ultérieure — sont
-   * remplacés par un marqueur d'une ligne). Aucun appel LLM : c'est instantané,
-   * gratuit en tokens, et sans risque de hallucination dans un résumé.
+   * DEUX ÉTAGES, DANS CET ORDRE
+   * ---------------------------
+   *  1. NETTOYAGE DÉTERMINISTE (gratuit, instantané, sans LLM) : `compactHistory`
+   *     retire les `read_file` périmés, puis `compactLargeToolResults` vide les
+   *     tool results VOLUMINEUX anciens (terminal, recherche, listing…). C'est ce
+   *     qui manquait : sans lui, une session d'écritures n'avait « rien à
+   *     compacter » et le bouton semblait inerte.
+   *  2. RÉSUMÉ SÉMANTIQUE (LLM) : l'historique ancien restant est résumé en un
+   *     bloc structuré et remplacé, la fenêtre récente (~20 000 tokens) restant
+   *     verbatim. C'est la vraie compaction façon Trae : la jauge chute franchement.
    *
-   * Différence avec l'auto : ici on réécrit AUSSI le fil AFFICHÉ
-   * (`compactDisplayMessages`). Sans cela, la jauge — calculée sur le fil
-   * affiché — ne bougerait pas et le bouton semblerait sans effet.
+   * CE QUI EST ÉCRIT DANS LE FIL
+   * ----------------------------
+   * Les BULLES restent intactes (choix produit : on ne réécrit pas l'historique
+   * affiché) ; une bannière de statut rend le résultat visible et chiffré. Le
+   * contexte RÉELLEMENT envoyé au modèle, lui, est bien réduit (étage 1 + 2).
    *
    * SÉCURITÉ / INTÉGRITÉ
    * --------------------
-   *  - Purement local : ne touche ni disque, ni réseau, ni le sidecar.
-   *  - Ne s'exécute pas pendant une génération (`isStreaming`) : on ne réécrit
-   *    jamais un fil en cours de production d'événements (course sur les parts).
-   *  - Ne touche jamais le dernier message (tour courant) ni la fenêtre récente
-   *    (~20 000 tokens) : le fil immédiat reste verbatim.
-   *  - Idempotent : un second appel ne trouve plus rien à compacter et le signale.
+   *  - Jamais pendant une génération (`isStreaming`) : on ne réécrit pas un fil
+   *    en cours de production.
+   *  - L'étage 2 ne touche jamais le dernier message ni la fenêtre récente, et
+   *    un échec de résumé laisse l'historique INTACT (aucune perte de contexte).
+   *  - La clé d'API ne sert qu'à l'appel de résumé et n'est jamais journalisée ;
+   *    un résumé ne part qu'après une action EXPLICITE de l'utilisateur.
+   *  - Compatible mode local : si le provider est local, il n'y a pas de clé et
+   *    l'étage 2 est simplement sauté (l'étage 1 reste appliqué).
    */
-  const handleManualCompact = useCallback(() => {
+  const handleManualCompact = useCallback(async () => {
     if (isStreaming) return;
     const current = messagesRef.current.filter(m => !m.streaming);
-    // Décision de péremption calculée sur l'historique MODÈLE (source unique).
-    const stale = findStaleReads(buildModelHistory(current));
-    if (stale.size === 0) {
-      // Rien de périmé : on le dit explicitement plutôt que de simuler un effet.
-      const noopPart: MessagePart = {
-        type: "status", kind: "compaction",
-        detail: "Aucun résultat de lecture périmé à compacter.",
-      };
-      setMessages(prev => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last?.role === "assistant") {
-          next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), noopPart] };
-        }
-        return next;
-      });
-      return;
-    }
     const beforeTokens = estimateTokensWithOverhead(buildModelHistory(current));
-    const compacted = compactDisplayMessages(current, stale, mutatedPathsOf(current));
-    const saved = Math.max(0, Math.round(beforeTokens - estimateTokensWithOverhead(buildModelHistory(compacted))));
 
+    // ── Étage 1 : nettoyage déterministe (read_file périmés + gros tool results).
+    const stale = findStaleReads(buildModelHistory(current));
+    const displayAfterStale = compactDisplayMessages(current, stale, mutatedPathsOf(current));
+    const modelAfterStale = compactLargeToolResults(
+      compactHistory(buildModelHistory(displayAfterStale)),
+    );
+    const afterStage1 = estimateTokensWithOverhead(modelAfterStale);
+    const saved1 = Math.max(0, Math.round(beforeTokens - afterStage1));
+
+    // ── Étage 2 : résumé LLM de l'historique ancien (hors fenêtre récente).
+    // Le résumé remplace la TÊTE de l'historique modèle ; la fenêtre récente
+    // reste verbatim. En cas d'échec (pas de clé, provider muet), on garde
+    // l'historique de l'étage 1 tel quel — jamais de perte de contexte.
+    let summarySaved = 0;
+    let summaryApplied = false;
+    try {
+      const providerId = activeProviderIdRef.current;
+      const modelId = activeModelIdRef.current;
+      const apiKey = await loadApiKey(providerId);
+      const isLocal = LOCAL_PROVIDERS.has(providerId);
+      if (providerId && modelId && (apiKey || isLocal)) {
+        const model = buildLanguageModel(providerId, modelId, apiKey ?? "");
+        const res = await summarizeHistory(
+          modelAfterStale,
+          PRESERVE_RECENT_TOKENS,
+          estimateTokens,
+          async (transcript, signal) => {
+            const { text } = await generateText({
+              model, system: SUMMARY_SYSTEM_PROMPT, prompt: transcript, abortSignal: signal,
+            });
+            return text;
+          },
+        );
+        if (res) {
+          summaryApplied = true;
+          summarySaved = Math.max(0, Math.round(afterStage1 - estimateTokensWithOverhead(res.compacted)));
+          // Le résumé est PERSISTÉ par session : il sera réinjecté en tête de
+          // l'historique à chaque tour suivant, et survivra à un rechargement.
+          const sid = activeSessionIdRef.current;
+          if (sid) {
+            writeCompactionSummary(sid, {
+              summary: res.info.summary,
+              coveredCount: res.info.coveredCount,
+              at: Date.now(),
+            });
+            // La jauge lit le résumé depuis le stockage local : on la force à se
+            // recalculer pour qu'elle reflète immédiatement le gain réel.
+            setCompactionVersion(v => v + 1);
+          }
+        }
+      }
+    } catch {
+      // Un échec de résumé ne doit jamais casser la compaction déterministe.
+      summaryApplied = false;
+    }
+
+    const saved = saved1 + summarySaved;
+    const detail = summaryApplied
+      ? (stale.size > 0
+          ? "Contexte compacté — lectures périmées nettoyées puis historique ancien résumé"
+          : "Contexte compacté — historique ancien résumé")
+      : (stale.size > 0
+          ? "Contexte compacté — lectures périmées et résultats volumineux nettoyés"
+          : "Contexte compacté — résultats d'outils volumineux nettoyés");
     const statusPart: MessagePart = {
-      type: "status", kind: "compaction",
-      detail: `Compaction manuelle — ${stale.size} résultat(s) de lecture périmé(s) remplacé(s)`,
-      savedTokens: saved,
+      type: "status", kind: "compaction", detail, savedTokens: saved,
     };
     setTelemetryRef.current?.(t => ({
       ...t, compaction: t.compaction + 1,
       lastSavedTokens: saved || t.lastSavedTokens,
     }));
 
-    // On pousse la bannière sur le dernier message pour rendre l'action visible.
-    const withStatus: DisplayMessage[] = (() => {
-      const next = [...compacted];
+    setMessages(prev => {
+      const next = [...prev];
       const last = next[next.length - 1];
       if (last?.role === "assistant") {
         next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), statusPart] };
       }
       return next;
-    })();
-
-    setMessages(withStatus);
-    // Le miroir du run courant doit refléter la compaction : sinon un aller-
-    // retour de tâche (ou une reprise) réafficherait les résultats complets.
+    });
     const sid = activeSessionIdRef.current;
-    if (sid) setRunMessages(sid, withStatus);
-  }, [isStreaming]);
+    if (sid) setRunMessages(sid, messagesRef.current);
+  }, [isStreaming, setCompactionVersion]);
 
   // Ouvre un checkpoint pour un nouveau tour d'agent. Best-effort : l'échec
   // n'empêche jamais le tour de se dérouler (le mode Ask n'écrit rien sur disque).
@@ -1427,7 +1490,11 @@ export default function AiPanel({
     }
 
     const modelMessages: ModelMessage[] = [
-      ...historyBeforeSend,
+      // Le résumé de compaction persisté (« à côté » des bulles intactes) est
+      // réinjecté ici, au seul point qui alimente le modèle : le gain de la
+      // compaction manuelle est donc réellement actif au tour suivant, et il
+      // survit à un rechargement de session.
+      ...withCompactionSummary(historyBeforeSend, readCompactionSummary(activeSessionIdRef.current)),
       { role: "user" as const, content: apiText },
     ];
 
@@ -3095,6 +3162,9 @@ export default function AiPanel({
     deleteSession(sessionId).catch(err => console.error("[AiPanel] Failed to delete session:", err));
     // La todo list suit la conversation : on la purge avec elle.
     clearTodos(sessionId);
+    // Le résumé de compaction est attaché à la session : on le supprime aussi
+    // pour ne pas laisser d'entrée orpheline dans le stockage local.
+    clearCompactionSummary(sessionId);
   }, [setActiveSessionId, setSessionAppMode]);
 
   const dragging = useRef(false);

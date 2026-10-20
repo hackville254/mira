@@ -46,6 +46,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 
 import { ClineSidecarClient, type HeadlessRunMetrics } from "../headless/clineSidecar";
+import { searchIndex } from "../headless/codeSearch";
 import { validateInstance, testFilesFor, type SweBenchInstance } from "./instance";
 import { ensureArmed, officialImageName } from "./prepare";
 import { captureModelPatch, writePredictions, type Prediction } from "./predictions";
@@ -183,6 +184,8 @@ interface SweAttempt extends AttemptResult {
   modelPatch?: string;
   /** Métriques brutes du run headless. */
   metrics?: HeadlessRunMetrics;
+  /** Motif de fin du moteur (`completed`/`max_iterations`/`error`/…). */
+  stopReason?: string;
 }
 
 /**
@@ -258,6 +261,10 @@ async function runOne(
   base.inputTokens = run.metrics.inputTokens;
   base.outputTokens = run.metrics.outputTokens;
   base.metrics = run.metrics;
+  // Motif de fin BRUT (`max_iterations` vs `error`) : permet de classer un
+  // échec (« l'agent a épuisé son budget de tours ») au lieu de le confondre
+  // avec une erreur du fournisseur. Aucune invention : valeur du moteur.
+  base.stopReason = run.metrics.stopReason;
 
   // ── Capture du patch produit (format officiel) ────────────────────────────
   try {
@@ -319,6 +326,8 @@ function buildAgentSystemPrompt(): string {
   return [
     "Tu es un ingénieur logiciel autonome qui corrige des bugs dans un dépôt Python.",
     "Tu disposes d'outils pour lire/écrire des fichiers et exécuter des commandes shell dans le workspace.",
+    "Tu disposes aussi de `codebase_search` (recherche plein-texte BM25) : utilise-le pour localiser",
+    "vite les symboles/fonctions concernés plutôt que d'enchaîner des `grep`/`ls` exploratoires.",
     "Explore le code, identifie la cause racine, applique une correction MINIMALE, puis termine.",
     "Ne modifie jamais les fichiers de test.",
   ].join("\n");
@@ -351,6 +360,19 @@ async function main(): Promise<void> {
     approvalPolicy: (req) => {
       console.log(`   [approve] ${req.toolName}`);
       return true;
+    },
+    // Recherche de code HEADLESS : on rend `codebase_search` fonctionnel sans
+    // Tauri (index BM25 Node pur, cf. `../headless/codeSearch`). Objectif
+    // mesuré : moins de tours et de tokens d'entrée sur les grosses bases.
+    onToolInvoke: async (command, args) => {
+      if (command !== "search_index") {
+        throw new Error(`commande non supportée en headless : ${command}`);
+      }
+      const workspace = typeof args.workspace === "string" ? args.workspace : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      const limit = typeof args.limit === "number" ? args.limit : 12;
+      const hits = await searchIndex(workspace, query, limit);
+      return JSON.stringify(hits);
     },
     onLog: (m) => console.log(`   ${m}`),
   });

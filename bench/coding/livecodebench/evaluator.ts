@@ -75,7 +75,7 @@ export function extractCode(response: string): string {
  * Les entrées LiveCodeBench fonctionnelles sont des littéraux Python
  * (`[1,2,3]\n2`) évalués via `ast.literal_eval` DANS le conteneur sandboxé.
  */
-export function buildRunner(instance: LcbInstance, solutionCode: string): string {
+export function buildRunner(instance: LcbInstance): string {
   return detectContract(instance) === "stdin"
     ? buildStdinRunner(instance)
     : buildFunctionalRunner(instance);
@@ -266,7 +266,7 @@ export async function runSolution(
   const dir = await mkdtemp(join(tmpdir(), "orvyx-lcb-"));
   try {
     await writeFile(join(dir, "solution.py"), solutionCode, "utf8");
-    await writeFile(join(dir, "runner.py"), buildRunner(instance, solutionCode), "utf8");
+    await writeFile(join(dir, "runner.py"), buildRunner(instance), "utf8");
     const args = [
       "run", "--rm",
       "--network", "none",

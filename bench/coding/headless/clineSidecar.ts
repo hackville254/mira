@@ -22,6 +22,10 @@
  *    codebase) émettent un `tool_invoke` que PERSONNE ne peut honorer ici. On ne
  *    les DÉCLARE donc pas (`extraTools` omis) : le sidecar ne les crée pas et
  *    l'agent ne peut pas les appeler. Aucune fausse réussite.
+ *    EXCEPTION — la recherche de code (`onToolInvoke`, voir plus bas) : quand
+ *    l'appelant fournit un handler, on déclare `{kind:"code_index"}` et on
+ *    RÉPOND localement aux `tool_invoke` `search_index` (index BM25 Node pur,
+ *    cf. `./codeSearch`). L'agent dispose alors de `codebase_search` sans Tauri.
  *  - Les approbations sont décidées LOCALEMENT selon une politique explicite et
  *    journalisée. Par défaut : tout est REFUSÉ (le plus sûr). Le runner de bench
  *    passe `autoApprove: true` pour un run non interactif, ce qui est journalisé.
@@ -69,7 +73,9 @@ interface RawAgentEvent {
   noticeType?: string;
   message?: string;
   reason?: string;
-  error?: { message?: string } | string;
+  code?: string;
+  recoverable?: boolean;
+  error?: { message?: string; code?: string } | string;
   usage?: { inputTokens?: number; outputTokens?: number };
 }
 
@@ -91,6 +97,21 @@ export interface ApprovalRequest {
 /** Politique d'approbation : décide, pour chaque demande, si l'outil s'exécute. */
 export type ApprovalPolicy = (req: ApprovalRequest) => boolean;
 
+/**
+ * Handler d'un `tool_invoke` émis par un outil custom du sidecar qui, en
+ * production, serait servi par une capability Tauri. En headless, il permet de
+ * rendre ces outils FONCTIONNELS sans Tauri.
+ *
+ * Contrat : renvoie la chaîne à présenter à l'outil (déjà sérialisée), ou
+ * lève une erreur (transmise telle quelle au modèle comme échec d'outil). Le
+ * handler ne doit JAMAIS exécuter de code fourni par le modèle : il reçoit
+ * `{command, args}` et décide.
+ */
+export type ToolInvokeHandler = (
+  command: string,
+  args: Record<string, unknown>,
+) => Promise<string>;
+
 /** Options du client headless. */
 export interface HeadlessClientOptions {
   /** Chemin du bundle sidecar (`src-tauri/cline-sidecar/dist/index.mjs`). */
@@ -101,6 +122,13 @@ export interface HeadlessClientOptions {
   nodePath?: string;
   /** Politique d'approbation. Défaut : refus de tout (le plus sûr). */
   approvalPolicy?: ApprovalPolicy;
+  /**
+   * Handler des `tool_invoke` custom (ex. `search_index` → recherche BM25
+   * headless). S'il est fourni, le client déclare `{kind:"code_index"}` au
+   * `start` et répond localement. Sinon, comportement historique : refus
+   * explicite (« capability Tauri absente »).
+   */
+  onToolInvoke?: ToolInvokeHandler;
   /** Reçoit chaque événement du flux (optionnel, pour debug/observabilité). */
   onEvent?: (e: HeadlessEvent) => void;
   /** Reçoit chaque trace de debug du client (jamais un secret). */
@@ -133,6 +161,12 @@ export interface HeadlessRunMetrics {
   ttftMs: number;
   /** Durée totale du run (ms). */
   totalMs: number;
+  /**
+   * Motif de fin renvoyé par le moteur quand il n'est pas `completed`
+   * (`max_iterations`, `aborted`, `mistake_limit`, `error`). Permet de
+   * distinguer « limite de tours atteinte » d'un « échec du fournisseur ».
+   */
+  stopReason?: string;
   /** Message d'erreur terminal, si le run a échoué. */
   error?: string;
 }
@@ -328,10 +362,32 @@ export class ClineSidecarClient {
       return true;
     }
     if (kind === "tool_invoke") {
+      const requestId = String(msg.requestId);
+      const command = String(msg.command);
+      const args = (msg.args ?? {}) as Record<string, unknown>;
+      // Handler custom fourni (ex. `search_index` → recherche BM25 headless) :
+      // l'outil devient FONCTIONNEL sans Tauri. Toute issue produit une réponse
+      // (jamais de silence) : sinon l'outil resterait bloqué jusqu'au timeout et
+      // le modèle verrait un échec opaque.
+      if (this.opts.onToolInvoke) {
+        void this.opts
+          .onToolInvoke(command, args)
+          .then((output) =>
+            this.command("tool_invoke_response", { requestId, output }),
+          )
+          .catch((e: unknown) =>
+            this.command("tool_invoke_response", {
+              requestId,
+              error: e instanceof Error ? e.message : String(e),
+            }),
+          )
+          .catch(() => undefined);
+        return true;
+      }
       // Aucune capability Tauri ici : on répond un échec EXPLICITE pour que
       // l'outil échoue immédiatement (pas de fausse réussite, pas d'attente 30 s).
       void this.command("tool_invoke_response", {
-        requestId: String(msg.requestId),
+        requestId,
         error: "capability Tauri indisponible en mode headless",
       }).catch(() => undefined);
       return true;
@@ -360,6 +416,12 @@ export class ClineSidecarClient {
       systemPrompt: params.systemPrompt,
       mode: params.mode ?? "act",
       ...(typeof params.maxIterations === "number" ? { maxIterations: params.maxIterations } : {}),
+      // Outils CUSTOM : on déclare `code_index` UNIQUEMENT si l'appelant sait
+      // honorer `search_index` (sinon l'outil échouerait à chaque appel, ce qui
+      // tromperait le modèle). Le `sessionId` est purement déclaratif pour ce
+      // kind (l'outil n'émet aucun `tool_event`) : on ne le connaît qu'après
+      // `start`, mais le sidecar résout `cwd` comme workspace de toute façon.
+      ...(this.opts.onToolInvoke ? { extraTools: [{ kind: "code_index", sessionId: "" }] } : {}),
     })) as { sessionId?: string };
     const sessionId = result?.sessionId;
     if (!sessionId) throw new SidecarError("NO_SESSION", "`start` n'a pas renvoyé de sessionId");
@@ -393,8 +455,16 @@ export class ClineSidecarClient {
           metrics.inputTokens = raw.totalInputTokens ?? raw.inputTokens ?? metrics.inputTokens;
           metrics.outputTokens = raw.totalOutputTokens ?? raw.outputTokens ?? metrics.outputTokens;
         } else if (t === "error") {
+          // On conserve TOUT ce qui est exploitable : message + code, afin de
+          // pouvoir DISTINGUER une erreur du fournisseur (quota, réseau) d'une
+          // erreur d'agent (Étape 4). On journalise le brut une fois (jamais de
+          // secret : le sidecar neutralise déjà la marque interne et ne ré-émet
+          // jamais la clé).
           const em = typeof raw.error === "string" ? raw.error : raw.error?.message;
-          metrics.error = em ?? raw.message ?? "erreur agent";
+          const ec = typeof raw.error === "object" && raw.error ? raw.error.code : raw.code;
+          const base = em ?? raw.message ?? "erreur agent";
+          metrics.error = ec ? `${ec}: ${base}` : base;
+          this.log(`[agent error] ${JSON.stringify(e.raw).slice(0, 400)}`);
           settle();
         } else if (t === "done") {
           // Le `done` porte l'usage TOTAL définitif : on l'écrit en dernier.
@@ -402,7 +472,11 @@ export class ClineSidecarClient {
             metrics.inputTokens = raw.usage.inputTokens ?? metrics.inputTokens;
             metrics.outputTokens = raw.usage.outputTokens ?? metrics.outputTokens;
           }
+          // Motif de fin : `completed` = succès ; les autres (`max_iterations`,
+          // `aborted`, `mistake_limit`, `error`) expliquent un run interrompu.
+          // On les conserve SANS les confondre avec un échec de résolution.
           if (raw.reason && raw.reason !== "completed") {
+            metrics.stopReason = raw.reason;
             metrics.error = metrics.error ?? `run terminé : ${raw.reason}`;
           }
           settle();

@@ -2,6 +2,9 @@ import type { ModelMessage } from "ai";
 import { estimateTokens, PRESERVE_RECENT_TOKENS } from "./tokenBudget";
 import type { DisplayMessage } from "../aiTypes";
 
+/** Taille au-delà de laquelle un tool result ancien est vidé (nettoyage large). */
+export const LARGE_TOOL_RESULT_MAX_CHARS = 6_000;
+
 // ── Types mirroring what buildModelHistory emits ───────────────────────────────
 
 type AssistantPart =
@@ -251,6 +254,67 @@ export function compactDisplayMessages(
     return localChanged ? { ...msg, parts } : msg;
   });
   return anyChanged ? compacted : messages;
+}
+
+/**
+ * Nettoyage déterministe LARGE : retire la charge des tool results VOLUMINEUX
+ * de l'historique ancien (hors fenêtre récente), quels que soient les outils.
+ *
+ * POURQUOI
+ * --------
+ * `findStaleReads` ne cible que les `read_file` périmés : sur une session
+ * d'écritures / commandes / recherches, il n'a rien à retirer. Or ce sont
+ * souvent les PLUS gros contributeurs de tokens (sorties de terminal, résultats
+ * de recherche, listings). On remplace donc, pour tout tool result dépassant
+ * `maxChars`, son contenu par un marqueur « résumé — contenu retiré », en
+ * préservant l'appel d'outil (le modèle sait CE QU'il a demandé, pas la charge).
+ *
+ * Garde-fous : jamais le dernier message (tour courant) ; jamais la fenêtre
+ * récente (~20 000 tokens) ; jamais un assistant (raisonnement conservé).
+ */
+export function compactLargeToolResults(
+  messages: ModelMessage[],
+  maxChars = LARGE_TOOL_RESULT_MAX_CHARS,
+): ModelMessage[] {
+  if (messages.length < 2) return messages;
+
+  // Fenêtre récente : on ne touche à aucun message à partir de cet index.
+  let preserveFromIndex = messages.length;
+  {
+    let acc = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      acc += estimateTokens([messages[i]]);
+      if (acc > PRESERVE_RECENT_TOKENS) { preserveFromIndex = i + 1; break; }
+    }
+  }
+
+  let changed = false;
+  const out = messages.map((msg, index): ModelMessage => {
+    if (index >= preserveFromIndex || msg.role !== "tool") return msg;
+    const content = msg.content as ToolResultPart[];
+    if (!Array.isArray(content)) return msg;
+
+    let localChanged = false;
+    const next = content.map((part): ToolResultPart => {
+      if (part.type !== "tool-result") return part;
+      const output = part.output as { type?: string; value?: unknown } | undefined;
+      const value = output && output.type === "text" ? String(output.value ?? "") : "";
+      if (value.length <= maxChars) return part;
+      localChanged = true;
+      changed = true;
+      return {
+        ...part,
+        output: {
+          type: "text",
+          value: `[Tool result omitted — ${value.length} chars of output from ${part.toolName} removed to save context]`,
+        },
+      };
+    });
+
+    return localChanged ? ({ ...msg, content: next } as ModelMessage) : msg;
+  });
+
+  return changed ? out : messages;
 }
 
 /**
