@@ -41,6 +41,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 
 /** Événement normalisé du flux d'agent (sous-ensemble utilisé par le bench). */
 export interface HeadlessEvent {
@@ -144,6 +145,12 @@ export interface HeadlessRun {
   finished: Promise<void>;
   /** Métriques observées (remplies au fil du run, définitives à `finished`). */
   metrics: HeadlessRunMetrics;
+  /**
+   * Concaténation des blocs de texte RÉELLEMENT émis par l'agent sur ce tour
+   * (événements `content_end` de type `text`). Sert au runner LCB pour extraire
+   * la solution proposée. Chaîne vide si l'agent n'a produit aucun texte.
+   */
+  finalText: string;
   /** Interrompt proprement la session (best-effort). */
   abort: () => Promise<void>;
 }
@@ -169,7 +176,6 @@ interface Pending {
 export class ClineSidecarClient {
   private child: ChildProcessWithoutNullStreams | null = null;
   private rl: Interface | null = null;
-  private ready = false;
   private seq = 0;
   private readonly pending = new Map<number, Pending>();
   private readonly opts: HeadlessClientOptions;
@@ -194,6 +200,10 @@ export class ClineSidecarClient {
       throw new SidecarError("SIDECAR_MISSING", `bundle sidecar introuvable : ${this.opts.sidecarPath}`);
     }
     const node = this.opts.nodePath ?? process.execPath;
+    // Le sidecar doit avoir un cwd valide : Rust le crée en amont, en headless
+    // c'est à nous de le garantir (un cwd inexistant fait échouer spawn() avec
+    // un ENOENT trompeur pointant sur le binaire Node).
+    await mkdir(this.opts.dataDir, { recursive: true });
     // Même politique d'environnement que Rust : on n'hérite de RIEN sauf d'un
     // PATH fonctionnel, du HOME et du dossier de données isolé.
     const env: NodeJS.ProcessEnv = {
@@ -231,7 +241,6 @@ export class ClineSidecarClient {
       });
     });
     await readyPromise;
-    this.ready = true;
     this.log("[client] sidecar prêt");
   }
 
@@ -340,6 +349,7 @@ export class ClineSidecarClient {
     const metrics: HeadlessRunMetrics = { turns: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, ttftMs: 0, totalMs: 0 };
     const t0 = Date.now();
     let firstContent = 0;
+    const textParts: string[] = [];
 
     const result = (await this.command("start", {
       cwd: params.cwd,
@@ -371,6 +381,9 @@ export class ClineSidecarClient {
         const raw = e.raw as RawAgentEvent;
         if (t === "content_update" && (raw.contentType === "text" || raw.contentType === "reasoning")) {
           if (firstContent === 0) firstContent = Date.now();
+        } else if (t === "content_end") {
+          // Bloc de texte clos : c'est le contenu RÉEL du message de l'agent.
+          if (raw.contentType === "text" && typeof raw.text === "string") textParts.push(raw.text);
         } else if (t === "iteration_end") {
           metrics.turns++;
           metrics.toolCalls += raw.toolCallCount ?? (raw.hadToolCalls ? 1 : 0);
@@ -412,6 +425,9 @@ export class ClineSidecarClient {
       sessionId,
       finished,
       metrics,
+      get finalText(): string {
+        return textParts.join("\n");
+      },
       abort: async () => {
         await this.command("abort", { sessionId }).catch(() => undefined);
         settle();
@@ -439,6 +455,5 @@ export class ClineSidecarClient {
     this.child.kill("SIGTERM");
     setTimeout(() => this.child?.kill("SIGKILL"), 1500).unref?.();
     this.child = null;
-    this.ready = false;
   }
 }

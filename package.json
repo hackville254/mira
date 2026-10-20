@@ -17,6 +17,9 @@
     "bench:offline": "vitest run src/lib/agent/__tests__/bench.toolcall.test.ts src/lib/agent/__tests__/bench.coding.test.ts",
     "bench:coding": "tsx bench/coding/cli.ts --driver=reference --out=bench/results/coding.json",
     "bench:network": "tsx bench/network/run.ts",
+    "bench:gen": "tsx bench/coding/generation/run.ts",
+    "bench:gen:datasets": "tsx bench/coding/generation/fetchDatasets.ts",
+    "bench:gen:quick": "tsx bench/coding/generation/run.ts --mode=both --benchmark=humanevalplus --limit=5",
     "typecheck": "tsc",
     "lint": "eslint ."
   },

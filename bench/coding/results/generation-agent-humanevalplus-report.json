@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T06:54:18.043Z",
+  "note": "Scores de génération de fonctions (HumanEval+/MBPP+, EvalPlus). Pass@1 mesuré par exécution du programme de test OFFICIEL EvalPlus dans un conteneur isolé. Un sous-ensemble est étiqueté `subset:true` et n'est PAS un score sur le benchmark complet. Les scores de benchmarks différents ne sont jamais fusionnés.",
+  "groups": [
+    {
+      "benchmark": "humanevalplus",
+      "evalMode": "agent",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "subset": true,
+      "attempts": 2,
+      "resolved": 2,
+      "passAt1": 1,
+      "byErrorClass": {},
+      "generationMs": {
+        "count": 2,
+        "mean": 2398,
+        "median": 2398,
+        "p95": null,
+        "max": 2444
+      },
+      "evalMs": {
+        "count": 2,
+        "mean": 337,
+        "median": 337,
+        "p95": null,
+        "max": 342
+      },
+      "totalMs": {
+        "count": 2,
+        "mean": 2736,
+        "median": 2736,
+        "p95": null,
+        "max": 2787
+      },
+      "inputTokens": 4955,
+      "outputTokens": 369,
+      "tokensMissing": 0,
+      "turns": 2,
+      "toolCalls": 0,
+      "estimatedCostUsd": null,
+      "costPerResolvedUsd": null,
+      "costSource": null
+    }
+  ],
+  "attempts": [
+    {
+      "taskId": "HumanEval/0",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "agent",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 2685,
+        "generationMs": 2351,
+        "evalMs": 332,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 0,
+        "inputTokens": 2481,
+        "outputTokens": 168
+      },
+      "code": "from typing import List\n\n\ndef has_close_elements(numbers: List[float], threshold: float) -> bool:\n    \"\"\" Check if in given list of numbers, are any two numbers closer to each other than\n    given threshold.\n    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)\n    False\n    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)\n    True\n    \"\"\"\n    numbers = sorted(numbers)\n    for i in range(len(numbers) - 1):\n        if numbers[i + 1] - numbers[i] < threshold:\n            return True\n    return False"
+    },
+    {
+      "taskId": "HumanEval/1",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "agent",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 2787,
+        "generationMs": 2444,
+        "evalMs": 342,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 0,
+        "inputTokens": 2474,
+        "outputTokens": 201
+      },
+      "code": "from typing import List\n\n\ndef separate_paren_groups(paren_string: str) -> List[str]:\n    \"\"\" Input to this function is a string containing multiple groups of nested parentheses. Your goal is to\n    separate those group into separate strings and return the list of those.\n    Separate groups are balanced (each open brace is properly closed) and not nested within each other\n    Ignore any spaces in the input string.\n    >>> separate_paren_groups('( ) (( )) (( )( ))')\n    ['()', '(())', '(()())']\n    \"\"\"\n    paren_string = paren_string.replace(' ', '')\n    result = []\n    current = ''\n    balance = 0\n    for ch in paren_string:\n        current += ch\n        if ch == '(':\n            balance += 1\n        elif ch == ')':\n            balance -= 1\n            if balance == 0:\n                result.append(current)\n                current = ''\n    return result"
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T06:54:37.671Z",
+  "note": "Scores de génération de fonctions (HumanEval+/MBPP+, EvalPlus). Pass@1 mesuré par exécution du programme de test OFFICIEL EvalPlus dans un conteneur isolé. Un sous-ensemble est étiqueté `subset:true` et n'est PAS un score sur le benchmark complet. Les scores de benchmarks différents ne sont jamais fusionnés.",
+  "groups": [
+    {
+      "benchmark": "mbppplus",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "subset": true,
+      "attempts": 5,
+      "resolved": 1,
+      "passAt1": 0.2,
+      "byErrorClass": {
+        "model": 4
+      },
+      "generationMs": {
+        "count": 5,
+        "mean": 1169,
+        "median": 926,
+        "p95": null,
+        "max": 2065
+      },
+      "evalMs": {
+        "count": 5,
+        "mean": 365,
+        "median": 372,
+        "p95": null,
+        "max": 413
+      },
+      "totalMs": {
+        "count": 5,
+        "mean": 1535,
+        "median": 1260,
+        "p95": null,
+        "max": 2480
+      },
+      "inputTokens": 439,
+      "outputTokens": 192,
+      "tokensMissing": 0,
+      "turns": 5,
+      "toolCalls": 0,
+      "estimatedCostUsd": null,
+      "costPerResolvedUsd": null,
+      "costSource": null
+    }
+  ],
+  "attempts": [
+    {
+      "taskId": "MBPP/2",
+      "benchmark": "mbppplus",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": false,
+      "metrics": {
+        "totalMs": 2480,
+        "generationMs": 2065,
+        "evalMs": 413,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 1728,
+        "inputTokens": 85,
+        "outputTokens": 27
+      },
+      "code": "def shared_elements(list1, list2):\n    return list(set(list1) & set(list2))",
+      "errorClass": "model",
+      "error": "Traceback (most recent call last):\n  File \"/work/test_solution.py\", line 36, in <module>\n    assertion(similar_elements(*inp), exp, 0)\n              ^^^^^^^^^^^^^^^^\nNameError: name 'similar_elements' is not defined"
+    },
+    {
+      "taskId": "MBPP/3",
+      "benchmark": "mbppplus",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 1111,
+        "generationMs": 787,
+        "evalMs": 324,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 483,
+        "inputTokens": 82,
+        "outputTokens": 58
+      },
+      "code": "def is_not_prime(n):\n    if n < 2:\n        return True\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return True\n    return False"
+    },
+    {
+      "taskId": "MBPP/4",
+      "benchmark": "mbppplus",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": false,
+      "metrics": {
+        "totalMs": 1246,
+        "generationMs": 862,
+        "evalMs": 384,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 669,
+        "inputTokens": 92,
+        "outputTokens": 24
+      },
+      "code": "def n_largest(numbers, n):\n    return sorted(numbers, reverse=True)[:n]",
+      "errorClass": "model",
+      "error": "Traceback (most recent call last):\n  File \"/work/test_solution.py\", line 34, in <module>\n    assertion(heap_queue_largest(*inp), exp, 0)\n              ^^^^^^^^^^^^^^^^^^\nNameError: name 'heap_queue_largest' is not defined"
+    },
+    {
+      "taskId": "MBPP/6",
+      "benchmark": "mbppplus",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": false,
+      "metrics": {
+        "totalMs": 1578,
+        "generationMs": 1206,
+        "evalMs": 372,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 931,
+        "inputTokens": 90,
+        "outputTokens": 50
+      },
+      "code": "def differ_at_one_bit_position(num1, num2):\n    xor_result = num1 ^ num2\n    return xor_result != 0 and (xor_result & (xor_result - 1)) == 0",
+      "errorClass": "model",
+      "error": "Traceback (most recent call last):\n  File \"/work/test_solution.py\", line 35, in <module>\n    assertion(differ_At_One_Bit_Pos(*inp), exp, 0)\n              ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'differ_At_One_Bit_Pos' is not defined. Did you mean: 'differ_at_one_bit_position'?"
+    },
+    {
+      "taskId": "MBPP/7",
+      "benchmark": "mbppplus",
+      "datasetVersion": "evalplus/mbppplus@main:test-00000-of-00001.parquet→jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": false,
+      "metrics": {
+        "totalMs": 1260,
+        "generationMs": 926,
+        "evalMs": 333,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 758,
+        "inputTokens": 90,
+        "outputTokens": 33
+      },
+      "code": "def find_long_words(text):\n    words = text.split()\n    return [word for word in words if len(word) >= 4]",
+      "errorClass": "model",
+      "error": "Traceback (most recent call last):\n  File \"/work/test_solution.py\", line 37, in <module>\n    assertion(find_char_long(*inp), exp, 0)\n              ^^^^^^^^^^^^^^\nNameError: name 'find_char_long' is not defined"
+    }
+  ]
+}

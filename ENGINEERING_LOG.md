@@ -5,6 +5,71 @@
 
 ---
 
+### [2026-10-20T08:56] | Benchmark de génération de fonctions EvalPlus (HumanEval+ / MBPP+) — modes model-only et agent
+
+- **Contexte :** la mission demandait un benchmark de programmation reproductible
+  mesurant **séparément** (1) le modèle seul, (2) le harness, (3) le système complet
+  ORVYX Code. Les rotations SWE-bench + LiveCodeBench existaient déjà
+  (`bench/coding/swebench`, `bench/coding/livecodebench`) mais **aucune** mesure de
+  génération de fonctions (Pass@1) ni de mode « modèle seul » comparable.
+
+- **Modifications effectuées :**
+  - `bench/coding/generation/` (nouveau module, 8 fichiers) :
+    `types.ts` (contrat versionné + `ErrorClass` à 8 valeurs), `dataset.ts` (chargement
+    des datasets RÉELS EvalPlus), `evaluator.ts` (exécution du programme de test
+    OFFICIEL dans Docker verrouillé), `modelOnly.ts` (appel HTTP Chat Completions
+    standardisé), `agent.ts` (pilotage du sidecar Cline), `results.ts` (JSONL versionné
+    + reprise + garde-fou anti-clé-API), `report.ts` (Pass@1, ventilation, médiane/p95,
+    coût), `run.ts` (CLI : `--mode=model-only|agent|both`, `--benchmark`, `--limit`,
+    `--tasks`, `--runs`, `--resume`).
+  - `bench/coding/generation/fetchDatasets.ts` (nouveau) — téléchargement reproductible
+    des datasets (HumanEval+ JSONL, MBPP+ parquet→JSONL via pyarrow).
+  - `src/lib/agent/__tests__/bench.generation.test.ts` (nouveau) — 42 tests unitaires
+    à fixtures déterministes (chargement, extraction de code, ventilation des erreurs,
+    métriques, reprise, isolation des clés).
+  - `package.json` — scripts `bench:gen`, `bench:gen:datasets`, `bench:gen:quick`.
+  - `bench/coding/headless/clineSidecar.ts` — suppression du champ mort `ready`
+    (écrit deux fois, jamais lu) qui bloquait `tsc --noEmit`.
+
+- **Décisions Techniques :**
+  - **Exécuter le `task.test` officiel EvalPlus** (contient `check(candidate)` et son
+    appel final) plutôt que réimplémenter un harness → alignement strict sur le
+    protocole officiel, conformément à la consigne.
+  - **Image Docker DÉRIVÉE** (`orvyx-gen-eval:latest`, `python:3.11-slim` + numpy)
+    construite une fois. Cause racine d'un bug corrigé en cours de route : un
+    `docker run --rm python pip install numpy` installe dans un conteneur JETABLE →
+    l'étape de test ne voyait jamais numpy → `ModuleNotFoundError` → **échecs attribués
+    à tort au modèle**. Le premier run réel a produit un faux `0/3` ; après correction,
+    le même sous-ensemble donne `5/5`. C'est la démonstration que la ventilation par
+    origine n'est pas cosmétique.
+  - **Isolation du code candidat** : `--network none`, `--memory 1g`, `--cpus 1`,
+    `--pids-limit 256`, `--read-only`, `--cap-drop ALL`, `--user 65534:65534`, volume
+    en lecture seule, timeout dur. Le réseau n'est actif que pendant la construction de
+    l'image (étape séparée, avant tout code candidat).
+  - **Même prompt et même évaluateur dans les deux modes** → comparaison interprétable.
+  - **Honnêteté des valeurs** : `p95 = null` sous 20 échantillons ; coût `null` sans
+    tarif explicite (`ORVYX_BENCH_PRICE_*`) — jamais 0 ; `subset:true` systématiquement
+    étiqueté ; aucune clé d'API écrite (garde-fou actif dans `results.ts`).
+
+- **Impacts & Dépendances :**
+  - Aucune modification du moteur d'agent, de l'UI Tauri/React ni du système de
+    fournisseurs. Le module est Node pur, exécutable hors application.
+  - Dépendances : Docker (pour l'évaluation) et `pyarrow` (hôte, uniquement pour la
+    conversion MBPP+ parquet→JSONL). Le moteur ORVYX Code n'exige toujours pas Python.
+  - Datasets versionnés explicitement (`evalplus/humanevalplus@main:test.jsonl`,
+    `evalplus/mbppplus@main`), licence Apache-2.0 vérifiée.
+  - `clineSidecar.ts` : retrait d'un champ privé inutilisé — sans effet fonctionnel.
+
+- **Prochaines étapes :**
+  - Élargir la campagne (HumanEval+ complet 164 tâches, MBPP+ 378) pour un Pass@1
+    statistiquement exploitable avec p95.
+  - Ajouter un tarif (`ORVYX_BENCH_PRICE_INPUT_PER_M` / `_OUTPUT_PER_M`) pour obtenir
+    un coût par tâche réussie réel.
+  - Étendre le mode agent avec des tâches nécessitant plusieurs fichiers (au-delà de la
+    génération mono-fonction).
+
+---
+
 ### [2026-10-20T05:00] | Réparation des deux icônes IA de l'éditeur (commit + optimiser le prompt)
 
 - **Contexte :** deux actions IA étaient **inertes** en production :

@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T06:55:11.245Z",
+  "note": "Scores de génération de fonctions (HumanEval+/MBPP+, EvalPlus). Pass@1 mesuré par exécution du programme de test OFFICIEL EvalPlus dans un conteneur isolé. Un sous-ensemble est étiqueté `subset:true` et n'est PAS un score sur le benchmark complet. Les scores de benchmarks différents ne sont jamais fusionnés. Précision MBPP+ : l'énoncé naturel ne nomme pas toujours la fonction attendue, mais le test officiel l'appelle par son nom exact — un nom différent produit un `NameError` classé `model` (échec légitime, conforme au protocole officiel).",
+  "groups": [
+    {
+      "benchmark": "humanevalplus",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "subset": true,
+      "attempts": 5,
+      "resolved": 5,
+      "passAt1": 1,
+      "byErrorClass": {},
+      "generationMs": {
+        "count": 5,
+        "mean": 1779,
+        "median": 1490,
+        "p95": null,
+        "max": 2639
+      },
+      "evalMs": {
+        "count": 5,
+        "mean": 1369,
+        "median": 374,
+        "p95": null,
+        "max": 5397
+      },
+      "totalMs": {
+        "count": 5,
+        "mean": 3148,
+        "median": 1837,
+        "p95": null,
+        "max": 8036
+      },
+      "inputTokens": 895,
+      "outputTokens": 487,
+      "tokensMissing": 0,
+      "turns": 5,
+      "toolCalls": 0,
+      "estimatedCostUsd": null,
+      "costPerResolvedUsd": null,
+      "costSource": null
+    }
+  ],
+  "attempts": [
+    {
+      "taskId": "HumanEval/0",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 8036,
+        "generationMs": 2639,
+        "evalMs": 5397,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 2214,
+        "inputTokens": 193,
+        "outputTokens": 67
+      },
+      "code": "from typing import List\n\n\ndef has_close_elements(numbers: List[float], threshold: float) -> bool:\n    numbers.sort()\n    for i in range(len(numbers) - 1):\n        if numbers[i + 1] - numbers[i] < threshold:\n            return True\n    return False"
+    },
+    {
+      "taskId": "HumanEval/1",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 2737,
+        "generationMs": 2353,
+        "evalMs": 384,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 1181,
+        "inputTokens": 186,
+        "outputTokens": 211
+      },
+      "code": "from typing import List\n\n\ndef separate_paren_groups(paren_string: str) -> List[str]:\n    \"\"\" Input to this function is a string containing multiple groups of nested parentheses. Your goal is to\n    separate those group into separate strings and return the list of those.\n    Separate groups are balanced (each open brace is properly closed) and not nested within each other\n    Ignore any spaces in the input string.\n    >>> separate_paren_groups('( ) (( )) (( )( ))')\n    ['()', '(())', '(()())']\n    \"\"\"\n    paren_string = paren_string.replace(\" \", \"\")\n    groups = []\n    start = 0\n    balance = 0\n    for i, char in enumerate(paren_string):\n        if char == '(':\n            balance += 1\n        elif char == ')':\n            balance -= 1\n        if balance == 0:\n            groups.append(paren_string[start:i+1])\n            start = i + 1\n    return groups"
+    },
+    {
+      "taskId": "HumanEval/2",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 1611,
+        "generationMs": 1266,
+        "evalMs": 344,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 766,
+        "inputTokens": 150,
+        "outputTokens": 91
+      },
+      "code": "def truncate_number(number: float) -> float:\n    \"\"\" Given a positive floating point number, it can be decomposed into\n    and integer part (largest integer smaller than given number) and decimals\n    (leftover part always smaller than 1).\n\n    Return the decimal part of the number.\n    >>> truncate_number(3.5)\n    0.5\n    \"\"\"\n    return number - int(number)"
+    },
+    {
+      "taskId": "HumanEval/3",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 1837,
+        "generationMs": 1490,
+        "evalMs": 347,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 1204,
+        "inputTokens": 184,
+        "outputTokens": 54
+      },
+      "code": "from typing import List\n\n\ndef below_zero(operations: List[int]) -> bool:\n    balance = 0\n    for op in operations:\n        balance += op\n        if balance < 0:\n            return True\n    return False"
+    },
+    {
+      "taskId": "HumanEval/4",
+      "benchmark": "humanevalplus",
+      "datasetVersion": "evalplus/humanevalplus@main:test.jsonl",
+      "evalMode": "model-only",
+      "modelId": "orvyx-code/deepseek-v4-flash-0731",
+      "provider": "orvyx",
+      "run": 1,
+      "subset": true,
+      "resolved": true,
+      "metrics": {
+        "totalMs": 1519,
+        "generationMs": 1145,
+        "evalMs": 374,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "ttftMs": 735,
+        "inputTokens": 182,
+        "outputTokens": 64
+      },
+      "code": "from typing import List\n\ndef mean_absolute_deviation(numbers: List[float]) -> float:\n    if not numbers:\n        return 0.0\n    mean = sum(numbers) / len(numbers)\n    return sum(abs(x - mean) for x in numbers) / len(numbers)"
+    }
+  ]
+}

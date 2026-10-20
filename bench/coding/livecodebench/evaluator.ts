@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { LcbInstance } from "./instance";
+import { detectContract } from "./contract";
 
 const exec = promisify(execFile);
 
@@ -36,6 +37,13 @@ export interface LcbEvalResult {
   failed: number[];
   /** Message d'erreur d'exécution éventuel (compilation, runtime global…). */
   error?: string;
+  /**
+   * Contrat réellement appliqué. Permet de VÉRIFIER dans les résultats qu'un
+   * problème a bien été noté selon sa convention (et de repérer une exclusion).
+   */
+  contract?: "functional" | "stdin" | "interactive";
+  /** Vrai si le problème a été EXCLU (non évaluable), et non « échoué ». */
+  skipped?: boolean;
 }
 
 /**
@@ -50,20 +58,76 @@ export function extractCode(response: string): string {
 }
 
 /**
- * Construit le script Python `runner.py` qui exécute la solution contre les cas.
+ * Construit le script Python `runner.py` qui exécute la solution contre les cas,
+ * SELON LE CONTRAT du problème (cf. `contract.ts`) :
  *
- * Convention LiveCodeBench : la solution est une classe `Solution` dont la
- * méthode est déclarée dans le `starter_code` (ex. `def longestEqualSubarray(`).
- * On lit ce nom de méthode dans le starter ; si introuvable, on tente les noms
- * usuels (`twoSum`, `solve`, …) puis, en dernier recours, la seule méthode
- * publique de `Solution`.
+ *   - `functional` : `Solution().<method>(*args)` — LeetCode ;
+ *   - `stdin`      : le code est un programme complet ; pour chaque cas on lui
+ *                    fournit `input` sur stdin et on compare sa stdout au
+ *                    `output` attendu — AtCoder/Codeforces.
  *
- * Les entrées LiveCodeBench sont des chaînes Python-littérales
- * (ex. `[1,2,3]\n2`) : on les évalue donc avec `ast.literal_eval` côté runner.
- * C'est un point délicat mais C'EST la convention du benchmark : le runner
- * tourne dans un conteneur jetable sandboxé, il n'y a aucun secret à y exposer.
+ * POURQUOI c'était faux avant : l'ancien runner imposait `import Solution` à
+ * tous les problèmes. Les 6 AtCoder (starter vide) échouaient aussitôt
+ * (`cannot import name 'Solution'`) alors qu'un programme stdin valide était
+ * possible → 6 faux négatifs. Le contrat est désormais déterminé par
+ * `detectContract()`, jamais deviné à l'exécution.
+ *
+ * Les entrées LiveCodeBench fonctionnelles sont des littéraux Python
+ * (`[1,2,3]\n2`) évalués via `ast.literal_eval` DANS le conteneur sandboxé.
  */
 export function buildRunner(instance: LcbInstance, solutionCode: string): string {
+  return detectContract(instance) === "stdin"
+    ? buildStdinRunner(instance)
+    : buildFunctionalRunner(instance);
+}
+
+/** Runner pour un programme complet : stdin → stdout. */
+function buildStdinRunner(instance: LcbInstance): string {
+  const cases = instance.cases.map(c => ({ input: c.input, output: c.output }));
+  return `import io, json, sys, traceback, subprocess
+
+# Le code candidat est un PROGRAMME complet (AtCoder) : on l'exécute dans un
+# sous-processus Python, une fois par cas, en lui fournissant l'input sur stdin.
+cases = json.loads(r'''${JSON.stringify(cases)}''')
+
+def _judge_equal(got, want):
+    # Comparaison "juge" : on ignore les espaces de fin de ligne et les lignes
+    # vides finales (tolérance standard des juges de concours).
+    def norm(s):
+        lines = [ln.rstrip() for ln in s.replace("\\r\\n", "\\n").split("\\n")]
+        while lines and lines[-1] == "":
+            lines.pop()
+        return "\\n".join(lines)
+    return norm(got) == norm(want)
+
+passed = 0
+failed = []
+error = ""
+for i, c in enumerate(cases):
+    try:
+        proc = subprocess.run(
+            [sys.executable, "solution.py"],
+            input=c["input"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if _judge_equal(proc.stdout, c["output"]):
+            passed += 1
+        else:
+            failed.append(i)
+    except subprocess.TimeoutExpired:
+        failed.append(i)
+    except Exception as e:
+        failed.append(i)
+        if not error:
+            error = str(e)[:200]
+print("__LCB__" + json.dumps({"passed": passed, "total": len(cases), "failed": failed, "error": error}))
+`;
+}
+
+/** Runner pour `class Solution` : arguments littéraux → valeur de retour. */
+function buildFunctionalRunner(instance: LcbInstance): string {
   const method = methodName(instance.starter_code);
   const cases = instance.cases.map(c => ({ input: c.input, output: c.output }));
   // `solutionCode` est injecté dans un module séparé (solution.py) puis importé :
@@ -100,9 +164,7 @@ def _run_all():
     failed = []
     for i, c in enumerate(cases):
         try:
-            args = ast.literal_eval(c["input"]) if c["input"].strip() else ()
-            if not isinstance(args, tuple):
-                args = (args,)
+            args = _parse_args(c["input"])
             got = fn(*args)
             want = ast.literal_eval(c["output"]) if c["output"].strip() else None
             if _equal(got, want):
@@ -121,6 +183,16 @@ def _equal(a, b):
         return sorted(a) == sorted(b)
     except Exception:
         return False
+
+def _parse_args(raw):
+    # Convention LiveCodeBench : les arguments sont séparés par des retours à la
+    # ligne ; un input multi-lignes = PLUSIEURS arguments positionnels. On
+    # littéralise donc chaque ligne indépendamment (et non la chaîne entière,
+    # qui ne serait pas un littéral Python valide).
+    lines = [ln for ln in raw.split("\\n") if ln.strip() != ""]
+    if not lines:
+        return ()
+    return tuple(ast.literal_eval(ln) for ln in lines)
 
 if __name__ == "__main__":
     try:
@@ -179,6 +251,18 @@ export async function runSolution(
   opts: RunSolutionOptions = {},
 ): Promise<LcbEvalResult> {
   const total = instance.cases.length;
+  const contract = detectContract(instance);
+
+  // Problème INTERACTIF : aucun cas hors ligne ne peut le valider. On l'EXCLUT
+  // explicitement (`skipped`) au lieu de le compter comme un échec du modèle.
+  if (contract === "interactive") {
+    return {
+      passed: 0, total, failed: [], contract,
+      skipped: true,
+      error: "problème interactif : non évaluable avec des cas hors ligne (exclu du score)",
+    };
+  }
+
   const dir = await mkdtemp(join(tmpdir(), "orvyx-lcb-"));
   try {
     await writeFile(join(dir, "solution.py"), solutionCode, "utf8");
@@ -204,16 +288,19 @@ export async function runSolution(
         timeout: opts.timeoutMs ?? 60_000,
         maxBuffer: 16 * 1024 * 1024,
       });
-      return parseRunnerOutput(stdout, total);
+      return { ...parseRunnerOutput(stdout, total), contract };
     } catch (e) {
       const err = e as { stdout?: string; killed?: boolean; message?: string };
       // Timeout / OOM / crash : on retente une lecture de stdout (peut contenir
       // un résultat partiel) puis on renvoie un échec explicite.
       if (err.stdout) {
         const parsed = parseRunnerOutput(err.stdout, total);
-        if (parsed.failed.length > 0 || parsed.passed > 0 || parsed.error) return parsed;
+        if (parsed.failed.length > 0 || parsed.passed > 0 || parsed.error) return { ...parsed, contract };
       }
-      return { passed: 0, total, failed: [], error: err.killed ? "timeout/limite d'exécution" : (err.message ?? "échec docker") };
+      return {
+        passed: 0, total, failed: [], contract,
+        error: err.killed ? "timeout/limite d'exécution" : (err.message ?? "échec docker"),
+      };
     }
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -222,8 +309,10 @@ export async function runSolution(
 
 /**
  * Un problème est RÉSOLU seulement si TOUS les cas passent (aucun échec) et
- * qu'aucune erreur d'exécution globale n'est survenue.
+ * qu'aucune erreur d'exécution globale n'est survenue. Un problème EXCLU
+ * (interactif) n'est jamais « résolu » — il est compté séparément.
  */
 export function isResolved(r: LcbEvalResult): boolean {
+  if (r.skipped) return false;
   return r.total > 0 && r.passed === r.total && r.failed.length === 0 && !r.error;
 }
