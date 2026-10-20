@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T22:01:24.794Z",
+  "note": "Harnais interne — tâches internes vérifiées par tests. Ceci n'est PAS un score SWE-bench officiel (protocole Docker/harness non appliqué).",
+  "models": [
+    {
+      "modelId": "reference-oracle",
+      "attempts": 3,
+      "resolved": 3,
+      "resolvedRate": 1,
+      "byOutcome": {
+        "resolved": 3,
+        "unresolved": 0,
+        "agent-error": 0,
+        "harness-error": 0
+      },
+      "agentMs": {
+        "mean": 0,
+        "median": 0,
+        "max": 0
+      },
+      "testMs": {
+        "mean": 64,
+        "median": 65,
+        "max": 65
+      },
+      "tokens": {
+        "input": 0,
+        "output": 0
+      },
+      "turns": 3,
+      "toolCalls": 4,
+      "byCategory": {
+        "bugfix": {
+          "attempts": 1,
+          "resolved": 1
+        },
+        "feature": {
+          "attempts": 1,
+          "resolved": 1
+        },
+        "fix-test": {
+          "attempts": 1,
+          "resolved": 1
+        }
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "taskId": "bugfix-sum-negatives",
+      "modelId": "reference-oracle",
+      "run": 1,
+      "outcome": "resolved",
+      "agentMs": 0,
+      "testMs": 65,
+      "failToPass": [
+        {
+          "name": "sum returns the arithmetic sum with a negative operand",
+          "passed": true,
+          "detail": "sum returns the arithmetic sum with a negative operand"
+        }
+      ],
+      "passToPass": [
+        {
+          "name": "sum adds two positive numbers",
+          "passed": true,
+          "detail": "sum adds two positive numbers"
+        }
+      ],
+      "turns": 1,
+      "toolCalls": 1
+    },
+    {
+      "taskId": "feature-slugify",
+      "modelId": "reference-oracle",
+      "run": 1,
+      "outcome": "resolved",
+      "agentMs": 0,
+      "testMs": 65,
+      "failToPass": [
+        {
+          "name": "slugify lowercases and hyphenates",
+          "passed": true,
+          "detail": "slugify lowercases and hyphenates"
+        },
+        {
+          "name": "slugify strips accents",
+          "passed": true,
+          "detail": "slugify strips accents"
+        },
+        {
+          "name": "makePost exposes the slug",
+          "passed": true,
+          "detail": "makePost exposes the slug"
+        }
+      ],
+      "passToPass": [
+        {
+          "name": "makePost returns the title and body",
+          "passed": true,
+          "detail": "makePost returns the title and body"
+        }
+      ],
+      "turns": 1,
+      "toolCalls": 2
+    },
+    {
+      "taskId": "fix-test-range",
+      "modelId": "reference-oracle",
+      "run": 1,
+      "outcome": "resolved",
+      "agentMs": 0,
+      "testMs": 62,
+      "failToPass": [
+        {
+          "name": "range is exclusive of the end bound",
+          "passed": true,
+          "detail": "range is exclusive of the end bound"
+        }
+      ],
+      "passToPass": [
+        {
+          "name": "range builds an inclusive-start sequence",
+          "passed": true,
+          "detail": "range builds an inclusive-start sequence"
+        },
+        {
+          "name": "range on an empty interval yields no element",
+          "passed": true,
+          "detail": "range on an empty interval yields no element"
+        }
+      ],
+      "turns": 1,
+      "toolCalls": 1
+    }
+  ]
+}

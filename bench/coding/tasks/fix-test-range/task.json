@@ -1,0 +1,18 @@
+{
+  "id": "fix-test-range",
+  "title": "Corriger range() pour respecter la borne exclusive (bug de production)",
+  "kind": "fix-test",
+  "instruction": "Le test `range is exclusive of the end bound` échoue. La cause est un bug de production dans src/range.mjs : la fonction range(start, end) doit renvoyer les entiers de start inclus à end EXCLU. Corrige la fonction dans src/range.mjs. Ne modifie PAS les fichiers de test : ils décrivent le comportement attendu. Tous les tests doivent passer.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "range is exclusive of the end bound"
+    ],
+    "passToPass": [
+      "range builds an inclusive-start sequence",
+      "range on an empty interval yields no element"
+    ]
+  },
+  "agentTimeoutMs": 120000,
+  "testTimeoutMs": 30000
+}

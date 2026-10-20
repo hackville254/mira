@@ -1,0 +1,19 @@
+{
+  "id": "feature-slugify",
+  "title": "Ajouter slugify() exporté et l'utiliser dans post.mjs",
+  "kind": "feature",
+  "instruction": "Ce mini-projet a un module src/text.mjs et src/post.mjs. Ajoute une fonction `slugify(title)` dans src/text.mjs qui renvoie un slug minuscule : espaces et caractères non alphanumériques remplacés par des tirets simples, sans tiret en début/fin, et sans accents (é→e, à→a, ç→c, ù→u, ô→o, î→i). Exporte-la. Puis, dans src/post.mjs, la fonction `makePost(title, body)` doit désormais renvoyer un objet dont la propriété `slug` vaut `slugify(title)`. Les tests existants doivent continuer à passer et les nouveaux tests fournis doivent passer.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "slugify lowercases and hyphenates",
+      "slugify strips accents",
+      "makePost exposes the slug"
+    ],
+    "passToPass": [
+      "makePost returns the title and body"
+    ]
+  },
+  "agentTimeoutMs": 120000,
+  "testTimeoutMs": 30000
+}

@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+@keyframes origin-ellipsis {
+  0%   { content: ""; }
+  25%  { content: "."; }
+  50%  { content: ".."; }
+  75%  { content: "..."; }
+  100% { content: ""; }
+}
+
+/* Rotation continue — spinner de tâche active (rail de tâches, multitasking). */
+@keyframes origin-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('./assets/fonts/GeistSans-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -400% 0; }
+  100% { background-position:  400% 0; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Onboarding : carrousel infini des logos de modèles. La piste contient la
+   liste dupliquée ; on translate de -50% pour boucler sans couture. */
+@keyframes mira-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@keyframes mira-marquee-rev {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+/* Source Control : n'affiche les actions (stage/discard) qu'au survol de la ligne. */
+.origin-scm-actions { opacity: 0; transition: opacity 0.1s ease; }
+.origin-scm-row:hover .origin-scm-actions { opacity: 1; }
+.origin-scm-row:hover { background-color: var(--origin-bg-hover); }
+.origin-scm-actions button:hover { background-color: var(--origin-bg-hover); color: var(--origin-fg-default); }
+
+/* Sélection épinglée (« Add to AI ») : surbrillance persistante, indépendante de
+   la sélection native de CodeMirror (qui disparaît au blur de l'éditeur). */
+.origin-pinned-selection {
+  background-color: color-mix(in srgb, var(--origin-accent-default) 28%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--origin-accent-default) 45%, transparent);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background-color: #333; border-radius: 3px; }
+
+/* Anchor the document chrome to the viewport rectangle the compositor
+   maintains, rather than to a computed height. `position: fixed; inset: 0`
+   always fills the live window — it does not depend on WebView2 recomputing
+   `100dvh`, nor on a resize event firing during programmatic setFullscreen(),
+   nor on getting the physical→CSS pixel division exactly right. This is what
+   fixes the "black bar at the bottom after fullscreen" bug. */
+html, body, #root {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: #0a0a0a;
+}
+
+/* `#root`'s direct child uses Tailwind `h-full` (height: 100%). With the
+   ancestors fixed+inset-0, 100% resolves against a fully-stretched box, so
+   the flex column fills the window. Belt-and-suspenders: anchor it too. */
+#root > * {
+  height: 100%;
+}
+
+/* ── Appearance settings (Settings → Appearance → Interface) ───────────────── */
+
+/* Status bar visibility, toggled from Settings. Default = visible. */
+html[data-status-bar="false"] [data-origin-statusbar] {
+  display: none !important;
+}
+
+/* Density: compact tightens the tab bar height and file tree rows. Comfortable
+   is the default and needs no overrides. */
+html[data-density="compact"] [data-origin-tabbar] {
+  height: 30px !important;
+}
+html[data-density="compact"] [data-origin-tree-row] {
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
+}
+
+/* Plan badge action colours — solid backgrounds that adapt to theme type */
+[data-theme="dark"] {
+  --plan-badge-edit-bg:   #3b82f6;
+  --plan-badge-edit-fg:   #fff;
+  --plan-badge-create-bg: #22c55e;
+  --plan-badge-create-fg: #fff;
+  --plan-badge-delete-bg: #ef4444;
+  --plan-badge-delete-fg: #fff;
+}
+[data-theme="light"] {
+  --plan-badge-edit-bg:   #1d4ed8;
+  --plan-badge-edit-fg:   #fff;
+  --plan-badge-create-bg: #15803d;
+  --plan-badge-create-fg: #fff;
+  --plan-badge-delete-bg: #b91c1c;
+  --plan-badge-delete-fg: #fff;
+}
+
+/* CodeMirror selection — global override so it wins regardless of CM6's
+   internal stylesheet ordering and without needing an EditorView remount. */
+.cm-selectionBackground {
+  background-color: var(--origin-bg-selection) !important;
+}
+.cm-editor.cm-focused .cm-selectionBackground {
+  background-color: var(--origin-bg-selection-focused) !important;
+}
+
+/* Occurrences de la sélection / du mot sous le curseur (highlightSelectionMatches).
+   VS Code utilise un simple encadré discret (editor.selectionHighlightBorder),
+   SANS fond : on réplique avec une fine bordure, sans remplissage, pour ne pas
+   agresser l'œil (surtout pour le mot sous le curseur). */
+.cm-selectionMatch {
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 40%, transparent);
+  border-radius: 2px;
+}
+/* Le mot sous le curseur : bordure un peu plus marquée mais toujours SANS fond. */
+.cm-selectionMatch-main {
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 55%, transparent);
+  border-radius: 2px;
+}
+
+/* Tooltip hover LSP (signature / documentation au survol) — façon VS Code. */
+.cm-tooltip.cm-tooltip-hover {
+  max-width: 560px;
+  background: var(--origin-bg-overlay, var(--origin-bg-sidebar));
+  border: 1px solid var(--origin-border-default);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  color: var(--origin-fg-default);
+}
+.origin-lsp-hover {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}

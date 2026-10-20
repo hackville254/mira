@@ -1,0 +1,38 @@
+[
+  {
+    "instance": "django__django-14053",
+    "ready": true
+  },
+  {
+    "instance": "django__django-16662",
+    "ready": true
+  },
+  {
+    "instance": "matplotlib__matplotlib-14623",
+    "ready": true
+  },
+  {
+    "instance": "pydata__xarray-4687",
+    "ready": true
+  },
+  {
+    "instance": "pylint-dev__pylint-4661",
+    "ready": true
+  },
+  {
+    "instance": "pytest-dev__pytest-10356",
+    "ready": true
+  },
+  {
+    "instance": "scikit-learn__scikit-learn-14053",
+    "ready": true
+  },
+  {
+    "instance": "sphinx-doc__sphinx-7440",
+    "ready": true
+  },
+  {
+    "instance": "sympy__sympy-21379",
+    "ready": true
+  }
+]
