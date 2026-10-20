@@ -78,7 +78,19 @@ export async function generateCommitMessage(
   if (diffResult.kind === 'no-changes') return { ok: false, reason: "empty-input" };
   const diff = diffResult.value;
 
-  const model = buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '');
+  const model = (() => {
+    try {
+      return buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '');
+    } catch (e: unknown) {
+      return e instanceof Error ? e : new Error(String(e));
+    }
+  })();
+  // Un `providerId` inconnu de `buildLanguageModel` (ex. sélection corrompue en
+  // `localStorage`) lève ici : on le traite comme une configuration invalide,
+  // sans jamais laisser l'exception remonter comme un échec git ou réseau.
+  if (model instanceof Error) {
+    return { ok: false, reason: "no-provider", detail: model.message };
+  }
   let text: string;
   try {
     ({ text } = await generateText({

@@ -87,7 +87,7 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPrevie
       className="relative flex shrink-0"
       style={{
         width: collapsed ? 44 : width + 44,
-        borderRight: "1px solid var(--origin-border-default)",
+        borderRight: "1px solid var(--origin-border-strong)",
       }}
     >
       <ActivityBar active={collapsed ? "" : active} onSelect={handleSelect} />

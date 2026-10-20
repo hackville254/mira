@@ -172,7 +172,7 @@ export default function TaskRail({
   return (
     <div
       className="relative flex flex-col shrink-0 overflow-hidden"
-      style={{ width, backgroundColor: "var(--origin-bg-sidebar)" }}
+      style={{ width, backgroundColor: "var(--origin-bg-sidebar)", borderRight: "1px solid var(--origin-border-strong)" }}
     >
       {/* New Task */}
       <div style={{ padding: "10px 10px 8px" }}>

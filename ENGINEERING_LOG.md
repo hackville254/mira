@@ -5,6 +5,58 @@
 
 ---
 
+### [2026-10-20T23:40] | Token `border.strong` — bordures de séparation lisibles entre panneaux
+
+- **Contexte :** retour utilisateur : *« quand on ouvre par exemple explorer il faut
+  mettre une border qui montre la séparation, pas une shadow »*. Les bordures
+  ajoutées au lot précédent existaient mais étaient **invisibles**.
+
+- **Cause racine :** `border.default` vaut `#242424` (dark) et `#ebebeb` (light),
+  alors que les fonds voisins sont `bg.sidebar` `#0a0a0a` et `bg.editor` `#0a0a0a`
+  (dark) / `#fafafa` et `#ffffff` (light). L'écart de luminance est trop faible
+  pour distinguer un trait de séparation : l'œil ne perçoit aucune frontière, d'où
+  l'impression d'un panneau « flottant sans contour ».
+
+- **Modifications effectuées :**
+  - Nouveau token `border.strong` :
+    `origin-dark` → `#3a3a3a` ; `origin-light` → `#d4d4d4` (contraste nettement
+    supérieur à `border.default` sur les fonds concernés).
+  - `vscodeTheme.ts` : mapping `border.strong` ← `activityBar.border`,
+    `sideBar.border`, `panel.border`, `editorGroup.border`. Le fallback existant
+    (l.213-214) garantit la présence du token même si le thème importé ne le
+    fournit pas.
+  - Séparations structurelles basculées sur `--origin-border-strong` :
+    `Sidebar` (bordure droite, côté éditeur), `ActivityBar` (côté panneau
+    fichiers), `TaskRail` (mode IA), `AiPanel` (section chat + Pinboard).
+
+- **Décisions techniques :**
+  - **Token dédié plutôt que rehausser `border.default`.** `border.default` sert à
+    des traits fins (séparateurs de listes, contours de champs) : le durcir
+    partout aurait produit un rendu bruyant. On sépare les deux usages —
+    `border.default` = trait interne discret, `border.strong` = frontière de
+    panneau.
+  - **Deux valeurs choisies par contraste perçu**, pas par symétrie : en dark on
+    monte à `#3a3a3a` (le noir écrase tout), en light `#d4d4d4` suffit car le
+    fond clair amplifie les traits sombres.
+  - **Mapping VS Code orienté bordures de panneau** (`activityBar.border`,
+    `sideBar.border`) plutôt que `panel.border` seul, souvent absent des thèmes
+    clairs.
+
+- **Impacts & dépendances :** `origin-dark/theme.json`, `origin-light/theme.json`,
+    `vscodeTheme.ts`, `Sidebar.tsx`, `ActivityBar.tsx`, `TaskRail.tsx`,
+    `AiPanel.tsx`. Le type `OriginTheme.colors` est `Record<string, string>`
+    (ouvert) : aucun changement de schéma requis, les thèmes VS Code importés
+    héritent du fallback.
+
+- **Vérifications :** `tsc` → seule l'erreur **préexistante** du bench ; JSON
+    relus (`origin-dark` → `#3a3a3a`, `origin-light` → `#d4d4d4`) ;
+    `vitest` → **818/818 verts**.
+
+- **Prochaines étapes :** **Lot E** (index sémantique embeddings) en attente de
+    discussion.
+
+---
+
 ### [2026-10-20T23:15] | Panneaux — séparation franche au lieu des interstices `gap-1`
 
 - **Contexte :** retour utilisateur : *« les panneaux que ce soit à gauche ou à droite,

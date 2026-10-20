@@ -20,6 +20,7 @@
 
     "border.default": "#242424",
     "border.subtle":  "#333333",
+    "border.strong":  "#3a3a3a",
 
     "accent.blue":   "#62a6ff",
     "accent.pink":   "#f05b8d",

@@ -669,6 +669,7 @@ pub enum CommitDiffResult {
 #[tauri::command]
 pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResult {
     let cap = max_bytes.unwrap_or(12_000);
+    eprintln!("[git_commit_diff] called path={path:?} max_bytes={max_bytes:?}");
 
     // On distingue explicitement « pas un dépôt » de « dépôt propre » : sinon
     // l'appelant affiche « no changes » alors que la véritable cause est un
@@ -682,8 +683,14 @@ pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResu
         Ok(o) if o.status.success() => {} // dépôt valide, on continue
         // `Err` = le binaire git lui-même n'a pas pu être lancé (introuvable dans
         // le PATH, permissions…) : ce n'est PAS la faute du dossier, on le dit.
-        Err(_) => return CommitDiffResult::GitUnavailable,
-        Ok(_) => return CommitDiffResult::NotARepo,
+        Err(e) => {
+            eprintln!("[git_commit_diff] git unavailable: path={path:?} err={e}");
+            return CommitDiffResult::GitUnavailable;
+        }
+        Ok(_) => {
+            eprintln!("[git_commit_diff] not a repo: path={path:?}");
+            return CommitDiffResult::NotARepo;
+        }
     }
 
     let run = |args: &[&str]| -> String {
@@ -991,4 +998,45 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Diagnostic « machine réelle » : `git_cmd()` doit résoudre un binaire `git`
+    /// exécutable avec le PATH enrichi. C'est la garantie que l'UI ne confondra
+    /// pas « git absent » avec un dossier non-dépôt. Ignoré silencieusement si
+    /// git n'est réellement pas installé (CI minimal).
+    #[test]
+    fn git_cmd_resolves_executable_git() {
+        let out = git_cmd().arg("--version").output();
+        let Ok(out) = out else {
+            // git réellement introuvable : rien à vérifier sur cette machine.
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "`git --version` doit réussir ; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `git_commit_diff` doit classer le dépôt courant comme `Diff` ou
+    /// `NoChanges` — jamais `GitUnavailable` ni `NotARepo`.
+    #[test]
+    fn git_commit_diff_on_real_repo_is_not_unavailable() {
+        let repo = env!("CARGO_MANIFEST_DIR"); // src-tauri/ = sous-dossier du dépôt
+        let result = git_commit_diff(repo.to_string(), Some(12_000));
+        let kind = match result {
+            CommitDiffResult::Diff(_) => "diff",
+            CommitDiffResult::NoChanges => "no-changes",
+            CommitDiffResult::NotARepo => "not-a-repo",
+            CommitDiffResult::GitUnavailable => "git-unavailable",
+        };
+        assert!(
+            kind == "diff" || kind == "no-changes",
+            "attendu `diff` ou `no-changes` sur un vrai dépôt, obtenu `{kind}`"
+        );
+    }
 }

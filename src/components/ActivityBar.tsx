@@ -21,7 +21,7 @@ export default function ActivityBar({ active, onSelect }: ActivityBarProps) {
       style={{
         width: 44,
         backgroundColor: "var(--origin-bg-sidebar)",
-        borderRight: "1px solid var(--origin-border-default)",
+        borderRight: "1px solid var(--origin-border-strong)",
       }}
     >
       {items.map(({ id, icon, label }) => {

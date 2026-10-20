@@ -118,8 +118,13 @@ export type CommitDiffResult =
  * que la véritable cause est une erreur d'appel.
  */
 export async function gitCommitDiff(path: string, maxBytes?: number): Promise<CommitDiffResult> {
-  const raw = await invoke<{ kind: string; value?: string }>('git_commit_diff', { path, maxBytes })
-    .catch(() => null);
+  let raw: { kind: string; value?: string } | null = null;
+  try {
+    raw = await invoke<{ kind: string; value?: string }>('git_commit_diff', { path, maxBytes });
+  } catch (e) {
+    console.error('[git] git_commit_diff IPC failure:', e);
+    throw e;
+  }
   if (!raw) return { kind: 'git-unavailable' };
   if (raw.kind === 'diff') return { kind: 'diff', value: raw.value ?? '' };
   if (raw.kind === 'no-changes') return { kind: 'no-changes' };
