@@ -1,5 +1,6 @@
 import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from "../secrets";
-import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "../../components/ai/providers";
+import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "../ai/modelDefaults";
+import { findCustomModel } from "./customModels";
 
 /**
  * Providers purement locaux : ils ne requièrent AUCUNE clé API (l'authentification
@@ -70,7 +71,16 @@ export async function resolveActiveModelTarget(
   // Fallback = le modèle par défaut de l'app (un VRAI id de modèle), jamais le
   // providerId : passer un id de provider comme modèle produirait un appel cassé.
   const mid = modelId || (await resolveDefaultModel(DEFAULT_MODEL_ID));
+  // Un modèle PERSONNALISÉ est identifié par sa clé (qui sert aussi de compte
+  // keychain) : on lit donc sa clé sous cette même clé. `modelId` peut être
+  // l'id du modèle distant (« gpt-4o ») — c'est `pid` qui porte le modèle
+  // personnalisé, donc c'est lui qu'il faut interroger.
+  const custom = findCustomModel(pid);
   const apiKey = await loadApiKey(pid);
-  const usable = LOCAL_PROVIDER_IDS.has(pid) || !!apiKey;
+  // Un modèle personnalisé est « utilisable » dès que son endpoint est déclaré
+  // (une clé est souvent requise, mais un endpoint local n'en a pas) : c'est le
+  // moteur qui tranchera à l'appel. Les providers locaux historiques gardent la
+  // même tolérance.
+  const usable = LOCAL_PROVIDER_IDS.has(pid) || !!custom || !!apiKey;
   return { providerId: pid, modelId: mid, apiKey, usable };
 }

@@ -102,6 +102,13 @@ export interface ClineStartParams {
   /** Fournisseur OpenAI-compatible : identifiant Cline + base URL. */
   providerId: string;
   /**
+   * `clientType` du SDK : `openai-compatible` (Chat Completions),
+   * `openai` (module natif, sert aussi le protocole Responses) ou `anthropic`
+   * (Messages). C'est LUI qui choisit le protocole de transport — jamais le nom
+   * du provider. Omis = déduit du `providerId` par le moteur.
+   */
+  clientType?: string;
+  /**
    * Base URL à surcharger. Omise (`undefined`) → le SDK Cline applique SA base
    * par défaut, ce qui est le comportement voulu pour les providers natifs
    * (Anthropic, Gemini). Ne JAMAIS passer une chaîne vide.
@@ -467,6 +474,7 @@ export async function startClineRun(
         baseUrl: params.baseUrl,
         modelId: params.modelId,
         providerId: params.providerId,
+        ...(params.clientType ? { clientType: params.clientType } : {}),
         systemPrompt: params.systemPrompt ?? "",
         mode: params.mode ?? "act",
         enableTeams: params.enableTeams === true,

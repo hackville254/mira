@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Bell, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, Palette, RefreshCw, Bot } from "lucide-react";
+import { X, Eye, EyeOff, Check, SlidersHorizontal, Copy, Search, User, Smartphone, Code2, ShieldCheck, Wrench, Plug, Zap, Cpu, MessageSquare, Bell, Globe, Database, Command, ScrollText, Anchor, FlaskConical, Info, ExternalLink, ChevronDown, ChevronRight, ChevronLeft, Palette, RefreshCw, Bot, Plus, Trash2, Link2 } from "lucide-react";
 import KeybindingsSection from "./KeybindingsSection";
 import SkillsSection from "./SkillsSection";
 import CommandsSection from "./CommandsSection";
@@ -15,8 +15,23 @@ import { AgentSection } from "./AgentSection";
 import { AgentsSection } from "./AgentsSection";
 import { getSetting } from "../../lib/settings";
 import FileIcon from "../FileIcon";
-import { PROVIDERS } from "../ai/providers";
 import { loadApiKey, saveApiKey, deleteApiKey } from "../../lib/secrets";
+import {
+  loadCustomModels,
+  saveCustomModel,
+  removeCustomModel,
+  subscribeCustomModels,
+  emitCustomModelsChanged,
+  newCustomModelKey,
+  validateEndpointUrl,
+  isCustomModelKey,
+  API_FORMAT_LABELS,
+  DEFAULT_TOOL_CALL_ROUNDS,
+  DISPLAY_NAME_MAX,
+  type ApiFormat,
+  type StoredCustomModel,
+} from "../../lib/agent/customModels";
+import { accentForModel } from "../ai/providers";
 import { useTheme, builtinThemes } from "../../themes/ThemeContext";
 import type { OriginTheme } from "../../themes/types";
 import { detectDevEnvironment, type ToolInfo } from "../../lib/env";
@@ -38,9 +53,6 @@ import {
 } from "../../lib/agent/permissions";
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const LOCAL_IDS = new Set(["ollama", "lmstudio", "vllm"]);
-const API_PROVIDERS = PROVIDERS.filter(p => !LOCAL_IDS.has(p.id));
 
 type Section =
   | "account" | "general" | "mira-mobile" | "dev-env" | "permission"
@@ -199,14 +211,6 @@ const selectStyle: React.CSSProperties = {
 };
 
 // ── AI Providers Section ─────────────────────────────────────────────────────
-
-type KeyState = {
-  value: string;
-  original: string;
-  visible: boolean;
-  saving: boolean;
-  justSaved: boolean;
-};
 
 function ComingSoonSection({ label }: { label: string }) {
   return (
@@ -412,216 +416,626 @@ function DevEnvironmentSection() {
   );
 }
 
-function AIProvidersSection() {
-  const { theme } = useTheme();
-  const isDark = theme.type === "dark";
-  const [keys, setKeys] = useState<Record<string, KeyState>>(() =>
-    Object.fromEntries(
-      API_PROVIDERS.map(p => [p.id, { value: "", original: "", visible: false, saving: false, justSaved: false }])
-    )
-  );
+// ── Models Section ───────────────────────────────────────────────────────────
+//
+// REFONTE (2026-10) — plus AUCUN catalogue de providers codé en dur.
+//
+// AVANT : une liste figée de 12 providers avec champs de clé API. Le client ne
+// pouvait pas brancher son propre endpoint (proxy d'entreprise, passerelle
+// interne, modèle auto-hébergé) sans passer par un provider « connu ».
+//
+// APRÈS : le client DÉCLARE ses modèles. Chaque entrée porte son format d'API,
+// son URL, son id de modèle et sa clé. Ces modèles apparaissent ensuite partout
+// où l'on choisit un modèle (sélecteur de l'input, actions utilitaires).
+//
+// La clé API n'est JAMAIS stockée dans le store des modèles : elle part dans le
+// keychain OS, sous le compte `provider:<clé du modèle>` (cf. `secrets.ts`).
+
+/** État d'édition de la modale « Custom Model ». */
+interface ModelDraft {
+  key: string;
+  apiFormat: ApiFormat;
+  baseUrl: string;
+  fullUrl: boolean;
+  modelId: string;
+  displayName: string;
+  modelSeries: string;
+  contextInput: string;
+  contextOutput: string;
+  toolCallRounds: string;
+}
+
+function emptyDraft(): ModelDraft {
+  return {
+    key: newCustomModelKey(),
+    apiFormat: "openai-chat",
+    baseUrl: "",
+    fullUrl: false,
+    modelId: "",
+    displayName: "",
+    modelSeries: "",
+    contextInput: "",
+    contextOutput: "",
+    toolCallRounds: String(DEFAULT_TOOL_CALL_ROUNDS),
+  };
+}
+
+function draftFromStored(m: StoredCustomModel): ModelDraft {
+  return {
+    key: m.key,
+    apiFormat: m.apiFormat,
+    baseUrl: m.baseUrl,
+    fullUrl: m.fullUrl,
+    modelId: m.modelId,
+    displayName: m.displayName,
+    modelSeries: m.modelSeries,
+    contextInput: m.contextInput === null ? "" : String(m.contextInput),
+    contextOutput: m.contextOutput === null ? "" : String(m.contextOutput),
+    toolCallRounds: m.toolCallRounds === null ? "" : String(m.toolCallRounds),
+  };
+}
+
+/** Champ numérique vide → `null` (défaut optimal du moteur). */
+function parseOptionalInt(raw: string): number | null {
+  const n = Number(raw.trim());
+  return raw.trim() && Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+const INPUT_FIELD_STYLE: React.CSSProperties = {
+  width: "100%",
+  padding: "8px 10px",
+  borderRadius: 6,
+  border: "1px solid var(--origin-border-default)",
+  backgroundColor: "var(--origin-bg-base)",
+  color: "var(--origin-fg-default)",
+  fontSize: 13,
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const FIELD_LABEL_STYLE: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: "var(--origin-fg-default)",
+  marginBottom: 6,
+};
+
+const FIELD_HELP_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--origin-fg-subtle)",
+  lineHeight: 1.5,
+  marginBottom: 6,
+};
+
+/** Astérisque rouge des champs obligatoires. */
+function RequiredMark() {
+  return <span style={{ color: "var(--origin-semantic-error, #f85149)", marginRight: 4 }}>*</span>;
+}
+
+/**
+ * Modale de déclaration d'un modèle (calquée sur la modale « Custom Model »
+ * des IDE d'agent modernes : format d'API, URL, id, libellé, clé, options
+ * avancées repliables).
+ */
+function CustomModelModal({ initial, onClose, onSaved }: {
+  initial: StoredCustomModel | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState<ModelDraft>(() => initial ? draftFromStored(initial) : emptyDraft());
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [formatOpen, setFormatOpen] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const set = useCallback((patch: Partial<ModelDraft>) => {
+    setDraft(prev => ({ ...prev, ...patch }));
+  }, []);
+
+  // Clé existante : on la précharge (le keychain est la source de vérité), sans
+  // jamais l'exposer en clair tant que l'œil n'est pas activé.
+  useEffect(() => {
+    let alive = true;
+    if (!initial) return;
+    void loadApiKey(initial.key).then(k => { if (alive && k) setApiKey(k); }).catch(() => {});
+    return () => { alive = false; };
+  }, [initial]);
 
   useEffect(() => {
-    API_PROVIDERS.forEach(async ({ id }) => {
-      const key = await loadApiKey(id).catch(() => null);
-      if (key) {
-        setKeys(prev => ({
-          ...prev,
-          [id]: { ...prev[id], value: key, original: key },
-        }));
-      }
-    });
-  }, []);
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-  const update = useCallback((id: string, patch: Partial<KeyState>) => {
-    setKeys(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-  }, []);
+  async function handleSave() {
+    setError(null);
+    const modelId = draft.modelId.trim();
+    const baseUrl = draft.baseUrl.trim();
+    if (!baseUrl) return setError("Custom Request URL is required.");
+    const urlCheck = validateEndpointUrl(baseUrl);
+    if (!urlCheck.ok) return setError(urlCheck.reason);
+    if (!modelId) return setError("Model ID is required.");
+    if (!apiKey.trim()) return setError("API Key is required.");
 
-  async function handleSave(id: string) {
-    const { value } = keys[id];
-    update(id, { saving: true });
+    setSaving(true);
     try {
-      if (value.trim()) {
-        await saveApiKey(id, value.trim());
-        update(id, { saving: false, original: value.trim(), justSaved: true });
-        setTimeout(() => update(id, { justSaved: false }), 1800);
-      } else {
-        await deleteApiKey(id);
-        update(id, { saving: false, original: "", justSaved: true });
-        setTimeout(() => update(id, { justSaved: false }), 1800);
-      }
+      saveCustomModel({
+        key: draft.key,
+        displayName: draft.displayName.trim().slice(0, DISPLAY_NAME_MAX) || modelId,
+        apiFormat: draft.apiFormat,
+        baseUrl,
+        fullUrl: draft.fullUrl,
+        modelId,
+        modelSeries: draft.modelSeries.trim(),
+        contextInput: parseOptionalInt(draft.contextInput),
+        contextOutput: parseOptionalInt(draft.contextOutput),
+        toolCallRounds: parseOptionalInt(draft.toolCallRounds),
+      });
+      await saveApiKey(draft.key, apiKey.trim());
+      emitCustomModelsChanged();
+      onSaved();
+      onClose();
     } catch {
-      update(id, { saving: false });
+      setError("Could not save this model. Check the values and try again.");
+    } finally {
+      setSaving(false);
     }
   }
 
-  async function handleClear(id: string) {
-    await deleteApiKey(id).catch(() => {});
-    update(id, { value: "", original: "" });
+  return createPortal(
+    <div
+      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10001,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div style={{
+        width: "100%", maxWidth: 620, maxHeight: "90vh",
+        display: "flex", flexDirection: "column",
+        backgroundColor: "var(--origin-bg-sidebar)",
+        border: "1px solid var(--origin-border-default)",
+        borderRadius: 12,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.45)",
+        overflow: "hidden",
+      }}>
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "14px 16px",
+          borderBottom: "1px solid var(--origin-border-default)",
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--origin-fg-muted)", display: "flex", padding: 0 }}
+          >
+            <ChevronLeft size={17} />
+          </button>
+          <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: "var(--origin-fg-default)" }}>
+            {initial ? "Edit Model" : "Custom Model"}
+          </span>
+          <button
+            onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--origin-fg-muted)", display: "flex", padding: 0 }}
+          >
+            <X size={17} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
+          {/* API Format */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={FIELD_LABEL_STYLE}><RequiredMark />API Format</div>
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setFormatOpen(o => !o)}
+                style={{
+                  ...INPUT_FIELD_STYLE,
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  cursor: "pointer", textAlign: "left",
+                }}
+              >
+                <span>{API_FORMAT_LABELS[draft.apiFormat]}</span>
+                <ChevronDown size={15} style={{ color: "var(--origin-fg-subtle)", transform: formatOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+              {formatOpen && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 2,
+                  backgroundColor: "var(--origin-bg-base)",
+                  border: "1px solid var(--origin-border-default)",
+                  borderRadius: 8,
+                  overflow: "hidden",
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+                }}>
+                  {(Object.keys(API_FORMAT_LABELS) as ApiFormat[]).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => { set({ apiFormat: f }); setFormatOpen(false); }}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                        gap: 10, padding: "10px 12px", border: "none", background: "transparent",
+                        cursor: "pointer", textAlign: "left",
+                        fontSize: 13, color: "var(--origin-fg-default)",
+                      }}
+                    >
+                      {API_FORMAT_LABELS[f]}
+                      {f === draft.apiFormat && <Check size={14} style={{ color: "var(--origin-accent-blue)" }} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Custom Request URL */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={FIELD_LABEL_STYLE}><RequiredMark />Custom Request URL</span>
+              <button
+                onClick={() => set({ fullUrl: !draft.fullUrl })}
+                style={{ display: "flex", alignItems: "center", gap: 7, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              >
+                <Link2 size={13} style={{ color: "var(--origin-fg-muted)" }} />
+                <span style={{ fontSize: 12.5, color: "var(--origin-fg-muted)" }}>Full URL</span>
+                <Toggle on={draft.fullUrl} onToggle={() => set({ fullUrl: !draft.fullUrl })} />
+              </button>
+            </div>
+            <div style={FIELD_HELP_STYLE}>
+              {draft.fullUrl
+                ? "The full request URL is used as-is, with no path appended."
+                : `Enter the API endpoint without a trailing slash. ${draft.apiFormat === "anthropic" ? "/messages" : draft.apiFormat === "openai-responses" ? "/responses" : "/chat/completions"} will be appended to the URL you provide.`}
+            </div>
+            <input
+              value={draft.baseUrl}
+              onChange={e => set({ baseUrl: e.target.value })}
+              placeholder="e.g. https://api.openai.com/v1"
+              style={{ ...INPUT_FIELD_STYLE, fontFamily: "var(--font-mono)" }}
+            />
+          </div>
+
+          {/* Model ID */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={FIELD_LABEL_STYLE}><RequiredMark />Model ID</div>
+            <input
+              value={draft.modelId}
+              onChange={e => set({ modelId: e.target.value })}
+              placeholder="Input Model ID"
+              style={{ ...INPUT_FIELD_STYLE, fontFamily: "var(--font-mono)" }}
+            />
+          </div>
+
+          {/* Display Name */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={FIELD_LABEL_STYLE}>Display Name</div>
+            <div style={FIELD_HELP_STYLE}>Name shown in the model list. Defaults to Model ID if not set.</div>
+            <div style={{ position: "relative" }}>
+              <input
+                value={draft.displayName}
+                maxLength={DISPLAY_NAME_MAX}
+                onChange={e => set({ displayName: e.target.value })}
+                placeholder="Input Display Name"
+                style={{ ...INPUT_FIELD_STYLE, paddingRight: 50 }}
+              />
+              <span style={{
+                position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                fontSize: 12, color: "var(--origin-fg-subtle)", pointerEvents: "none",
+              }}>
+                {draft.displayName.length}/{DISPLAY_NAME_MAX}
+              </span>
+            </div>
+          </div>
+
+          {/* API Key */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={FIELD_LABEL_STYLE}><RequiredMark />API Key</div>
+            <div style={{ position: "relative" }}>
+              <input
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="Enter API Key"
+                style={{ ...INPUT_FIELD_STYLE, paddingRight: 36, fontFamily: "var(--font-mono)" }}
+              />
+              <button
+                onClick={() => setShowKey(v => !v)}
+                tabIndex={-1}
+                style={{
+                  position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "var(--origin-fg-subtle)", padding: 0, display: "flex",
+                }}
+              >
+                {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            <div style={{ ...FIELD_HELP_STYLE, marginTop: 6, marginBottom: 0 }}>
+              Stored in your OS keychain. It never leaves your device.
+            </div>
+          </div>
+
+          {/* Advanced Settings */}
+          <div style={{ borderTop: "1px solid var(--origin-border-default)", paddingTop: 14 }}>
+            <button
+              onClick={() => setAdvanced(a => !a)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: "none", border: "none", cursor: "pointer", padding: 0,
+                fontSize: 13, fontWeight: 600, color: "var(--origin-fg-default)",
+              }}
+            >
+              Advanced Settings
+              <ChevronRight size={14} style={{ color: "var(--origin-fg-subtle)", transform: advanced ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            </button>
+
+            {advanced && (
+              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 16 }}>
+                {/* Model Series */}
+                <div>
+                  <div style={FIELD_LABEL_STYLE}>Model Series</div>
+                  <div style={FIELD_HELP_STYLE}>
+                    Optimized prompts and hyperparameters for the selected series. Uses default config if unselected.
+                  </div>
+                  <input
+                    value={draft.modelSeries}
+                    onChange={e => set({ modelSeries: e.target.value })}
+                    placeholder="Default"
+                    style={INPUT_FIELD_STYLE}
+                  />
+                </div>
+
+                {/* Context Window */}
+                <div>
+                  <div style={FIELD_LABEL_STYLE}>Context Window (Token)</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {([
+                      { label: "Input", field: "contextInput" as const, presets: [128000, 256000, 512000, 1000000], presetLabels: ["128k", "256k", "512k", "1M"] },
+                      { label: "Output", field: "contextOutput" as const, presets: [4000, 16000, 32000, 128000], presetLabels: ["4k", "16k", "32k", "128k"] },
+                    ]).map(row => (
+                      <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ width: 52, flexShrink: 0, fontSize: 12.5, color: "var(--origin-fg-muted)" }}>{row.label}</span>
+                        <input
+                          value={draft[row.field]}
+                          onChange={e => set({ [row.field]: e.target.value } as Partial<ModelDraft>)}
+                          placeholder="Enter a value. Leave empty for optimal default"
+                          style={{ ...INPUT_FIELD_STYLE, flex: 1, minWidth: 0 }}
+                        />
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          {row.presets.map((val, i) => (
+                            <button
+                              key={val}
+                              onClick={() => set({ [row.field]: String(val) } as Partial<ModelDraft>)}
+                              style={{
+                                background: "none", border: "none", cursor: "pointer", padding: 0,
+                                fontSize: 12, color: "var(--origin-accent-blue)",
+                                textDecoration: "underline", textUnderlineOffset: 2,
+                              }}
+                            >
+                              {row.presetLabels[i]}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tool Call Rounds */}
+                <div>
+                  <div style={FIELD_LABEL_STYLE}>Tool Call Rounds</div>
+                  <input
+                    value={draft.toolCallRounds}
+                    onChange={e => set({ toolCallRounds: e.target.value.replace(/[^0-9]/g, "") })}
+                    placeholder={String(DEFAULT_TOOL_CALL_ROUNDS)}
+                    inputMode="numeric"
+                    style={INPUT_FIELD_STYLE}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div style={{
+              marginTop: 14, padding: "8px 10px", borderRadius: 6,
+              fontSize: 12.5, color: "var(--origin-semantic-error, #f85149)",
+              backgroundColor: "color-mix(in srgb, var(--origin-semantic-error, #f85149) 12%, transparent)",
+            }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 16px",
+          borderTop: "1px solid var(--origin-border-default)",
+          flexShrink: 0,
+        }}>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+            <Info size={13} style={{ color: "var(--origin-fg-subtle)", flexShrink: 0 }} />
+            <span style={{ fontSize: 11.5, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              The connectivity test sends one real request and consumes a small number of tokens.
+            </span>
+          </div>
+          <button
+            onClick={() => { setDraft(initial ? draftFromStored(initial) : emptyDraft()); setApiKey(""); setError(null); }}
+            style={{
+              padding: "7px 14px", borderRadius: 6,
+              border: "1px solid var(--origin-border-default)",
+              backgroundColor: "transparent", color: "var(--origin-fg-muted)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            Reset
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              padding: "7px 16px", borderRadius: 6, border: "none",
+              backgroundColor: "var(--origin-accent-blue, #3b82f6)", color: "#fff",
+              fontSize: 13, fontWeight: 600, cursor: saving ? "default" : "pointer", flexShrink: 0,
+              opacity: saving ? 0.7 : 1,
+            }}
+          >
+            {initial ? "Save" : "Add Model"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function AIProvidersSection() {
+  const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<StoredCustomModel | null>(null);
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
+
+  // Le store notifie l'UI (même onglet) : la liste se rafraîchit après ajout,
+  // édition ou suppression, sans rechargement de page.
+  useEffect(() => {
+    const refresh = () => setModels(loadCustomModels());
+    return subscribeCustomModels(refresh);
+  }, []);
+
+  // Indicateur « clé enregistrée » : la clé vit dans le keychain, pas dans le
+  // store — on la sonde donc à part, une fois par clé affichée.
+  useEffect(() => {
+    let alive = true;
+    models.forEach(async m => {
+      const k = await loadApiKey(m.key).catch(() => null);
+      if (alive) setKeyStatus(prev => ({ ...prev, [m.key]: !!k }));
+    });
+    return () => { alive = false; };
+  }, [models]);
+
+  const openNew = useCallback(() => { setEditing(null); setModalOpen(true); }, []);
+  const openEdit = useCallback((m: StoredCustomModel) => { setEditing(m); setModalOpen(true); }, []);
+
+  async function handleDelete(m: StoredCustomModel) {
+    removeCustomModel(m.key);
+    // La clé keychain suit la vie du modèle : on ne laisse pas de secret
+    // orphelin derrière une entrée supprimée.
+    if (isCustomModelKey(m.key)) await deleteApiKey(m.key).catch(() => {});
+    emitCustomModelsChanged();
   }
 
   return (
     <div style={{ padding: "2px 0 16px" }}>
-      <SectionHeading>API Keys</SectionHeading>
-      <p style={{ fontSize: "12px", color: "var(--origin-fg-muted)", marginBottom: "6px", lineHeight: 1.5 }}>
-        API keys are stored in your OS keychain and never leave your device.
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "12px" }}>
-        {API_PROVIDERS.map(provider => {
-          const state = keys[provider.id];
-          if (!state) return null;
-          const isDirty = state.value !== state.original;
-          const hasSaved = state.original !== "";
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <SectionHeading>Models</SectionHeading>
+          <p style={{ fontSize: 12, color: "var(--origin-fg-muted)", margin: "2px 0 0", lineHeight: 1.5 }}>
+            Add your own models by supplying the API endpoint, key and model ID. They become
+            available in the model selector everywhere in the app.
+          </p>
+        </div>
+        <button
+          onClick={openNew}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+            padding: "7px 14px", borderRadius: 6, border: "none",
+            backgroundColor: "var(--origin-accent-blue, #3b82f6)", color: "#fff",
+            fontSize: 13, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          <Plus size={15} />
+          Add Model
+        </button>
+      </div>
 
-          return (
-            <div
-              key={provider.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                padding: "10px 12px",
-                borderRadius: "8px",
-                border: "1px solid var(--origin-border-default)",
-                backgroundColor: "var(--origin-bg-base)",
-              }}
-            >
-              {/* Provider icon */}
-              <div style={{
-                width: 28, height: 28, flexShrink: 0,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                borderRadius: "6px",
-                backgroundColor: provider.icon ? "transparent" : provider.color,
-                overflow: "hidden",
-              }}>
-                {provider.icon ? (
-                  <img
-                    src={provider.icon}
-                    alt={provider.name}
-                    style={{
-                      width: 20, height: 20,
-                      filter: provider.invert ? (isDark ? "brightness(0) invert(1)" : "none") : "none",
-                    }}
-                  />
-                ) : (
-                  <span style={{ fontSize: "10px", fontWeight: 700, color: provider.textColor }}>
-                    {provider.initial}
+      {models.length === 0 ? (
+        <div style={{
+          marginTop: 16, padding: "28px 16px", textAlign: "center",
+          borderRadius: 8, border: "1px dashed var(--origin-border-default)",
+          color: "var(--origin-fg-subtle)", fontSize: 12.5, lineHeight: 1.6,
+        }}>
+          No models configured yet.<br />Click “Add Model” to connect your first endpoint.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
+          {models.map(m => {
+            const accent = accentForModel(m.key);
+            const hasKey = keyStatus[m.key];
+            return (
+              <div
+                key={m.key}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "10px 12px", borderRadius: 8,
+                  border: "1px solid var(--origin-border-default)",
+                  backgroundColor: "var(--origin-bg-base)",
+                }}
+              >
+                <div style={{
+                  width: 28, height: 28, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: 6, backgroundColor: accent,
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#fff" }}>
+                    {m.displayName.slice(0, 2).toUpperCase()}
                   </span>
-                )}
-              </div>
+                </div>
 
-              {/* Name */}
-              <div style={{ width: 90, flexShrink: 0 }}>
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--origin-fg-default)" }}>
-                  {provider.name}
-                </span>
-                {hasSaved && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "3px", marginTop: "1px" }}>
-                    <Check size={10} style={{ color: "var(--origin-semantic-success)" }} />
-                    <span style={{ fontSize: "10px", color: "var(--origin-semantic-success)" }}>Key saved</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {m.displayName}
+                    </span>
+                    {hasKey && <Check size={11} style={{ color: "var(--origin-semantic-success)", flexShrink: 0 }} />}
                   </div>
-                )}
-              </div>
+                  <div style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {API_FORMAT_LABELS[m.apiFormat]} · {m.modelId}
+                  </div>
+                </div>
 
-              {/* Key input */}
-              <div style={{ flex: 1, position: "relative" }}>
-                <input
-                  type={state.visible ? "text" : "password"}
-                  value={state.value}
-                  placeholder="Paste API key…"
-                  onChange={e => update(provider.id, { value: e.target.value })}
-                  onKeyDown={e => { if (e.key === "Enter") handleSave(provider.id); }}
-                  style={{
-                    width: "100%",
-                    padding: "6px 30px 6px 9px",
-                    borderRadius: "6px",
-                    border: "1px solid var(--origin-border-default)",
-                    backgroundColor: "var(--origin-bg-sidebar)",
-                    color: "var(--origin-fg-default)",
-                    fontSize: "12px",
-                    fontFamily: "var(--font-mono)",
-                    outline: "none",
-                    boxSizing: "border-box",
-                  }}
-                />
-                <button
-                  onClick={() => update(provider.id, { visible: !state.visible })}
-                  style={{
-                    position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)",
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--origin-fg-subtle)", padding: 0, display: "flex",
-                  }}
-                  tabIndex={-1}
-                >
-                  {state.visible ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
-
-              {/* Actions */}
-              <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                <button
-                  onClick={() => handleSave(provider.id)}
-                  disabled={!isDirty || state.saving}
-                  style={{
-                    padding: "5px 12px",
-                    borderRadius: "6px",
-                    border: "1px solid var(--origin-border-default)",
-                    backgroundColor: state.justSaved
-                      ? "color-mix(in srgb, var(--origin-semantic-success) 15%, transparent)"
-                      : isDirty
-                        ? "var(--origin-fg-default)"
-                        : "transparent",
-                    color: state.justSaved
-                      ? "var(--origin-semantic-success)"
-                      : isDirty
-                        ? "var(--origin-bg-base)"
-                        : "var(--origin-fg-subtle)",
-                    fontSize: "12px",
-                    fontWeight: 500,
-                    cursor: isDirty ? "pointer" : "default",
-                    transition: "all 0.15s",
-                    minWidth: 50,
-                  }}
-                >
-                  {state.saving ? "…" : state.justSaved ? "Saved!" : "Save"}
-                </button>
-                {hasSaved && (
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button
-                    onClick={() => handleClear(provider.id)}
+                    onClick={() => openEdit(m)}
                     style={{
-                      padding: "5px 10px",
-                      borderRadius: "6px",
+                      padding: "5px 12px", borderRadius: 6,
                       border: "1px solid var(--origin-border-default)",
-                      backgroundColor: "transparent",
-                      color: "var(--origin-fg-muted)",
-                      fontSize: "12px",
-                      cursor: "pointer",
+                      backgroundColor: "transparent", color: "var(--origin-fg-default)",
+                      fontSize: 12, cursor: "pointer",
                     }}
                   >
-                    Clear
+                    Edit
                   </button>
-                )}
+                  <button
+                    onClick={() => void handleDelete(m)}
+                    title="Remove model"
+                    style={{
+                      padding: "5px 8px", borderRadius: 6,
+                      border: "1px solid var(--origin-border-default)",
+                      backgroundColor: "transparent", color: "var(--origin-fg-muted)",
+                      cursor: "pointer", display: "flex", alignItems: "center",
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
-      {/* Local providers note */}
-      <div style={{
-        marginTop: "20px",
-        padding: "10px 12px",
-        borderRadius: "8px",
-        border: "1px solid var(--origin-border-default)",
-        backgroundColor: "var(--origin-bg-base)",
-      }}>
-        <div style={{ fontSize: "12px", fontWeight: 500, color: "var(--origin-fg-muted)", marginBottom: "2px" }}>
-          Local providers (Ollama, LM Studio, vLLM)
-        </div>
-        <div style={{ fontSize: "12px", color: "var(--origin-fg-subtle)" }}>
-          No API key required. Make sure your local server is running before starting a chat.
-        </div>
-      </div>
+      {modalOpen && (
+        <CustomModelModal
+          initial={editing}
+          onClose={() => setModalOpen(false)}
+          onSaved={() => setModels(loadCustomModels())}
+        />
+      )}
     </div>
   );
 }

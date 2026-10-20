@@ -310,11 +310,21 @@ export default function FileTree({
       {/* En-tête : nom de la racine + actions */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "8px 8px 6px 12px", userSelect: "none" }}>
         <span style={{
-          flex: 1, fontSize: 11, fontWeight: 600, letterSpacing: "0.8px",
-          textTransform: "uppercase", color: "var(--origin-fg-muted)",
+          flex: 1, fontSize: 11, fontWeight: 600,
+          // Le nom du dossier est affiché TEL QUEL (casse d'origine) : c'est un
+          // nom de fichier, pas un libellé de section — le passer en majuscules
+          // trahissait le vrai nom et faisait perdre l'information.
+          textTransform: "none", letterSpacing: "normal",
+          color: "var(--origin-fg-default)",
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         }}>
-          {rootName}{selectedCount > 1 ? ` · ${selectedCount} selected` : ""}
+          {rootName}
+          {/* Sélection multiple : compteur discret entre parenthèses (VS Code). */}
+          {selectedCount > 1 && (
+            <span style={{ marginLeft: 6, fontWeight: 400, color: "var(--origin-fg-subtle)" }}>
+              ({selectedCount})
+            </span>
+          )}
         </span>
         <button title="New File" onClick={() => startCreate(createTargetNow(), "file")} style={headerBtn}><FilePlus size={14} /></button>
         <button title="New Folder" onClick={() => startCreate(createTargetNow(), "folder")} style={headerBtn}><FolderPlus size={14} /></button>

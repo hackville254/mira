@@ -5,6 +5,57 @@
 
 ---
 
+### [2026-10-20T23:59] | Settings → Models — fin du catalogue hardcodé, tout est déclaré par le client
+
+- **Contexte :** le panneau Settings → Models exposait un catalogue figé de 12
+  providers et leurs modèles (API keys « Connect AI »). Le besoin produit : le
+  client déclare LUI-MÊME son modèle — URL de requête, clé, id de modèle, format
+  d'API — via une modale « Custom Model », et ce modèle apparaît ensuite dans le
+  sélecteur de l'input pour être utilisé dans son travail.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/customModels.ts` (nouveau magasin) : persistance
+    `localStorage['mira-custom-models']`, validation d'URL, résolution de l'URL
+    finale selon le format, bus de changement (`mira:custom-models-changed`).
+  - `SettingsPanel.tsx` : suppression de l'ancienne section « API Keys » (214 l.)
+    remplacée par la modale `CustomModelModal` (API Format, Custom Request URL +
+    toggle *Full URL*, Model ID, Display Name 0/64, API Key, Advanced Settings
+    repliable : Model Series, Context Window in/out avec presets, Tool Call
+    Rounds = 500) et une liste dynamique des modèles.
+  - `PreferencesDropdown.tsx` : le sélecteur de l'input lit désormais
+    `loadCustomModels()` en état réactif ; « Add Model » ouvre Settings → Models
+    via `origin-open-settings`.
+  - `ChatBox.tsx` : label du modèle = `displayName` du modèle custom, tenu à jour
+    par abonnement au magasin.
+  - `AiPanel.tsx` : suppression du garde-fou `PROVIDERS.find` (bloquant), clé lue
+    sur `providerId`, coût/usage via `findCustomModel` + `accentForModel`, et
+    propagation de `clientType` + `maxIterations` jusqu'au harness.
+
+- **Décisions techniques :**
+  - **Un seul magasin, une seule vérité :** plus aucun catalogue de modèles n'est
+    importable par les composants ; le providerId EST la clé du modèle custom.
+  - **`clientType` porte le protocole :** `openai-chat` → `openai-compatible`,
+    `openai-responses` → `openai`, `anthropic` → `anthropic`. Le libellé d'UI
+    n'a aucune influence sur le transport — mapping centralisé dans
+    `toClientType()`.
+  - **Secrets en dehors du magasin :** la clé API vit dans le keychain OS sous
+    `provider:<modelKey>` ; la suppression d'un modèle purge aussi sa clé (pas
+    de secret orphelin).
+  - Validation d'URL **côté client ET côté Rust** (défense en profondeur) : la
+    validation d'affichage ne dispense pas du contrôle SSRF serveur.
+
+- **Impacts & Dépendances :** `providers.ts` du dossier `ai/` ne contient plus
+  que des helpers de présentation (`AIModel`, `accentForModel`, `FALLBACK_PROVIDER`).
+  `modelCascade.ts`/`resolveAllowedModels` deviennent orphelins (nettoyage à
+  décider). `tsc --noEmit` = 0 erreur hors `bench/` ; `cargo build` = OK.
+
+- **Prochaines étapes :** test manuel de bout en bout (ajout d'un modèle →
+  apparition dans le sélecteur → envoi d'un message) ; décider du retrait des
+  modules orphelins ; valider la normalisation du localStorage corrompu
+  (`origin-ai-provider = "o"`).
+
+---
+
 ### [2026-10-20T23:58] | Source Control — refonte complète du panneau + fin du faux « Git could not be found »
 
 - **Contexte :** deux problèmes liés. (1) L'utilisateur voyait en boucle

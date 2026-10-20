@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Info, Infinity as InfinityIcon, Check } from "lucide-react";
-import { PROVIDERS } from "./providers";
-import { useTheme } from "../../themes/ThemeContext";
+import { Info, Check } from "lucide-react";
+import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
+import { accentForModel } from "./providers";
 
 interface Props {
   anchorEl: HTMLElement | null;
+  /** Clé du modèle actif (clé custom) */
   selectedModelId: string;
-  onSelect: (providerId: string, modelId: string) => void;
+  onSelect: (modelKey: string, modelId: string) => void;
   onClose: () => void;
 }
 
@@ -19,8 +20,10 @@ const MENU_MAX_HEIGHT = 440;
 export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelect, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const { theme } = useTheme();
-  const isDark = theme.type === "dark";
+  const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
+
+  // Source unique de vérité : le magasin de modèles, rafraîchi à chaque changement.
+  useEffect(() => subscribeCustomModels(() => setModels(loadCustomModels())), []);
 
   useEffect(() => {
     if (!anchorEl) return;
@@ -62,54 +65,54 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px 6px", flexShrink: 0 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--origin-fg-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          Built-in Models
+          Models
         </span>
         <Info size={12} style={{ color: "var(--origin-fg-subtle)" }} />
       </div>
 
       {/* Scrollable list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 6px" }}>
-        {/* Auto Mode — UI only */}
-        <button
-          onClick={onClose}
-          onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-          style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
-        >
-          <span style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e5e5", flexShrink: 0 }}>
-            <InfinityIcon size={18} />
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 500, color: "var(--origin-fg-default)" }}>Auto Mode</span>
-        </button>
+        {models.length === 0 && (
+          <div style={{ padding: "10px 8px", fontSize: 12, color: "var(--origin-fg-subtle)", lineHeight: 1.5 }}>
+            No model configured yet.
+          </div>
+        )}
 
-        {PROVIDERS.flatMap(p => p.models.map(m => ({ provider: p, model: m }))).map(({ provider, model }) => {
-          const isSelected = model.id === selectedModelId;
-          const icon = model.icon ?? provider.icon;
-          const invert = model.iconInvert ?? provider.invert;
+        {models.map((m) => {
+          const isSelected = m.key === selectedModelId;
+          const accent = accentForModel(m.key);
           return (
             <button
-              key={`${provider.id}/${model.id}`}
-              onMouseDown={(e) => { e.stopPropagation(); onSelect(provider.id, model.id); onClose(); }}
+              key={m.key}
+              onMouseDown={(e) => { e.stopPropagation(); onSelect(m.key, m.modelId); onClose(); }}
               onMouseEnter={hoverOn} onMouseLeave={hoverOff}
               style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
             >
-              <span style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                {icon
-                  ? <img src={icon} alt={model.name} style={{ width: 18, height: 18, objectFit: "contain", filter: invert ? (isDark ? "brightness(0) invert(1)" : "none") : "none" }} />
-                  : <span style={{ fontSize: 9, fontWeight: 700, color: "var(--origin-fg-muted)" }}>{provider.initial}</span>
-                }
+              <span
+                style={{
+                  width: 20, height: 20, borderRadius: 5, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: `${accent}22`, color: accent, fontSize: 9, fontWeight: 700,
+                }}
+              >
+                {m.displayName.slice(0, 2).toUpperCase()}
               </span>
               <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {model.name}
+                {m.displayName}
               </span>
               {isSelected && <Check size={15} style={{ color: "var(--origin-accent-blue)", flexShrink: 0 }} />}
             </button>
           );
         })}
 
-        {/* Add Model — after all models, inside scroll (UI only) */}
+        {/* Add Model — ouvre les Settings sur la section Models */}
         <div style={{ borderTop: "1px solid var(--origin-border-default)", marginTop: 6, paddingTop: 6 }}>
           <button
-            onClick={onClose}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(new CustomEvent("origin-open-settings", { detail: { section: "models" } }));
+              onClose();
+            }}
             onMouseEnter={hoverOn} onMouseLeave={hoverOff}
             style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", fontSize: 13, fontWeight: 500, color: "var(--origin-fg-muted)", transition: "background 0.1s" }}
           >

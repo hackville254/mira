@@ -55,8 +55,13 @@ export interface HarnessDecision {
 export interface ClineHarnessOptions {
   /** Racine du workspace ouvert (chemin absolu). */
   workspace: string;
-  /** Fournisseur OpenAI-compatible : identifiant Cline + base URL. */
+  /** Fournisseur : identifiant (modèle personnalisé) + base URL. */
   providerId: string;
+  /**
+   * `clientType` du SDK : il décide du protocole de transport
+   * (`openai-compatible`, `openai`, `anthropic`). Omis = déduit du providerId.
+   */
+  clientType?: string;
   /**
    * Base URL à surcharger, ou `undefined` pour laisser le SDK appliquer son
    * défaut (providers natifs). Ne JAMAIS passer une chaîne vide.
@@ -166,6 +171,7 @@ export async function startClineHarness(
   const params: ClineStartParams = {
     cwd: options.workspace,
     providerId: options.providerId,
+    ...(options.clientType ? { clientType: options.clientType } : {}),
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     modelId: options.modelId,

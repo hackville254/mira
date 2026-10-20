@@ -4,25 +4,14 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import { tauriFetch } from "../tauri-fetch";
+import { findCustomModel, isCustomModelKey, toClientType, type ApiFormat } from "./customModels";
 
-export const OPENAI_COMPAT_BASE: Record<string, string> = {
-  orvyx:      "https://api.orvyx-ai.com/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  deepseek:   "https://api.deepseek.com",
-  mistral:    "https://api.mistral.ai/v1",
-  groq:       "https://api.groq.com/openai/v1",
-  xai:        "https://api.x.ai/v1",
-  cohere:     "https://api.cohere.com/compatibility/v1",
-  lmstudio:   "http://localhost:1234/v1",
-  vllm:       "http://localhost:8000/v1",
-  ollama:     "http://localhost:11434/v1",
-};
+export { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "../ai/modelDefaults";
 
 /**
- * Providers à protocole NATIF (non OpenAI Chat Completions). Le SDK Cline les
- * connaît sous leur propre identifiant et applique SA base URL par défaut : il
- * ne faut donc PAS leur passer la base OpenAI-compatible d'Origin (le protocole
- * resterait celui du provider, mais l'URL serait fausse → appel cassé).
+ * Providers NATIFS que le moteur connaît sous leur propre nom : il applique sa
+ * base URL par défaut et son protocole. Ils restent disponibles pour les
+ * actions internes (aucun catalogue n'est exposé à l'utilisateur pour autant).
  */
 const CLINE_NATIVE_PROVIDERS: Record<string, string> = {
   anthropic: "anthropic",
@@ -33,44 +22,77 @@ const CLINE_NATIVE_PROVIDERS: Record<string, string> = {
 const OPENAI_DEFAULT_BASE = "https://api.openai.com/v1";
 
 export interface ClineProviderConfig {
-  /** Identifiant de provider tel que le SDK Cline l'attend. */
+  /** Identifiant de provider tel que le SDK d'agent l'attend. */
   providerId: string;
   /**
    * Base URL à surcharger, ou `undefined` pour laisser le SDK appliquer son
-   * défaut (cas des providers natifs comme Anthropic / Gemini).
+   * défaut (providers natifs). Ne JAMAIS transmettre une chaîne vide.
    */
   baseUrl: string | undefined;
+  /**
+   * `clientType` du SDK : c'est LUI qui choisit le protocole de transport
+   * (`openai-compatible`, `openai`, `anthropic`). Omis = déduit du providerId.
+   */
+  clientType?: string;
+  /** Plafond de tours d'outils (modèles personnalisés). */
+  maxIterations?: number;
 }
 
 /**
- * Traduit un provider Origin en configuration compréhensible par le SDK Cline.
+ * Traduit une CIBLE (modèle personnalisé OU provider natif) en configuration
+ * compréhensible par le moteur d'agent.
  *
- * Le SDK route selon le `providerId` : les endpoints OpenAI Chat Completions
- * (Orvyx et tout vase communicant) doivent passer par `"openai-compatible"` avec
- * leur `baseUrl` ; les providers natifs (Anthropic, Gemini) gardent leur
- * protocole et donc leur base URL par défaut.
+ * Un modèle personnalisé porte TOUT ce qu'il faut (URL, format d'API) : on
+ * n'invente rien et on ne retombe jamais sur un catalogue figé. Les providers
+ * natifs restent routés par leur identifiant.
  *
- * Lève une erreur pour un provider inconnu : mieux vaut échouer franchement que
+ * Lève une erreur pour une cible inconnue : mieux vaut échouer franchement que
  * d'envoyer une requête au mauvais endpoint.
  */
-export function resolveClineProvider(providerId: string): ClineProviderConfig {
-  const native = CLINE_NATIVE_PROVIDERS[providerId];
+export function resolveClineProvider(modelKeyOrProviderId: string): ClineProviderConfig {
+  const custom = findCustomModel(modelKeyOrProviderId);
+  if (custom) {
+    return {
+      // Le moteur route par `clientType` : l'id de provider libre est accepté.
+      providerId: modelKeyOrProviderId,
+      baseUrl: custom.baseUrl,
+      clientType: toClientType(custom.apiFormat),
+      ...(custom.toolCallRounds ? { maxIterations: custom.toolCallRounds } : {}),
+    };
+  }
+
+  const native = CLINE_NATIVE_PROVIDERS[modelKeyOrProviderId];
   if (native) return { providerId: native, baseUrl: undefined };
 
-  if (providerId === "openai") return { providerId: "openai-compatible", baseUrl: OPENAI_DEFAULT_BASE };
+  if (modelKeyOrProviderId === "openai") {
+    return { providerId: "openai-compatible", baseUrl: OPENAI_DEFAULT_BASE };
+  }
 
-  const base = OPENAI_COMPAT_BASE[providerId];
-  if (base) return { providerId: "openai-compatible", baseUrl: base };
+  if (isCustomModelKey(modelKeyOrProviderId)) {
+    throw new Error(`Unknown custom model: ${modelKeyOrProviderId}`);
+  }
 
-  throw new Error(`Unknown provider for Cline: ${providerId}`);
+  // Provider « vase communicant » hérité : plus de catalogue, donc plus de base
+  // URL connue. On refuse explicitement plutôt que de deviner une destination.
+  throw new Error(`Unknown provider for the agent: ${modelKeyOrProviderId}`);
 }
 
+/**
+ * Construit un `LanguageModel` pour les actions utilitaires (résumé de
+ * compaction, message de commit, édition inline, optimisation de prompt).
+ *
+ * Les modèles personnalisés sont reconnus par leur clé préfixée et routés
+ * selon leur format d'API ; les providers natifs gardent leur SDK dédié.
+ */
 export function buildLanguageModel(
-  providerId: string,
+  modelKeyOrProviderId: string,
   modelId: string,
   apiKey: string,
 ): LanguageModel {
-  switch (providerId) {
+  const custom = findCustomModel(modelKeyOrProviderId);
+  if (custom) return buildCustomLanguageModel(custom.apiFormat, custom.baseUrl, modelId, apiKey);
+
+  switch (modelKeyOrProviderId) {
     case "anthropic":
       return createAnthropic({ apiKey, fetch: tauriFetch })(modelId);
 
@@ -79,16 +101,39 @@ export function buildLanguageModel(
 
     case "gemini":
       return createGoogleGenerativeAI({ apiKey, fetch: tauriFetch })(modelId);
+  }
 
-    default: {
-      const baseURL = OPENAI_COMPAT_BASE[providerId];
-      if (!baseURL) throw new Error(`Unknown provider: ${providerId}`);
+  throw new Error(`Unknown model target: ${modelKeyOrProviderId}`);
+}
+
+/** Fabrique le client AI SDK correspondant au format d'API déclaré. */
+function buildCustomLanguageModel(
+  format: ApiFormat,
+  baseUrl: string,
+  modelId: string,
+  apiKey: string,
+): LanguageModel {
+  switch (format) {
+    case "anthropic":
+      // L'AI SDK Anthropic attend la RACINE de l'API (il ajoute `/v1/messages`) :
+      // on retire donc un éventuel suffixe `/v1` laissé collé par l'utilisateur.
+      return createAnthropic({
+        apiKey: apiKey || "no-key",
+        baseURL: baseUrl.replace(/\/v1\/?$/, "") || baseUrl,
+        fetch: tauriFetch,
+      })(modelId);
+
+    case "openai-responses":
+      return createOpenAI({ apiKey: apiKey || "no-key", baseURL: baseUrl, fetch: tauriFetch })
+        .responses(modelId);
+
+    case "openai-chat":
+    default:
       return createOpenAICompatible({
-        name: providerId,
-        baseURL,
+        name: "custom",
+        baseURL: baseUrl,
         apiKey: apiKey || "no-key",
         fetch: tauriFetch,
       })(modelId);
-    }
   }
 }

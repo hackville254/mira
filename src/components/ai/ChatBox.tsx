@@ -5,7 +5,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import PreferencesDropdown from "./PreferencesDropdown";
 import logoCode from "../../assets/logo-code.svg";
 import MentionDropdown from "./MentionDropdown";
-import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
+import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
+import { loadCustomModels, subscribeCustomModels } from "../../lib/agent/customModels";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
@@ -688,6 +689,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [selectedProviderId, setSelectedProviderId] = useState(
     () => localStorage.getItem("origin-ai-provider") ?? DEFAULT_PROVIDER_ID
   );
+  /** Liste des modèles customs, tenue à jour pour refléter renommages/suppressions. */
+  const [customModels, setCustomModels] = useState(() => loadCustomModels());
   /** Un appel d'optimisation du prompt est-il en vol (évite les doubles clics) ? */
   const [optimizing, setOptimizing] = useState(false);
 
@@ -709,6 +712,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
       cancelled = true;
     };
   }, []);
+
+  // Reflète immédiatement tout ajout / renommage / suppression fait dans les Settings.
+  useEffect(() => subscribeCustomModels(() => setCustomModels(loadCustomModels())), []);
 
   const refreshContext = useCallback(() => {
     if (!getEditorContext || contextDismissed) return;
@@ -1387,11 +1393,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   };
 
   const showContextBadge = contextSnap && !contextDismissed;
-  const activeProvider = PROVIDERS.find(p => p.models.some(m => m.id === selectedModelId));
-  const activeModel = activeProvider?.models.find(m => m.id === selectedModelId);
-  const modelLabel = activeProvider
-    ? `${activeProvider.name}/${activeModel?.name ?? selectedModelId}`
-    : (activeModel?.name ?? selectedModelId);
+  const modelLabel = customModels.find(m => m.key === selectedModelId)?.displayName ?? selectedModelId;
 
   return (
     <div
@@ -1901,11 +1903,12 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the anchor button
           anchorEl={modelAnchorRef.current}
           selectedModelId={selectedModelId}
-          onSelect={(providerId, modelId) => {
-            setSelectedModelId(modelId);
-            setSelectedProviderId(providerId);
-            localStorage.setItem("origin-ai-model", modelId);
-            localStorage.setItem("origin-ai-provider", providerId);
+          onSelect={(modelKey) => {
+            // Pour un modèle custom, la « clé » sert à la fois d'id de provider et de modèle.
+            setSelectedModelId(modelKey);
+            setSelectedProviderId(modelKey);
+            localStorage.setItem("origin-ai-model", modelKey);
+            localStorage.setItem("origin-ai-provider", modelKey);
           }}
           onClose={() => setPrefsOpen(false)}
         />

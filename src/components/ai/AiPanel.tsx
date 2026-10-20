@@ -26,7 +26,8 @@ import {
 import RevertConfirmDialog from "./RevertConfirmDialog";
 import QuestionPrompt from "./QuestionPrompt";
 import MarkdownMessage from "./MarkdownMessage";
-import { PROVIDERS } from "./providers";
+import { accentForModel } from "./providers";
+import { findCustomModel } from "../../lib/agent/customModels";
 import logoCode from "../../assets/logo-code.svg";
 import {
   STYLE_GUARDRAIL,
@@ -1353,8 +1354,10 @@ export default function AiPanel({
     activeModelIdRef.current = modelId;
     activeProviderIdRef.current = providerId;
 
-    const provider = PROVIDERS.find(p => p.id === providerId);
-    if (!provider) return;
+    // Plus de catalogue de providers hardcodé : `providerId` EST la clé du modèle
+    // choisi par le client (ex. `custom-<uuid>`). S'il est inconnu du magasin, la
+    // résolution lèvera plus bas — on ne bloque donc pas ici, et on laisse
+    // `resolveClineProvider` décider.
 
     const fp = folderPathRef.current ?? "";
     // GARDE-FOU WORKSPACE : l'agent ne démarre JAMAIS sans dossier de travail.
@@ -1403,7 +1406,7 @@ export default function AiPanel({
     // Clé API : lue en parallèle de la lecture des fichiers mentionnés (deux
     // familles d'IPC indépendantes). Le cache mémoire de `loadApiKey` évite de
     // re-sonder le keychain à chaque tour.
-    const apiKeyPromise = loadApiKey(provider.id);
+    const apiKeyPromise = loadApiKey(providerId);
     // Fichiers mentionnés : lus EN PARALLÈLE (une promesse par fichier) au lieu
     // d'une boucle séquentielle d'IPC.
     const mentionedFilesPromise = Promise.all(
@@ -1414,8 +1417,8 @@ export default function AiPanel({
     );
 
     const apiKey = await apiKeyPromise;
-    const knownError = !apiKey && !LOCAL_PROVIDERS.has(provider.id)
-      ? "No API key found for this provider. Please add your API key in Settings → Connect AI."
+    const knownError = !apiKey && !LOCAL_PROVIDERS.has(providerId)
+      ? "No API key found for this model. Please add your API key in Settings → Models."
       : null;
 
     // ── Session bookkeeping ──────────────────────────────────────────────────
@@ -2158,9 +2161,8 @@ export default function AiPanel({
 
           const { usage } = event as { usage: UsageData };
           if (usage && !LOCAL_PROVIDERS.has(providerId)) {
-            const prov = PROVIDERS.find(p => p.id === providerId);
-            const modelName = prov?.models.find(m => m.id === modelId)?.name ?? modelId;
-            const color = (prov as { color?: string })?.color ?? "#6366f1";
+            const modelName = findCustomModel(providerId)?.displayName ?? modelId;
+            const color = accentForModel(providerId);
             const cost = computeCost(modelId, usage.inputTokens, usage.outputTokens);
             recordUsage(modelId, modelName, providerId, usage.inputTokens, usage.outputTokens, cost, color, usage.cacheReadTokens);
           }
@@ -2436,6 +2438,11 @@ export default function AiPanel({
         workspace: fp,
         providerId: clineProvider.providerId,
         baseUrl: clineProvider.baseUrl,
+        // Le protocole (chat-completions / responses / messages) vient du format
+        // d'API choisi par le client : sans lui, tout partirait en OpenAI-compatible.
+        ...(clineProvider.clientType ? { clientType: clineProvider.clientType } : {}),
+        // Plafond de tours d'outils par tour (503 par défaut si non renseigné).
+        ...(clineProvider.maxIterations ? { maxIterations: clineProvider.maxIterations } : {}),
         apiKey: apiKey ?? "",
         modelId,
         systemPrompt: opts.systemPrompt,

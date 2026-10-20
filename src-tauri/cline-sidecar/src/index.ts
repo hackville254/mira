@@ -92,6 +92,14 @@ interface StartCommand {
   modelId: string;
   /** Identifiant de provider Cline (défaut `openai-compatible`). */
   providerId?: string;
+  /**
+   * Type de client du SDK : il choisit le PROTOCOLE de transport
+   * (`openai-compatible` = Chat Completions, `openai` = module natif qui sert
+   * aussi le protocole Responses, `anthropic` = Messages). Pour un endpoint
+   * personnalisé, c'est ce champ — et non le libellé de l'UI — qui décide du
+   * format d'API. Omis = déduit du `providerId` par le SDK.
+   */
+  clientType?: string;
   /** Prompt système optionnel ; sinon le SDK applique son prompt par défaut. */
   systemPrompt?: string;
   /** Mode d'agent (`act` | `plan`). Défaut `act`. */
@@ -1119,6 +1127,9 @@ function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | nu
   const enableTeams = cmd.enableTeams === true;
   return {
     providerId: cmd.providerId ?? "openai-compatible",
+    // Le protocole de transport est décidé par `clientType` (modèles
+    // personnalisés) ; à défaut, le SDK le déduit du `providerId`.
+    ...(cmd.clientType ? { clientType: cmd.clientType } : {}),
     modelId: cmd.modelId,
     apiKey: cmd.apiKey,
     baseUrl: cmd.baseUrl,
