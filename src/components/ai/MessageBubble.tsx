@@ -37,6 +37,7 @@ export default function MessageBubble({
   reviewState,
   onInsert,
   onOpenFile,
+  onOpenPath,
   canRegenerate = false,
   onActionCopy,
   vote,
@@ -71,6 +72,11 @@ export default function MessageBubble({
   onInsert?: () => void;
   /** Ouvre un fichier du workspace dans l'éditeur (clic sur un chemin). */
   onOpenFile?: (path: string, line?: number, col?: number) => void;
+  /**
+   * Ouvre un chemin cité en texte brut dans le corps du message. Le parent
+   * décide : fichier → éditeur, dossier → révélé dans l'explorateur.
+   */
+  onOpenPath?: (path: string) => void;
   /** Faux si un autre tour est en cours : on désactive « régénérer ». */
   canRegenerate?: boolean;
   /** Signale l'usage de « copier » (pour la bannière de checkpoint). */
@@ -262,6 +268,7 @@ export default function MessageBubble({
                 content={r.content}
                 isStreaming={isLastPart && message.streaming}
                 onApplyCode={onApplyCode ? makeApplyCode : undefined}
+                onOpenPath={onOpenPath}
               />
             );
           })}
@@ -271,6 +278,7 @@ export default function MessageBubble({
           content={message.content}
           isStreaming={message.streaming}
           onApplyCode={onApplyCode ? makeApplyCode : undefined}
+          onOpenPath={onOpenPath}
         />
       ) : null}
 

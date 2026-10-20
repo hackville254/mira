@@ -329,6 +329,8 @@ function buildAgentSystemPrompt(): string {
     "Tu disposes aussi de `codebase_search` (recherche plein-texte BM25) : utilise-le pour localiser",
     "vite les symboles/fonctions concernés plutôt que d'enchaîner des `grep`/`ls` exploratoires.",
     "Explore le code, identifie la cause racine, applique une correction MINIMALE, puis termine.",
+    "Converge vite : après quelques lectures ciblées, ÉCRIS ta correction au lieu de continuer à explorer.",
+    "Ne relance pas indéfiniment les mêmes outils ; si une piste échoue, change d'approche ou conclus.",
     "Ne modifie jamais les fichiers de test.",
   ].join("\n");
 }
@@ -396,6 +398,11 @@ async function main(): Promise<void> {
           `   → ${a.outcome} | tours=${a.turns ?? 0} outils=${a.toolCalls ?? 0} ` +
           `in=${a.inputTokens ?? 0} out=${a.outputTokens ?? 0} ` +
           `agent=${Math.round(a.agentMs / 1000)}s test=${Math.round(a.testMs / 1000)}s total=${Math.round((Date.now() - t0) / 1000)}s` +
+          (a.stopReason ? ` | fin=${a.stopReason}` : "") +
+          (a.metrics?.convergence?.loopDetected
+            ? ` | boucle_outil=${a.metrics.maxConsecutiveSameTool}`
+            : "") +
+          (a.metrics?.convergence?.stalled ? " | exploration_stérile" : "") +
           (a.error ? ` | err=${a.error.slice(0, 160)}` : ""),
         );
         // Écriture INCRÉMENTALE : un run interrompu laisse un résultat partiel

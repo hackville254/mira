@@ -1,12 +1,24 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useState } from "react";
-import { Check, Copy, Wand2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Check, Copy, Wand2, FolderOpen } from "lucide-react";
 import type { Components } from "react-markdown";
 import { sanitizeProse } from "../../lib/textStyle";
 import { routeMarkdownLink } from "../../lib/ai/linkRouting";
 import { openPreviewAt } from "../../lib/ai/previewBus";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { looksLikePath, guessPathKind } from "../../lib/ai/pathDetection";
+
+/** Style commun d'un chemin cliquable dans le corps du message. */
+const pathStyle: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "12px",
+  color: "var(--origin-accent-blue)",
+  textDecoration: "underline",
+  textDecorationColor: "var(--origin-border-default)",
+  textUnderlineOffset: "2px",
+  cursor: "pointer",
+};
 
 /**
  * Handler de clic sur un lien d'un message de l'agent.
@@ -39,6 +51,81 @@ interface Props {
   content: string;
   isStreaming?: boolean;
   onApplyCode?: (code: string, language: string, filePath?: string) => void;
+  /**
+   * Ouvre un chemin cité par l'agent (texte brut, code inline ou lien).
+   * L'appelant décide quoi en faire : fichier → éditeur, dossier → révélé dans
+   * l'explorateur. Aucun chemin n'est ouvert sans passer par lui, donc aucune
+   * ouverture arbitraire : l'existence est vérifiée côté appelant.
+   */
+  onOpenPath?: (path: string) => void;
+}
+
+/** Rend un token « chemin » sous forme de bouton texte, ou null si ce n'en est pas un. */
+function maybePathNode(
+  text: string,
+  onOpenPath: ((path: string) => void) | undefined,
+  key: React.Key,
+): ReactNode | null {
+  if (!onOpenPath) return null;
+  if (!looksLikePath(text)) return null;
+  const kind = guessPathKind(text);
+  return (
+    <span
+      key={key}
+      role="button"
+      tabIndex={0}
+      title={kind === "dir" ? `Reveal ${text}` : `Open ${text}`}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenPath(text); }}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenPath(text); } }}
+      style={pathStyle}
+    >
+      {kind === "dir" ? <FolderOpen size={11} style={{ verticalAlign: "-1px", marginRight: 3 }} /> : null}
+      {text}
+    </span>
+  );
+}
+
+/**
+ * Découpe une chaîne de prose en fragments : les chemins deviennent cliquables,
+ * le reste demeure du texte. On ne touche jamais aux espaces (on conserve le
+ * texte tel quel entre les chemins) pour ne pas altérer la mise en page.
+ */
+function linkifyText(
+  text: string,
+  onOpenPath: ((path: string) => void) | undefined,
+  keyPrefix: string,
+): ReactNode {
+  if (!onOpenPath || !text) return text;
+  // Découpe en conservant les délimiteurs (espaces, ponctuation d'encadrement).
+  const parts = text.split(/(\s+)/);
+  return parts.map((part, i) => {
+    if (!part || /^\s+$/.test(part)) return part;
+    // Retire la ponctuation terminale potentielle (point, virgule…) avant test.
+    const m = /^(.*?)([.,;:!?)»"']*)$/.exec(part);
+    if (!m) return part;
+    const [, core, trail] = m;
+    if (!core || !looksLikePath(core)) return part;
+    const node = maybePathNode(core, onOpenPath, `${keyPrefix}-p${i}`);
+    if (!node) return part;
+    return trail
+      ? <span key={`${keyPrefix}-w${i}`}>{node}{trail}</span>
+      : <span key={`${keyPrefix}-w${i}`}>{node}</span>;
+  });
+}
+
+/** Parcourt récursivement des enfants React et linkifie les chaînes de texte. */
+function linkifyChildren(
+  children: ReactNode,
+  onOpenPath: ((path: string) => void) | undefined,
+  keyPrefix: string,
+): ReactNode {
+  if (!onOpenPath) return children;
+  const walk = (node: ReactNode, key: string): ReactNode => {
+    if (typeof node === "string") return linkifyText(node, onOpenPath, key);
+    if (Array.isArray(node)) return node.map((n, i) => walk(n, `${key}-${i}`));
+    return node;
+  };
+  return walk(children, keyPrefix);
 }
 
 function findFilePathFor(rawContent: string, code: string): string | undefined {
@@ -187,7 +274,7 @@ const applyBtnStyle: React.CSSProperties = {
   fontFamily: "var(--font-sans)",
 };
 
-export default function MarkdownMessage({ content, isStreaming, onApplyCode }: Props) {
+export default function MarkdownMessage({ content, isStreaming, onApplyCode, onOpenPath }: Props) {
   const components: Components = {
     pre({ children }) {
       return <>{children}</>;
@@ -206,6 +293,27 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
             rawContent={content}
             onApply={!isStreaming ? onApplyCode : undefined}
           />
+        );
+      }
+
+      // Un code inline qui EST un chemin devient cliquable (l'agent encadre
+      // très souvent les chemins de backticks). Le rendu visuel reste celui
+      // d'un code inline, on ajoute juste l'affordance.
+      const pathNode = maybePathNode(text, onOpenPath, "inline-path");
+      if (pathNode) {
+        return (
+          <code
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "12px",
+              backgroundColor: "var(--origin-bg-hover)",
+              border: "1px solid var(--origin-border-default)",
+              borderRadius: "3px",
+              padding: "1px 5px",
+            }}
+          >
+            {pathNode}
+          </code>
         );
       }
 
@@ -231,7 +339,9 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
     h3: ({ children }) => <h3 style={headingStyle(13, 600)}>{children}</h3>,
 
     p: ({ children }) => (
-      <p style={{ margin: "4px 0 8px", lineHeight: 1.65 }}>{children}</p>
+      <p style={{ margin: "4px 0 8px", lineHeight: 1.65 }}>
+        {linkifyChildren(children, onOpenPath, "p")}
+      </p>
     ),
 
     ul: ({ children }) => (
@@ -240,7 +350,9 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
     ol: ({ children }) => (
       <ol style={{ margin: "4px 0 8px", paddingLeft: 20, lineHeight: 1.65 }}>{children}</ol>
     ),
-    li: ({ children }) => <li style={{ margin: "2px 0" }}>{children}</li>,
+    li: ({ children }) => (
+      <li style={{ margin: "2px 0" }}>{linkifyChildren(children, onOpenPath, "li")}</li>
+    ),
 
     strong: ({ children }) => (
       <strong style={{ fontWeight: 600, color: "var(--origin-fg-default)" }}>{children}</strong>
@@ -272,15 +384,31 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
       />
     ),
 
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        onClick={handleLinkClick(href)}
-        style={{ color: "var(--origin-accent-blue)", textDecoration: "underline", cursor: "pointer" }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }) => {
+      // Un lien dont l'`href` est un chemin local (l'agent écrit parfois
+      // `[src/lib/db.ts](src/lib/db.ts)`) n'est pas une URL : on l'ouvre comme
+      // un chemin, pas dans le navigateur (routeMarkdownLink le refuserait).
+      if (onOpenPath && href && looksLikePath(href)) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => { e.preventDefault(); onOpenPath(href); }}
+            style={{ color: "var(--origin-accent-blue)", textDecoration: "underline", cursor: "pointer" }}
+          >
+            {children}
+          </a>
+        );
+      }
+      return (
+        <a
+          href={href}
+          onClick={handleLinkClick(href)}
+          style={{ color: "var(--origin-accent-blue)", textDecoration: "underline", cursor: "pointer" }}
+        >
+          {children}
+        </a>
+      );
+    },
 
     table: ({ children }) => (
       <div style={{ overflowX: "auto", margin: "8px 0" }}>

@@ -291,20 +291,46 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     saveActiveIndex(tabs, activeId);
   }, [activeId, tabs]);
 
+  // ── Plafond réel de hauteur ──────────────────────────────────────────────
+  // La hauteur est PERSISTÉE (localStorage) : si la fenêtre a rétréci ou si une
+  // grande valeur a été mémorisée, un rendu brut de `height` débordait du
+  // conteneur flex parent (le terminal était coupé sur l'axe Y, et « descendait »
+  // en poussant la mise en page). On mesure donc l'espace réellement disponible
+  // dans le parent et on borne la hauteur rendue entre MIN_HEIGHT et cet espace.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [maxAvailable, setMaxAvailable] = useState<number>(() =>
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerHeight - RESERVED_ABOVE,
+  );
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !el.parentElement) return;
+    const parent = el.parentElement;
+    const measure = () => {
+      // `clientHeight` du parent = espace total alloué au panneau bas. On réserve
+      // une petite marge pour ne jamais coller les deux bords.
+      const avail = parent.clientHeight;
+      if (avail > 0) setMaxAvailable(avail);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(parent);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+
+  const renderHeight = Math.max(MIN_HEIGHT, Math.min(height, maxAvailable));
+
   // ── Resize drag ──────────────────────────────────────────────────────────
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      dragRef.current = { startY: e.clientY, startH: height };
+      dragRef.current = { startY: e.clientY, startH: renderHeight };
 
       function onMove(ev: MouseEvent) {
         if (!dragRef.current) return;
         const delta = dragRef.current.startY - ev.clientY;
-        // Plafond dynamique : la hauteur de la fenêtre moins une marge réservée
-        // au-dessus. Le terminal peut ainsi s'étendre bien au-delà de 600px
-        // (jusqu'à occuper toute la place) au lieu d'être coupé sur l'axe Y.
-        const maxH = Math.max(MIN_HEIGHT, window.innerHeight - RESERVED_ABOVE);
-        onResize(Math.min(maxH, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
+        onResize(Math.min(maxAvailable, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
       }
 
       function onUp() {
@@ -316,7 +342,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [height, onResize],
+    [renderHeight, onResize, maxAvailable],
   );
 
   // ── Reset tabs when project folder changes ───────────────────────────────
@@ -394,8 +420,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div
+      ref={rootRef}
       style={{
-        height,
+        height: renderHeight,
         flexShrink: 0,
         display: hidden ? "none" : "flex",
         flexDirection: "column",

@@ -37,7 +37,7 @@ import {
 import { ensurePricing, computeCost } from "../../lib/pricing";
 import { recordUsage } from "../../lib/usage";
 import { loadApiKey } from "../../lib/secrets";
-import { readFile } from "../../lib/fs";
+import { readFile, readDir, revealInExplorer } from "../../lib/fs";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveClineProvider, buildLanguageModel } from "../../lib/agent/providers";
 import { type AgentEvent } from "../../lib/agent/run";
@@ -478,7 +478,7 @@ export default function AiPanel({
   onAgentSurface,
   renderMode = "sidebar",
 }: AiPanelProps) {
-  const { folderPath } = useWorkspace();
+  const { folderPath, setFolderPath } = useWorkspace();
   const onActiveSessionChangeRef = useRef(onActiveSessionChange);
   useEffect(() => { onActiveSessionChangeRef.current = onActiveSessionChange; }, [onActiveSessionChange]);
 
@@ -1117,6 +1117,22 @@ export default function AiPanel({
       (async () => {
         try {
           if (cancelled) return;
+          // Même priorité que `handleSessionSelect` : si un run VIVANT existe pour
+          // cette session dans le process, son miroir mémoire est plus FRAIS que
+          // la DB (le stream n'est flushé qu'au fil de l'eau). C'est ce qui évite
+          // le « tout est mélangé » au changement de mode : sans cela, l'instance
+          // neuve relisait une DB en retard et réaffichait un fil incohérent.
+          const mirror = getRunMessages(storedId);
+          const live = getRun(storedId).cleanup !== null;
+          if (mirror && live) {
+            dbIdsRef.current = mirror.map(m => m.dbId ?? null);
+            setMessages(mirror);
+            setActiveSessionId(storedId);
+            setChatView("chat");
+            localStorage.setItem("origin-ai-chat-view", "chat");
+            void loadSessionAppMode(storedId);
+            return;
+          }
           const displayMsgs = await restoreSession(storedId);
           if (cancelled) return;
           if (displayMsgs.length > 0) {
@@ -1425,11 +1441,14 @@ export default function AiPanel({
     // On mémorise les ids DB au fur et à mesure : `dbIdsRef` reste aligné sur
     // `messages` (user puis assistant), ce qui permet d'éditer/régénérer en
     // supprimant les messages postérieurs. Un id reste `null` si la persistance
-    // a échoué pour cette ligne. Les deux insertions sont INDÉPENDANTES (aucune
-    // contrainte d'ordre) : on les parallélise. En cas de clé manquante (échec
-    // connu d'avance), on persiste quand même la bulle utilisateur puis on
+    // a échoué pour cette ligne. Les insertions partent en parallèle (latence
+    // minimale) mais portent un `created_at` EXPLICITE et strictement croissant
+    // (user = t, assistant = t+1) : l'ordre de relecture est donc déterministe,
+    // même si les deux tombent dans la même milliseconde. En cas de clé manquante
+    // (échec connu d'avance), on persiste quand même la bulle utilisateur puis on
     // affiche l'erreur sans jamais lancer le réseau.
     if (sessionId) {
+      const turnStartMs = Date.now();
       const editorContextJson = editorContext
         ? JSON.stringify({ filename: editorContext.filename, startLine: editorContext.startLine, endLine: editorContext.endLine, type: editorContext.type })
         : null;
@@ -1439,14 +1458,19 @@ export default function AiPanel({
         content: text,
         attachmentsJson: fileMentions.length > 0 ? JSON.stringify(fileMentions) : null,
         editorContextJson,
+        createdAt: turnStartMs,
       });
       // Placeholder assistant : en erreur connue, on le crée déjà « complete ».
+      // `turnStartMs + 1` garantit un ORDRE DÉTERMINISTE (user avant assistant) :
+      // les deux inserts partent en parallèle, donc `Date.now()` pouvait tomber
+      // sur la même milliseconde et laisser l'ordre de relecture indéterminé.
       const assistantInsert = insertMessage({
         sessionId,
         messageType: "assistant",
         content: knownError ?? "",
         status: knownError ? "complete" : "streaming",
         model: modelId,
+        createdAt: turnStartMs + 1,
       });
       const [uid, assistantDbId] = await Promise.all([
         userInsert.catch(err => { console.error("[AiPanel] Failed to persist user message:", err); return null; }),
@@ -2813,6 +2837,57 @@ export default function AiPanel({
     handleOpenFileRef.current?.(abs, line, col);
   }, []);
 
+  // Ouvre un chemin cité en TEXTE BRUT (fichier ou dossier). On résout d'abord
+  // le chemin absolu, puis on interroge le FS pour lever l'ambiguïté : `readDir`
+  // n'aboutit que sur un dossier.
+  //
+  // Décision (sans biais, selon le contexte) :
+  //  - DOSSIER déjà DANS le workspace courant → révélé dans le gestionnaire
+  //    système (l'arbre Mira l'affiche déjà).
+  //  - DOSSIER HORS du workspace (ex. un repo que l'agent vient de cloner
+  //    ailleurs) → ouvert COMME workspace : c'est le seul moyen de le voir dans
+  //    Mira, sinon il resterait invisible.
+  //  - FICHIER → ouvert dans l'éditeur.
+  // Aucune action si le chemin n'existe pas (pas de fausse promesse).
+  const handleOpenPath = useCallback((path: string) => {
+    if (!path) return;
+    const fp = folderPathRef.current ?? "";
+    const isAbsolute = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+    const abs = isAbsolute || !fp
+      ? path
+      : `${fp.replace(/[\\/]$/, "")}/${path.replace(/^[\\/]+/, "")}`;
+    const scope = { workspaceRoot: fp || null };
+    const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const insideWorkspace = fp
+      ? norm(abs) === norm(fp) || norm(abs).startsWith(norm(fp) + "/")
+      : false;
+    void (async () => {
+      let isDir = /[\\/]$/.test(path);
+      if (!isDir) {
+        try {
+          await readDir(abs, scope);
+          isDir = true;
+        } catch {
+          // Pas un dossier accessible : on considère que c'est un fichier. Si le
+          // dossier est HORS workspace, `readDir` est refusé par la garde de
+          // confinement : on retente sans scope pour ne pas rater un vrai dossier.
+          try {
+            await readDir(abs);
+            isDir = true;
+          } catch {
+            isDir = false;
+          }
+        }
+      }
+      if (isDir) {
+        if (insideWorkspace) await revealInExplorer(abs).catch(() => {});
+        else setFolderPath(abs);
+        return;
+      }
+      handleOpenFile(abs);
+    })();
+  }, [handleOpenFile, setFolderPath]);
+
   // Bascule le vote d'un message (mutuellement exclusif, re-clic = annulation).
   const handleVoteMessage = useCallback((index: number, vote: "up" | "down") => {
     setFeedbackByIndex(prev => {
@@ -3337,6 +3412,7 @@ export default function AiPanel({
                       reviewState={msg.role === "user" ? messageReviewState(i) : undefined}
                       onInsert={() => handleInsertMessage(msg.content)}
                       onOpenFile={handleOpenFile}
+                      onOpenPath={handleOpenPath}
                       canRegenerate={!isStreaming && i === messages.length - 1}
                       onActionCopy={handleMessageAction}
                       vote={feedbackByIndex[i] ?? null}
@@ -3536,7 +3612,7 @@ export default function AiPanel({
                       </div>
                       {isExpanded && (
                         <div style={{ padding: "0 10px 10px", borderTop: "1px solid var(--origin-border-default)", fontSize: "12px", lineHeight: 1.55, overflowY: "auto", maxHeight: "320px" }}>
-                          <MarkdownMessage content={pin.content} isStreaming={false} />
+                          <MarkdownMessage content={pin.content} isStreaming={false} onOpenPath={handleOpenPath} />
                         </div>
                       )}
                     </div>

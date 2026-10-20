@@ -161,6 +161,14 @@ export async function insertMessage(params: {
   attachmentsJson?: string | null;
   editorContextJson?: string | null;
   model?: string | null;
+  /**
+   * Horodatage d'insertion (ms epoch). Optionnel : par défaut `Date.now()`.
+   * Sert à figer un ORDRE DÉTERMINISTE quand plusieurs messages d'un même tour
+   * sont insérés en parallèle (bulle utilisateur + placeholder assistant) : sans
+   * cela, deux `Date.now()` égaux rendaient l'ordre de relecture non
+   * déterministe (bulles mélangées à la réhydratation).
+   */
+  createdAt?: number;
 }): Promise<string> {
   const db = await getDb();
   const id = crypto.randomUUID();
@@ -176,7 +184,7 @@ export async function insertMessage(params: {
       params.editorContextJson ?? null,
       params.status ?? 'complete',
       params.model ?? null,
-      Date.now(),
+      params.createdAt ?? Date.now(),
     ],
   );
   return id;
@@ -205,7 +213,7 @@ export async function updateMessageContent(
 export async function loadMessages(sessionId: string): Promise<DbMessage[]> {
   const db = await getDb();
   return db.select<DbMessage[]>(
-    `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC`,
+    `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC`,
     [sessionId],
   );
 }

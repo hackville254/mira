@@ -47,6 +47,8 @@ import { createInterface, type Interface } from "node:readline";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
+import { CONVERGENCE, ConvergenceTracker, type ConvergenceReport } from "./convergence";
+
 /** Événement normalisé du flux d'agent (sous-ensemble utilisé par le bench). */
 export interface HeadlessEvent {
   /** Type d'origine du SDK (`message-part`, `step-finish`, `usage`, `done`, …). */
@@ -167,9 +169,31 @@ export interface HeadlessRunMetrics {
    * distinguer « limite de tours atteinte » d'un « échec du fournisseur ».
    */
   stopReason?: string;
+  /**
+   * Répartition des appels d'outils par nom (observée sur les `content_end` de
+   * type `tool`). Sert à DÉTECTER une exploration sans convergence : un outil
+   * appelé un nombre anormal de fois, ou répété consécutivement, signale une
+   * boucle plutôt qu'un progrès.
+   */
+  toolNameCounts?: Record<string, number>;
+  /**
+   * Plus longue série d'appels CONSÉCUTIFS du même outil (ex. 6× `run_commands`
+   * d'affilée). Au-delà d'un seuil, c'est le signe d'une exploration qui ne
+   * converge pas (Étape 3). 0 si aucun outil observé.
+   */
+  maxConsecutiveSameTool?: number;
+  /** Rapport de convergence complet (boucle, stérilité), figé en fin de run. */
+  convergence?: ConvergenceReport;
   /** Message d'erreur terminal, si le run a échoué. */
   error?: string;
 }
+
+/**
+ * Seuils de DÉTECTION de non-convergence (Étape 3). Réexportés depuis
+ * `./convergence` (source unique) pour que les runners n'aient qu'un import.
+ */
+export { CONVERGENCE, ConvergenceTracker, resumeInstruction } from "./convergence";
+export type { ConvergenceReport } from "./convergence";
 
 /** Handle d'un run headless : session + métriques + attente de fin. */
 export interface HeadlessRun {
@@ -406,6 +430,8 @@ export class ClineSidecarClient {
     const t0 = Date.now();
     let firstContent = 0;
     const textParts: string[] = [];
+    // Suivi de convergence (Étape 3) : logique pure, testable sans sidecar.
+    const conv = new ConvergenceTracker();
 
     const result = (await this.command("start", {
       cwd: params.cwd,
@@ -446,9 +472,16 @@ export class ClineSidecarClient {
         } else if (t === "content_end") {
           // Bloc de texte clos : c'est le contenu RÉEL du message de l'agent.
           if (raw.contentType === "text" && typeof raw.text === "string") textParts.push(raw.text);
+          // Fin d'un appel d'outil : `toolName` est le seul identifiant d'outil
+          // exposé par le SDK (pas d'args). On l'utilise pour détecter une
+          // exploration qui tourne en boucle (Étape 3).
+          if (raw.contentType === "tool" && typeof raw.toolName === "string" && raw.toolName) {
+            conv.observe(raw.toolName);
+          }
         } else if (t === "iteration_end") {
           metrics.turns++;
           metrics.toolCalls += raw.toolCallCount ?? (raw.hadToolCalls ? 1 : 0);
+          conv.setTurns(metrics.turns);
         } else if (t === "usage") {
           // Le SDK fournit des TOTAUX cumulés : on les prend tels quels (dernier
           // `usage` = vérité du run), au lieu d'additionner des deltas.
@@ -510,6 +543,12 @@ export class ClineSidecarClient {
     void finished.then(() => {
       metrics.totalMs = Date.now() - t0;
       metrics.ttftMs = firstContent > 0 ? firstContent - t0 : 0;
+      // Figés à la fin du run : exploités par le runner pour décider d'une
+      // relance ciblée / d'une synthèse forcée (Étape 3).
+      const rep = conv.report();
+      metrics.toolNameCounts = rep.toolNameCounts;
+      metrics.maxConsecutiveSameTool = rep.maxConsecutiveSameTool;
+      metrics.convergence = rep;
     });
     return run;
   }

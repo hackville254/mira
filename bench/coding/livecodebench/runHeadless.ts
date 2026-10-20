@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 
 import { ClineSidecarClient } from "../headless/clineSidecar";
 import { searchIndex } from "../headless/codeSearch";
+import type { ConvergenceReport } from "../headless/convergence";
 import { resolveClineProvider } from "../../../src/lib/agent/providers";
 import { summarize, writeReport, formatTable, type BenchReport } from "../report";
 import type { AttemptResult } from "../types";
@@ -109,6 +110,10 @@ interface LcbAttempt extends AttemptResult {
   contract?: "functional" | "stdin" | "interactive";
   /** Vrai si le problème a été EXCLU du score (interactif, non évaluable). */
   skipped?: boolean;
+  /** Motif de fin du moteur (`completed`/`max_iterations`/`error`/…). */
+  stopReason?: string;
+  /** Signal de non-convergence (boucle d'outil / exploration stérile). */
+  convergence?: ConvergenceReport;
 }
 
 /**
@@ -240,6 +245,8 @@ async function runOne(
   attempt.toolCalls = run.metrics.toolCalls;
   attempt.inputTokens = run.metrics.inputTokens;
   attempt.outputTokens = run.metrics.outputTokens;
+  attempt.stopReason = run.metrics.stopReason;
+  attempt.convergence = run.metrics.convergence;
   if (run.metrics.error) attempt.error = `agent : ${run.metrics.error}`;
 
   // ── Notation : code extrait → Docker verrouillé ───────────────────────────
@@ -348,7 +355,10 @@ async function main(): Promise<void> {
         attempts.push(a);
         console.log(
           `   → ${a.outcome} | cas=${a.passed}/${a.total} tours=${a.turns ?? 0} outils=${a.toolCalls ?? 0} ` +
-          `in=${a.inputTokens ?? 0} out=${a.outputTokens ?? 0} agent=${Math.round(a.agentMs / 1000)}s eval=${Math.round(a.testMs / 1000)}s`,
+          `in=${a.inputTokens ?? 0} out=${a.outputTokens ?? 0} agent=${Math.round(a.agentMs / 1000)}s eval=${Math.round(a.testMs / 1000)}s` +
+          (a.stopReason ? ` | fin=${a.stopReason}` : "") +
+          (a.convergence?.loopDetected ? ` | boucle_outil=${a.convergence.maxConsecutiveSameTool}` : "") +
+          (a.convergence?.stalled ? " | exploration_stérile" : ""),
         );
         await persist();
       }

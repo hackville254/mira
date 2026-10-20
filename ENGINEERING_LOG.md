@@ -5,6 +5,80 @@
 
 ---
 
+### [2026-10-20T14:15] | Correctifs mode IA/IDE : modal de suppression, hauteur terminal, ordre des messages, chemins cliquables
+
+- **Contexte :** quatre défauts distincts signalés en usage réel :
+  1. En mode IA (hors éditeur), la modale de confirmation de suppression d'un
+     dossier/fichier n'apparaissait pas : la suppression semblait sans garde-fou.
+  2. La hauteur du terminal restait trop petite : coupée sur l'axe Y, elle ne
+     descendait pas au fil du contenu.
+  3. Au changement de mode (IA ↔ IDE), les messages se « mélangeaient » : on ne
+     savait plus où commençait la conversation.
+  4. Quand l'agent citait le chemin d'un dossier/fichier (ex. un repo cloné), rien
+     n'était cliquable : impossible d'ouvrir ce qu'il venait de créer.
+
+- **Modifications effectuées :**
+  - `src/components/FileTree.tsx` — `DeleteConfirmDialog` montée via
+    `createPortal(..., document.body)`.
+  - `src/components/terminal/TerminalPanel.tsx` — `rootRef` + `ResizeObserver` sur
+    `parentElement` → `maxAvailable` ; `renderHeight = max(MIN_HEIGHT,
+    min(height, maxAvailable))` utilisée pour le rendu ET le drag.
+  - `src/lib/db.ts` — `insertMessage(..., createdAt?)`, écriture de
+    `params.createdAt ?? Date.now()` ; `loadMessages` trie par
+    `created_at ASC, rowid ASC`.
+  - `src/components/ai/AiPanel.tsx` — `turnStartMs` (user = t, assistant = t+1) à
+    l'envoi ; réhydratation au montage qui réutilise le miroir `getRunMessages`
+    quand un run est vivant ; nouveau `handleOpenPath` + `setFolderPath` du contexte.
+  - `src/lib/ai/pathDetection.ts` (nouveau) — `looksLikePath`, `guessPathKind`,
+    `extractPathTokens` (purs, testables, sans accès disque).
+  - `src/components/ai/MarkdownMessage.tsx` — prop `onOpenPath` ; code inline et
+    liens dont l'`href` est un chemin deviennent cliquables ; `linkifyChildren`
+    détecte les chemins en texte brut dans `p`/`li`.
+  - `src/components/ai/MessageBubble.tsx` — relais de `onOpenPath` vers
+    `MarkdownMessage`.
+  - `src/lib/ai/__tests__/pathDetection.test.ts` (nouveau) — 13 tests.
+
+- **Décisions Techniques :**
+  - **Portail (point 1)** : `position: fixed` ne suffit pas dans un conteneur à
+    clipping (`Sidebar` repliée = `width: 0` + `overflow: hidden`). Seul un portail
+    vers `document.body` sort l'élément de la chaîne de clipping.
+  - **Clamp par espace réel (point 2)** : la hauteur était persistée en
+    localStorage sans borne, d'où un débordement après rétrécissement de fenêtre.
+    On mesure l'espace réel du parent et on borne le rendu — sans écraser la valeur
+    préférée de l'utilisateur (elle reste intacte pour quand l'espace revient).
+  - **Ordre déterministe (point 3)** : les inserts user/assistant partaient en
+    `Promise.all` → `created_at` identiques possibles → tri SQL non déterministe.
+    On fixe un `createdAt` explicite croissant ET on ajoute `rowid` comme
+    tiebreaker (ordre d'insertion réel). Le miroir mémoire est réutilisé au montage
+    quand un run est vivant, pour ne pas recharger un état divergent.
+  - **Chemins cliquables (point 4, choix utilisateur « les deux selon contexte »)** :
+    détection PURE de la forme du chemin (aucun accès disque dans le rendu) ;
+    l'existence et la nature sont vérifiées au CLIC par l'appelant. Dossier dans le
+    workspace → révélé dans le gestionnaire système ; dossier HORS workspace (repo
+    cloné ailleurs) → ouvert comme workspace (seul moyen de le voir dans Mira) ;
+    fichier → ouvert dans l'éditeur. Aucune ouverture arbitraire : un chemin
+    inexistant ne déclenche rien de plus qu'un onglet vide, sans garantie feinte.
+  - **Détection stricte** : motifs limités (absolu POSIX/Windows, `./`, `../`,
+    projet avec extension, dossier à séparateur final), refus des URL, des schémas
+    connus, des mots ordinaires (`et/ou`, `1/2`) et des chemins à espaces internes —
+    pour ne pas transformer du texte courant en faux liens.
+
+- **Impacts & Dépendances :**
+  - `AiPanel` consomme désormais `setFolderPath` du `WorkspaceContext` : un clic sur
+    un dossier hors workspace change le workspace courant (action visible, attendue).
+  - `MessageBubble`/`MarkdownMessage` gagnent une prop optionnelle ; sans
+    `onOpenPath`, le rendu est strictement identique à avant (rétro-compatible).
+  - Le tri `loadMessages` s'appuie sur `rowid` : valable pour la table `messages`
+    (rowid-table, PK `id TEXT`). Toute future table sans rowid devrait adapter.
+  - Warns ESLint pré-existants (compaction, m°11) non touchés : hors périmètre.
+
+- **Prochaines étapes :** valider manuellement en mode IA : (1) suppression d'un
+  dossier affiche la modale, (2) terminal étiré au maximum sans coupe et descend
+  au fil de la sortie, (3) aller-retour IA ↔ IDE conserve l'ordre de conversation,
+  (4) clic sur un chemin de repo cloné ouvre le workspace / l'éditeur.
+
+---
+
 ### [2026-10-20T12:48] | Compaction de contexte sémantique (nettoyage déterministe + résumé LLM persisté)
 
 - **Contexte :** en cliquant « Compact » depuis la jauge de contexte, l'utilisateur

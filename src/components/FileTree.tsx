@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   File, FilePlus, FolderPlus, Pencil, Trash2, Copy, Scissors,
   ClipboardPaste, ExternalLink, ChevronsDownUp, RefreshCw, Eye, Columns2,
@@ -406,7 +407,13 @@ function DeleteConfirmDialog({
     if (e.key === "Escape") { e.preventDefault(); onCancel(); }
   };
 
-  return (
+  // La modale est montée dans un PORTAIL vers `document.body`. Sans cela, elle
+  // restait un enfant DOM du panneau Explorer : en mode IA la Sidebar est
+  // repliée par défaut (largeur 0 + overflow hidden), donc la boîte — pourtant
+  // `position: fixed` — était clippée et invisible. Le portail la sort de tout
+  // conteneur à débordement masqué, quel que soit le mode/layout.
+  return createPortal(
+    (
     <div
       role="dialog"
       aria-modal="true"
@@ -474,6 +481,8 @@ function DeleteConfirmDialog({
         </div>
       </div>
     </div>
+    ),
+    document.body,
   );
 }
 
