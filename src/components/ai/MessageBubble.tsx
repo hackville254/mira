@@ -43,6 +43,7 @@ export default function MessageBubble({
   onVote,
   contextUsed,
   contextBudget,
+  onCompact,
 }: {
   message: DisplayMessage;
   folderPath?: string | null;
@@ -81,6 +82,8 @@ export default function MessageBubble({
   contextUsed?: number;
   /** Budget de contexte total (anneau de la barre d'actions). */
   contextBudget?: number;
+  /** Déclenche la compaction MANUELLE du contexte (clic sur la jauge + « Compact »). */
+  onCompact?: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const isUser = message.role === "user";
@@ -306,6 +309,7 @@ export default function MessageBubble({
           onActionCopy={onActionCopy}
           contextUsed={contextUsed}
           contextBudget={contextBudget}
+          onCompact={onCompact}
         />
       )}
 

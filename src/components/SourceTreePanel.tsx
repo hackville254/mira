@@ -141,20 +141,16 @@ export default function SourceTreePanel() {
     if (!folderPath || aiBusy) return;
     setAiBusy(true);
     try {
-      // On recharge l'état git AVANT de juger : `files` peut dater du montage ou
-      // ne pas encore inclure un fichier tout juste créé. Sans ce rafraîchissement
-      // on affichait un « No changes » trompeur alors que des changements existent.
-      const fresh = await load();
-      const count = fresh?.files.length ?? files.length;
-      if (count === 0) {
-        showToast('No changes to describe.', 'info');
-        return;
-      }
+      // On rafraîchit l'état affiché, mais on ne s'en sert PAS pour décider s'il
+      // y a des changements : `getStatusFiles` retombe sur `[]` en cas d'erreur
+      // IPC, ce qui produisait un « No changes to describe » trompeur alors que
+      // le diff (calculé côté Rust sur le depôt réel) contenait bien des
+      // modifications. L'autorité sur « y a-t-il des changements » est le diff.
+      await load();
       const msg = await generateCommitMessage(folderPath);
       if (!msg) {
-        // `generateCommitMessage` renvoie null soit faute de provider configuré,
-        // soit parce que le diff est vide : on ne présuppose plus la cause.
-        showToast('Could not generate a message. Check that an AI provider is configured in Settings.', 'error');
+        // Null signifie soit « diff vide », soit « aucun provider configuré ».
+        showToast('No changes to describe, or no AI provider is configured in Settings.', 'info');
         return;
       }
       setTitle(msg);

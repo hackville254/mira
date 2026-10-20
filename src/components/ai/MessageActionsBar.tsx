@@ -35,6 +35,8 @@ export interface MessageActionsBarProps {
   contextUsed?: number;
   /** Budget de contexte total (anneau de droite). */
   contextBudget?: number;
+  /** Déclenche la compaction MANUELLE du contexte (bouton du menu de la jauge). */
+  onCompact?: () => void;
 }
 
 // Style commun des icônes : carré 26 px, icône 15 px, gris discret.
@@ -79,6 +81,7 @@ export default function MessageActionsBar({
   onActionCopy,
   contextUsed,
   contextBudget,
+  onCompact,
 }: MessageActionsBarProps) {
   const [copied, setCopied] = useState(false);
   const shownVote = vote ?? null;
@@ -153,7 +156,7 @@ export default function MessageActionsBar({
       {/* L'anneau de contexte est poussé à droite, exactement comme sur la photo. */}
       {contextUsed !== undefined && contextBudget !== undefined && (
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
-          <ContextUsageBar used={contextUsed} budget={contextBudget} />
+          <ContextUsageBar used={contextUsed} budget={contextBudget} onCompact={onCompact} />
         </div>
       )}
     </div>

@@ -62,7 +62,7 @@ import { listAgents, readSelectedAgentId, resolveSelectedAgent, CUSTOM_AGENTS_EV
 import { finalizeTodos, setTodos, clearTodos } from "../../lib/agent/todoStore";
 import { enqueueMessage, dequeueMessage } from "../../lib/agent/messageQueue";
 import { shouldPreCompact, estimateTokensWithOverhead, contextStatusPrompt, DEFAULT_TOKEN_BUDGET } from "../../lib/agent/tokenBudget";
-import { compactHistory } from "../../lib/agent/compactHistory";
+import { compactHistory, findStaleReads, compactDisplayMessages, mutatedPathsOf } from "../../lib/agent/compactHistory";
 import { parsePlan } from "../../lib/agent/planTypes";
 import type { ModelMessage } from "ai";
 import {
@@ -734,6 +734,83 @@ export default function AiPanel({
     () => estimateTokensWithOverhead(buildModelHistory(messages.filter(m => !m.streaming))),
     [messages],
   );
+
+  /**
+   * Compaction MANUELLE, déclenchée par l'utilisateur (bouton « Compact » du
+   * menu de la jauge de contexte).
+   *
+   * CE QU'ELLE FAIT, ET POURQUOI AINSI
+   * ----------------------------------
+   * Elle applique EXACTEMENT la même compaction déterministe que le chemin
+   * automatique (`findStaleReads` : les `read_file` périmés — remplacés par une
+   * lecture plus récente, ou invalidés par une écriture ultérieure — sont
+   * remplacés par un marqueur d'une ligne). Aucun appel LLM : c'est instantané,
+   * gratuit en tokens, et sans risque de hallucination dans un résumé.
+   *
+   * Différence avec l'auto : ici on réécrit AUSSI le fil AFFICHÉ
+   * (`compactDisplayMessages`). Sans cela, la jauge — calculée sur le fil
+   * affiché — ne bougerait pas et le bouton semblerait sans effet.
+   *
+   * SÉCURITÉ / INTÉGRITÉ
+   * --------------------
+   *  - Purement local : ne touche ni disque, ni réseau, ni le sidecar.
+   *  - Ne s'exécute pas pendant une génération (`isStreaming`) : on ne réécrit
+   *    jamais un fil en cours de production d'événements (course sur les parts).
+   *  - Ne touche jamais le dernier message (tour courant) ni la fenêtre récente
+   *    (~20 000 tokens) : le fil immédiat reste verbatim.
+   *  - Idempotent : un second appel ne trouve plus rien à compacter et le signale.
+   */
+  const handleManualCompact = useCallback(() => {
+    if (isStreaming) return;
+    const current = messagesRef.current.filter(m => !m.streaming);
+    // Décision de péremption calculée sur l'historique MODÈLE (source unique).
+    const stale = findStaleReads(buildModelHistory(current));
+    if (stale.size === 0) {
+      // Rien de périmé : on le dit explicitement plutôt que de simuler un effet.
+      const noopPart: MessagePart = {
+        type: "status", kind: "compaction",
+        detail: "Aucun résultat de lecture périmé à compacter.",
+      };
+      setMessages(prev => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") {
+          next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), noopPart] };
+        }
+        return next;
+      });
+      return;
+    }
+    const beforeTokens = estimateTokensWithOverhead(buildModelHistory(current));
+    const compacted = compactDisplayMessages(current, stale, mutatedPathsOf(current));
+    const saved = Math.max(0, Math.round(beforeTokens - estimateTokensWithOverhead(buildModelHistory(compacted))));
+
+    const statusPart: MessagePart = {
+      type: "status", kind: "compaction",
+      detail: `Compaction manuelle — ${stale.size} résultat(s) de lecture périmé(s) remplacé(s)`,
+      savedTokens: saved,
+    };
+    setTelemetryRef.current?.(t => ({
+      ...t, compaction: t.compaction + 1,
+      lastSavedTokens: saved || t.lastSavedTokens,
+    }));
+
+    // On pousse la bannière sur le dernier message pour rendre l'action visible.
+    const withStatus: DisplayMessage[] = (() => {
+      const next = [...compacted];
+      const last = next[next.length - 1];
+      if (last?.role === "assistant") {
+        next[next.length - 1] = { ...last, parts: [...(last.parts ?? []), statusPart] };
+      }
+      return next;
+    })();
+
+    setMessages(withStatus);
+    // Le miroir du run courant doit refléter la compaction : sinon un aller-
+    // retour de tâche (ou une reprise) réafficherait les résultats complets.
+    const sid = activeSessionIdRef.current;
+    if (sid) setRunMessages(sid, withStatus);
+  }, [isStreaming]);
 
   // Ouvre un checkpoint pour un nouveau tour d'agent. Best-effort : l'échec
   // n'empêche jamais le tour de se dérouler (le mode Ask n'écrit rien sur disque).
@@ -3162,7 +3239,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} onOptimizeError={(m) => showToast(m, "error")} />
           </div>
         )}
 
@@ -3198,6 +3275,9 @@ export default function AiPanel({
                          il reflète l'état courant, pas un historique par message. */
                       contextUsed={i === messages.length - 1 ? contextTokens : undefined}
                       contextBudget={i === messages.length - 1 ? DEFAULT_TOKEN_BUDGET : undefined}
+                      /* La compaction manuelle n'est offerte que sur le dernier
+                         message (menu de la jauge) et jamais pendant une génération. */
+                      onCompact={i === messages.length - 1 && !isStreaming ? handleManualCompact : undefined}
                     />
                   </div>
                 ))}
@@ -3261,7 +3341,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} onOptimizeError={(m) => showToast(m, "error")} />
           </>
         )}
 

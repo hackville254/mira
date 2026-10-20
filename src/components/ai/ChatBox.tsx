@@ -9,6 +9,7 @@ import { PROVIDERS, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
+import { optimizePrompt } from "../../lib/promptOptimizer";
 import { copyPath, createDirCmd, pathExists } from "../../lib/fs";
 import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 import {
@@ -628,9 +629,14 @@ interface ChatBoxProps {
    * récent), pour la navigation ↑/↓ comme dans Trae.
    */
   getUserHistory?: () => string[];
+  /**
+   * Notifie le parent d'un échec d'optimisation du prompt (bannière/toast).
+   * Le brouillon est alors conservé intact.
+   */
+  onOptimizeError?: (message: string) => void;
 }
 
-export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder, getUserHistory }: ChatBoxProps) {
+export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder, getUserHistory, onOptimizeError }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
@@ -675,6 +681,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [selectedProviderId, setSelectedProviderId] = useState(
     () => localStorage.getItem("origin-ai-provider") ?? DEFAULT_PROVIDER_ID
   );
+  /** Un appel d'optimisation du prompt est-il en vol (évite les doubles clics) ? */
+  const [optimizing, setOptimizing] = useState(false);
 
   // Fallback dev : si rien n'est mémorisé, on adopte le provider/modèle du `.env`
   // (lecture asynchrone). Les valeurs du localStorage restent prioritaires.
@@ -915,6 +923,44 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     const sel = document.getSelection();
     if (sel) { sel.removeAllRanges(); sel.addRange(range); }
   }, []);
+
+  /**
+   * Optimise le brouillon de l'éditeur via le modèle sélectionné.
+   *
+   * Contrat : on ne remplace JAMAIS le texte de l'utilisateur par quelque chose
+   * de moins bon. Si l'appel échoue, si aucun provider n'est configuré ou si le
+   * résultat est vide, on conserve le brouillon tel quel et on remonte l'erreur.
+   * L'action est bornée : un seul appel en vol (`optimizing`), et elle ne
+   * s'exécute pas pendant une génération (le bouton est alors masqué).
+   */
+  const handleOptimizePrompt = useCallback(async () => {
+    if (optimizing) return;
+    const el = editableRef.current;
+    const draft = (el?.textContent ?? "").trim();
+    if (!draft) return;
+    setOptimizing(true);
+    try {
+      const improved = await optimizePrompt(draft, selectedProviderId, selectedModelId);
+      if (!improved) {
+        onOptimizeError?.("Could not optimize. Check that an AI provider is configured in Settings.");
+        return;
+      }
+      writeEditorText(improved);
+      // Le texte réinjecté ne doit pas rouvrir les menus d'autocomplétion.
+      setSlashActive(false);
+      setHashActive(false);
+      setHashMenuOpen(false);
+      setMentionActive(false);
+      setMentionQuery("");
+      setSlashQuery("");
+      mentionRangeRef.current = null;
+      hashRangeRef.current = null;
+    } catch (e: unknown) {
+      onOptimizeError?.(e instanceof Error ? e.message : "Failed to optimize prompt.");
+    } finally {
+      setOptimizing(false);
+    }
+  }, [optimizing, selectedProviderId, selectedModelId, writeEditorText, onOptimizeError]);
 
   /** Navigation ↑/↓ dans l'historique des messages envoyés (type Trae). */
   const navigateHistory = useCallback((direction: "up" | "down") => {
@@ -1540,17 +1586,33 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             Help you write code, debugs, optimize performance and other development work, deliver production-ready code.
           </div>
         )}
-        {/* Sparkles — UI only */}
-        <Sparkles
-          size={15}
-          style={{
-            position: "absolute",
-            top: "8px",
-            right: "10px",
-            color: "var(--origin-fg-subtle)",
-            pointerEvents: "none",
-          }}
-        />
+        {/* Optimiser le prompt — bouton réel (l'ancien était décoratif et inerte).
+            Masqué pendant une génération : on ne réécrit pas un brouillon en vol. */}
+        {!isStreaming && (
+          <button
+            type="button"
+            onMouseDown={e => e.preventDefault()}
+            onClick={handleOptimizePrompt}
+            disabled={optimizing || isEmpty}
+            title="Optimize prompt"
+            aria-label="Optimize prompt"
+            style={{
+              position: "absolute",
+              top: "6px",
+              right: "8px",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 22, height: 22, borderRadius: 5,
+              border: "none", background: "transparent",
+              cursor: optimizing ? "wait" : isEmpty ? "default" : "pointer",
+              opacity: isEmpty ? 0.4 : 1,
+              color: optimizing ? "var(--origin-fg-subtle)" : "var(--origin-accent-blue)",
+            }}
+            onMouseEnter={e => { if (!optimizing && !isEmpty) e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          >
+            <Sparkles size={15} style={{ animation: optimizing ? "spin 0.7s linear infinite" : "none" }} />
+          </button>
+        )}
       </div>
 
       {/* Bottom toolbar */}

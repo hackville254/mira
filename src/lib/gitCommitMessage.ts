@@ -53,6 +53,10 @@ const COMMIT_SYSTEM_PROMPT = [
  * diff vide → « No changes to describe ».
  */
 export async function generateCommitMessage(repoPath: string): Promise<string | null> {
+  // Le modèle utilisé est celui SÉLECTIONNÉ par l'utilisateur dans l'app
+  // (localStorage `origin-ai-*`, mêmes clés que la barre de saisie), et non un
+  // modèle figé : sinon un utilisateur configuré sur OpenAI/Orvyx/etc. voyait
+  // l'appel échouer car il partait toujours vers Anthropic.
   const providerId = await resolveDefaultProvider('anthropic');
   const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
   const apiKey = await loadApiKey(providerId);

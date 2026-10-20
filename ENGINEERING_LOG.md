@@ -5,6 +5,119 @@
 
 ---
 
+### [2026-10-20T05:00] | Réparation des deux icônes IA de l'éditeur (commit + optimiser le prompt)
+
+- **Contexte :** deux actions IA étaient **inertes** en production :
+  1. l'icône « Generate commit message with AI » (panneau Git) ne produisait rien ou
+     affichait « No changes to describe » à tort ;
+  2. l'icône en haut à droite de l'input était un `<Sparkles>` **purement décoratif**
+     (`pointerEvents:"none"`, aucun handler) — cliquer dessus ne faisait rien.
+
+- **Modifications effectuées :**
+  - `src/lib/gitCommitMessage.ts` — **cause racine n°1** : le provider et le modèle
+    étaient **codés en dur** (`anthropic` + `claude-haiku-4-5-20251001`). Un utilisateur
+    configuré sur OpenAI/Orvyx/Gemini/etc. partait donc toujours vers Anthropic → échec
+    (ou null si aucune clé Anthropic). Correction : on résout le provider/modèle depuis
+    `localStorage` (`origin-ai-provider` / `origin-ai-model`), **mêmes clés que la barre
+    de saisie** — donc l'action IA utilise le modèle réellement choisi par l'utilisateur.
+  - `src/components/SourceTreePanel.tsx` — **cause racine n°2** : `aiGenerateMessage`
+    décidait « y a-t-il des changements ? » à partir de `getStatusFiles`, qui retombe sur
+    `[]` en cas d'erreur IPC → « No changes » trompeur. Désormais l'autorité est le
+    **diff** calculé côté Rust (`git_commit_diff`) : le pré-jugement a été supprimé, et
+    le message d'échec couvre les deux causes réelles (diff vide **ou** provider absent).
+  - `src/lib/promptOptimizer.ts` (nouveau) — `optimizePrompt(draft, providerId?, modelId?)` :
+    `generateText` avec un prompt système qui **préserve strictement l'intention**
+    (interdiction d'ajouter des exigences non exprimées), nettoie les préfixes/fences
+    parasites, renvoie `null` si aucun provider n'est exploitable.
+  - `src/components/ai/ChatBox.tsx` — le `<Sparkles>` décoratif devient un vrai
+    `<button>` (« Optimize prompt ») : état `optimizing` (un seul appel en vol, icône qui
+    tourne), désactivé sur brouillon vide, **masqué pendant une génération**.
+    `handleOptimizePrompt` réinjecte le texte via `writeEditorText` et ferme les menus
+    d'autocomplétion. Nouvelle prop `onOptimizeError` remontée au parent.
+  - `src/components/ai/AiPanel.tsx` — `onOptimizeError={(m) => showToast(m, "error")}` sur
+    les **deux** instances de `ChatBox`.
+
+- **Décisions techniques :**
+  - **Une seule source de vérité pour le modèle** : les actions IA « one-shot »
+    (commit, optimisation) réutilisent la résolution du modèle de la barre de saisie
+    plutôt qu'un modèle figé. C'est ce qui rend le comportement prévisible pour
+    l'utilisateur, quel que soit son provider.
+  - **Pas de présomption côté UI** : l'existence de changements est jugée par le diff
+    (source Rust fiable) et non par un listing d'état potentiellement vide pour de
+    mauvaises raisons. On ne réintroduit pas de biais en supposant la cause d'un échec.
+  - **Contrat anti-dégradation du prompt** : `optimizePrompt` ne remplace le brouillon
+    qu'en cas de succès ; sur erreur, le texte de l'utilisateur reste **intact** et une
+    bannière explique pourquoi (jamais de perte silencieuse de saisie).
+  - **Sécurité** : aucune clé n'est exposée (lecture keychain inchangée) ; les appels
+    one-shot passent par `tauriFetch` comme le reste ; bornage du diff (12 000 octets)
+    conservé ; pas de nouvel appel réseau déclenché sans action explicite de l'utilisateur.
+
+- **Impacts & Dépendances :** `gitCommitMessage` dépend désormais du provider/modèle
+  persistés — un utilisateur sans clé pour SON provider verra le message d'échec, ce qui
+  est le comportement attendu. `ChatBox` gagne une prop optionnelle (`onOptimizeError`),
+  rétro-compatible.
+
+- **Prochaines étapes :** vérifier en `tauri dev` → clic sur chaque icône avec un provider
+  distant configuré : le champ de commit se remplit, le brouillon de l'input est
+  reformulé sans perdre l'intention.
+
+---
+
+### [2026-10-20T04:55] | Compaction manuelle du contexte (popover de la jauge, parité Trae)
+
+- **Contexte :** la compaction existait **uniquement en automatique** (seuils 80 %/90 %
+  détectés fin de tour, appliqués par `compactHistory` sur l'historique modèle).
+  L'utilisateur n'avait aucun moyen de **déclencher lui-même** une réduction —
+  contrairement à Trae, dont le popover de la jauge offre un bouton « Compact ».
+  Besoin : bouton manuel, sans biais, sans appel LLM, réutilisant la règle existante.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/compactHistory.ts` — scission décision/application :
+    `findStaleReads(ModelMessage[]): Set<string>` (calcule **quels** `toolCallId` de
+    `read_file` sont périmés, sans rien réécrire), `applyStaleReads` (réécriture de
+    l'historique MODÈLE), `compactDisplayMessages(DisplayMessage[], stale, mutated)`
+    (matérialise les marqueurs dans le **fil affiché**), `mutatedPathsOf(DisplayMessage[])`.
+  - `src/components/ai/ContextUsageBar.tsx` — la jauge devient un déclencheur : clic →
+    popover « Context Usage Rate / X% of YK / [Compact] » (reproduction de la capture
+    Trae). Fermeture clic extérieur + Échap. `onCompact` **absent** ailleurs que sur le
+    dernier message → jauge non cliquable (curseur et rendu inchangés).
+  - `src/components/ai/MessageActionsBar.tsx` / `MessageBubble.tsx` — prop `onCompact`
+    transmise de bout en bout.
+  - `src/components/ai/AiPanel.tsx` — `handleManualCompact` (garde `if (isStreaming)
+    return`) : calcule les périmés, réécrit le fil affiché, calcule `saved`, pousse une
+    bannière `status{kind:"compaction"}` et incrémente la télémétrie. Si rien de périmé :
+    bannière explicite « Aucun résultat de lecture périmé ». Câblé sur le seul dernier
+    message via `onCompact={i === messages.length - 1 && !isStreaming ? … : undefined}`.
+
+- **Décisions techniques :**
+  - **Deux représentations du même fil** : `ModelMessage[]` (ce que `compactHistory`
+    réécrit) vs `DisplayMessage[]` (ce que la jauge lit). Compacter la seule première
+    faisait **baisser les tokens du modèle mais pas la jauge** → bouton perçu comme sans
+    effet. D'où `compactDisplayMessages`, qui rejoue le marqueur dans les
+    `ToolCallDisplay.result`.
+  - **Aucun appel LLM** : on réutilise exactement la règle de péremption d'auto
+    (déterministe, idempotente). Pas de duplication de logique, pas de latence, pas de coût.
+  - **Volonté de NE PAS brancher la compaction native du SDK Cline** :
+    `CoreCompactionMode = "manual"` existe côté `@cline/core`, mais elle n'est exposée
+    que comme `prepareTurn` **interne** (appelé avant chaque requête modèle) — aucune API
+    de déclenchement à la demande. L'activer aurait ajouté un second moteur concurrent et
+    des allers-retours sidecar, sans bénéfice.
+  - **Sécurité / intégrité** : garde `isStreaming` (jamais de réécriture d'un fil en
+    cours de production d'événements) ; jamais le dernier message ni la fenêtre récente
+    (~20 000 tokens) ; purement **local** (ni disque, ni réseau, ni sidecar) ; non
+    destructif (nouveaux tableaux). Le miroir du run (`setRunMessages`) est synchronisé
+    pour qu'un aller-retour de tâche ne réaffiche pas les résultats complets.
+
+- **Impacts & Dépendances :** `compactHistory.ts` change de signature interne (les
+  appelants auto de `run.ts` restent inchangés via `compactHistory` conservé). La jauge
+  n'est cliquable que sur le dernier message — cohérent avec l'affichage conditionnel
+  existant de `contextUsed`.
+
+- **Prochaines étapes :** vérifier en `tauri dev` → clic jauge → « Compact » → jauge qui
+  baisse + bannière « Compaction manuelle — N résultat(s) » + télémétrie `compaction`.
+
+---
+
 ### [2026-10-20T04:35] | Gestion des onglets du navigateur par l'agent (parité Trae SOLO)
 
 - **Contexte :** le navigateur intégré est multi-onglets (une webview vivante par
