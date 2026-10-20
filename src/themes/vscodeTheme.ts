@@ -39,6 +39,7 @@ const COLOR_MAP: Record<string, string[]> = {
   "bg.active":   ["list.activeSelectionBackground"],
   "bg.selection": ["editor.selectionBackground"],
   "bg.selection-focused": ["editor.selectionBackground", "list.activeSelectionBackground"],
+  "bg.editor-line-highlight": ["editor.lineHighlightBackground"],
 
   "fg.default": ["editor.foreground", "foreground"],
   "fg.muted":   ["descriptionForeground", "editor.foreground"],

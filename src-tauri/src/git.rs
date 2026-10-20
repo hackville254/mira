@@ -1,6 +1,12 @@
 pub(crate) fn git_cmd() -> std::process::Command {
     #[allow(unused_mut)]
     let mut cmd = std::process::Command::new("git");
+    // Une app GUI (Tauri) lancée depuis le Finder n'hérite PAS du PATH du shell :
+    // `git` installé via Homebrew (`/opt/homebrew/bin`) serait alors introuvable
+    // et toute commande échouerait — ce qui faisait croire à tort que le dossier
+    // « n'est pas un dépôt ». On impose donc le PATH enrichi (login shell +
+    // emplacements usuels), comme pour les serveurs LSP et le terminal.
+    cmd.env("PATH", crate::env_path::enriched_path_os());
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -647,6 +653,10 @@ pub enum CommitDiffResult {
     NoChanges,
     /// Le dossier fourni n'est pas un dépôt git.
     NotARepo,
+    /// Le binaire `git` n'a pas pu être exécuté (absent du PATH, permissions…).
+    /// Distinct de `NotARepo` : l'utilisateur doit pouvoir savoir que le problème
+    /// vient de git introuvable, pas de son dossier.
+    GitUnavailable,
 }
 
 /// Diff destiné à la génération d'un message de commit : contrairement à
@@ -670,7 +680,10 @@ pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResu
         .output();
     match inside {
         Ok(o) if o.status.success() => {} // dépôt valide, on continue
-        _ => return CommitDiffResult::NotARepo,
+        // `Err` = le binaire git lui-même n'a pas pu être lancé (introuvable dans
+        // le PATH, permissions…) : ce n'est PAS la faute du dossier, on le dit.
+        Err(_) => return CommitDiffResult::GitUnavailable,
+        Ok(_) => return CommitDiffResult::NotARepo,
     }
 
     let run = |args: &[&str]| -> String {

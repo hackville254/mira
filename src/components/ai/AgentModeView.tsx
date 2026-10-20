@@ -14,6 +14,7 @@ import Editor, { type EditorHandle, type EditorContext } from "../editor/Editor"
 import EditorEmptyState from "../editor/EditorEmptyState";
 import EditorWelcome from "../editor/EditorWelcome";
 import AiDiffPane, { type AiDiffTabData } from "../editor/AiDiffPane";
+import GitDiffPane from "../editor/GitDiffPane";
 import WebPreviewPane from "../editor/WebPreviewPane";
 import ImageViewerPane from "../editor/ImageViewerPane";
 import PdfViewerPane from "../editor/PdfViewerPane";
@@ -471,6 +472,13 @@ export default function AgentModeView(props: AgentModeViewProps) {
                     const diffTab = tabs.find(t => t.path === activeTab) as AiDiffTabData | undefined;
                     if (!diffTab) return null;
                     return <AiDiffPane tab={diffTab} onClose={() => closeTab(activeTab)} />;
+                  })()
+                ) : activeTab?.startsWith("__gitdiff__") ? (
+                  (() => {
+                    const gitTab = tabs.find(t => t.path === activeTab);
+                    const fp = gitTab?.filePath ?? activeTab.slice("__gitdiff__".length);
+                    const repo = gitTab?.originalContent ?? folderPath ?? "";
+                    return <GitDiffPane filePath={fp} repoPath={repo} />;
                   })()
                 ) : activeTab === "__preview__" ? (
                   <WebPreviewPane />

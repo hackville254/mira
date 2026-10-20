@@ -22,6 +22,7 @@ import { buildLanguageModel } from "./lib/agent/providers";
 import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from "./lib/secrets";
 import type { AiCompletionFn } from "./lib/aiAutocomplete";
 import { getBranch } from "./lib/git";
+import { onGitDiff } from "./lib/gitDiffBus";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "@tauri-apps/api/core";
@@ -68,7 +69,7 @@ function App() {
     fileContentsRef,
     tabsRef,
     openTab, openTabAtLine, closeTab,
-    handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab,
+    handleNewFile, handleEditorChange, openAiDiffTab, openMarkdownPreviewTab, openGitDiffTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
     applyExternalFileChanges,
   } = useTabs();
@@ -324,6 +325,13 @@ function App() {
     debugCtx.setNavigationCallback(openTabAtLine);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- debugCtx is stable; only re-wire when the callback changes
   }, [openTabAtLine]);
+
+  // Ouverture d'un diff git depuis le panneau Source Control (clic sur un
+  // fichier modifié) : le panneau n'a pas accès aux onglets, il émet un
+  // événement window que l'on traduit ici en onglet « Git diff ».
+  useEffect(() => {
+    return onGitDiff(({ filePath, repoPath }) => openGitDiffTab(filePath, repoPath));
+  }, [openGitDiffTab]);
 
   // Push breakpoint + paused-line state into the editor whenever debug session changes.
   useEffect(() => {
@@ -633,7 +641,7 @@ function App() {
     onCloneRepo: () => { void handleCloneRepo(); },
     gitBranch,
     dirtyCount: tabs.filter(t => t.isDirty).length,
-    hasActiveTab: !!activeTab && !activeTab.startsWith('__diff__'),
+    hasActiveTab: !!activeTab && !activeTab.startsWith('__diff__') && !activeTab.startsWith('__gitdiff__'),
     hasFolderOpen: !!folderPath,
     onSave: () => { void saveActiveFormatted(); },
     onSaveAs: handleSaveAs,

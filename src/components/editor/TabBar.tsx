@@ -7,7 +7,7 @@ export interface Tab {
   name: string;
   isDirty: boolean;
   isUntitled?: boolean;
-  kind?: 'file' | 'ai-diff' | 'preview' | 'markdown-preview';
+  kind?: 'file' | 'ai-diff' | 'git-diff' | 'preview' | 'markdown-preview';
   // ai-diff only
   filePath?: string;
   originalContent?: string;
@@ -61,6 +61,8 @@ function TabItem({ tab, active, onSelect, onClose }: { tab: Tab; active: boolean
       {/* Icon: diff badge, preview globe, dirty dot, or file icon */}
       {tab.kind === 'ai-diff'
         ? <GitCompare size={13} style={{ flexShrink: 0, color: 'rgba(46,160,67,0.9)' }} />
+        : tab.kind === 'git-diff'
+        ? <GitCompare size={13} style={{ flexShrink: 0, color: 'var(--origin-accent-blue)' }} />
         : tab.kind === 'preview'
         ? <Globe size={13} style={{ flexShrink: 0, color: 'var(--origin-accent-blue)' }} />
         : tab.kind === 'markdown-preview'

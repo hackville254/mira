@@ -171,6 +171,27 @@ export function useTabs() {
     setFileTreeVersion(v => v + 1);
   }
 
+  /**
+   * Ouvre (ou réactive) un onglet « Git diff » (lecture seule) comparant
+   * `filePath` à sa version HEAD. Une seule instance par fichier.
+   */
+  function openGitDiffTab(filePath: string, repoPath: string) {
+    const tabPath = `__gitdiff__${filePath}`;
+    const fileName = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
+    setTabs(prev => prev.find(t => t.path === tabPath)
+      ? prev
+      : [...prev, {
+          path: tabPath,
+          name: `${fileName} (git diff)`,
+          isDirty: false,
+          kind: 'git-diff' as const,
+          filePath,
+          originalContent: repoPath,
+        }]
+    );
+    setActiveTab(tabPath);
+  }
+
   function openPreviewTab() {
     const tabPath = '__preview__';
     setTabs(prev => prev.find(t => t.path === tabPath)
@@ -299,7 +320,7 @@ export function useTabs() {
     fileContentsRef,
     tabsRef,
     openTab, openTabAtLine, closeTab,
-    handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab,
+    handleNewFile, handleEditorChange, openAiDiffTab, openPreviewTab, openMarkdownPreviewTab, openGitDiffTab,
     handleSave, handleSaveAs, handleSaveAll, applyWorkspaceEdits, reloadFilesFromDisk,
     applyExternalFileChanges,
   };

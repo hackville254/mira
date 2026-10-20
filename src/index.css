@@ -72,6 +72,14 @@
 .origin-scm-row:hover { background-color: var(--origin-bg-hover); }
 .origin-scm-actions button:hover { background-color: var(--origin-bg-hover); color: var(--origin-fg-default); }
 
+/* Sélection épinglée (« Add to AI ») : surbrillance persistante, indépendante de
+   la sélection native de CodeMirror (qui disparaît au blur de l'éditeur). */
+.origin-pinned-selection {
+  background-color: color-mix(in srgb, var(--origin-accent-default) 28%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--origin-accent-default) 45%, transparent);
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   scrollbar-width: thin;

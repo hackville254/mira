@@ -70,9 +70,10 @@ export async function generateCommitMessage(
   // diff au réseau.
   if (!target.usable) return { ok: false, reason: "no-provider" };
 
-  // Le diff est typé : « pas un dépôt » et « dépôt propre » sont deux causes
-  // distinctes, et ne doivent PAS être confondues avec un échec de génération.
+  // Le diff est typé : « pas un dépôt », « git introuvable » et « dépôt propre »
+  // sont trois causes distinctes, à ne PAS confondre avec un échec de génération.
   const diffResult = await gitCommitDiff(repoPath, 12_000);
+  if (diffResult.kind === 'git-unavailable') return { ok: false, reason: "git-unavailable" };
   if (diffResult.kind === 'not-a-repo') return { ok: false, reason: "not-a-repo" };
   if (diffResult.kind === 'no-changes') return { ok: false, reason: "empty-input" };
   const diff = diffResult.value;

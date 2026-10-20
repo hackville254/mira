@@ -36,6 +36,8 @@ export type LlmActionFailure =
   | "no-provider"
   /** Le dossier ciblé n'est pas un dépôt git (ex. génération de message de commit). */
   | "not-a-repo"
+  /** Le binaire `git` n'a pas pu être lancé (absent du PATH, permissions…). */
+  | "git-unavailable"
   /** L'entrée est vide (ex. diff git vide → dépôt propre, brouillon vide). */
   | "empty-input"
   /** L'appel a échoué côté réseau/provider (message dans `detail`). */

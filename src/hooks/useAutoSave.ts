@@ -94,7 +94,15 @@ export function useAutoSave({ tabsRef, fileContentsRef, activeTabRef, handleSave
       if (prefs.mode === 'afterDelay') schedule();
     }
 
+    // Annulation explicite (ex. rejet d'un diff IA) : on supprime toute écriture
+    // différée en attente, pour ne PAS persister un contenu que l'utilisateur
+    // vient de refuser.
+    function onEditorCancel() {
+      cancel();
+    }
+
     window.addEventListener('origin:autosave-change', onEditorChange);
+    window.addEventListener('origin:autosave-cancel', onEditorCancel);
     window.addEventListener('origin:editor-blur', onEditorBlur);
     window.addEventListener('blur', onWindowBlur);
     window.addEventListener(AUTO_SAVE_CHANGED_EVENT, onPrefsChanged);
@@ -102,6 +110,7 @@ export function useAutoSave({ tabsRef, fileContentsRef, activeTabRef, handleSave
     return () => {
       cancel();
       window.removeEventListener('origin:autosave-change', onEditorChange);
+      window.removeEventListener('origin:autosave-cancel', onEditorCancel);
       window.removeEventListener('origin:editor-blur', onEditorBlur);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener(AUTO_SAVE_CHANGED_EVENT, onPrefsChanged);

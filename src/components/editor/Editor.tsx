@@ -1,12 +1,12 @@
 /* eslint-disable react-refresh/only-export-components -- this module exports helper hooks/utilities alongside the editor component */
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
-import { Lightbulb } from 'lucide-react';
+import { Lightbulb, Sparkles, Wand2 } from 'lucide-react';
 import {
-  EditorView, keymap, lineNumbers,
+  EditorView, keymap, lineNumbers, Decoration,
   highlightActiveLineGutter, highlightActiveLine, drawSelection,
 } from '@codemirror/view';
-import { EditorState, EditorSelection, Compartment, type Extension, type SelectionRange as EditorSelectionRange } from '@codemirror/state';
+import { EditorState, EditorSelection, Compartment, StateField, StateEffect, RangeSet, RangeSetBuilder, type Extension, type SelectionRange as EditorSelectionRange } from '@codemirror/state';
 import { undo as cmUndo, redo as cmRedo, selectAll as cmSelectAll, defaultKeymap, history, historyKeymap, indentWithTab,
   moveLineUp as cmMoveLineUp, moveLineDown as cmMoveLineDown, copyLineUp as cmCopyLineUp, copyLineDown as cmCopyLineDown,
   deleteLine as cmDeleteLine, toggleComment as cmToggleComment, indentMore as cmIndentMore, indentLess as cmIndentLess,
@@ -41,6 +41,9 @@ import { isLspSupported } from '../../lib/lsp';
 import { resolveLspConfig, findServerForFile } from '../../lib/lspConfigStore';
 import { useToast } from '../ui/Toast';
 import { createAiAutocompleteExtension, type AiCompletionFn } from '../../lib/aiAutocomplete';
+import { editSelectionInline } from '../../lib/inlineEdit';
+import { onRevealSelection } from '../../lib/selectionRevealBus';
+import type { LlmActionFailure } from '../../lib/agent/activeModel';
 import {
   createDapExtension,
   addBreakpointEffect,
@@ -48,8 +51,75 @@ import {
   setPausedLineEffect,
 } from '../../lib/dapCm6';
 
-// ── Syntax token colors — all via CSS variables ────────────────────────────────
+/**
+ * Message utilisateur pour un échec d'édition inline typé. On distingue les
+ * causes réelles au lieu d'un « ça n'a pas marché » opaque : provider absent,
+ * appel réseau échoué, sélection vide.
+ */
+function inlineFailureMessage(reason: LlmActionFailure): string {
+  switch (reason) {
+    case 'no-provider':
+      return 'No AI provider is configured. Pick a model in Settings.';
+    case 'call-failed':
+      return 'Inline edit failed: the model call did not succeed.';
+    case 'empty-input':
+      return 'Nothing to edit: select some code first.';
+    default:
+      return 'Inline edit unavailable.';
+  }
+}
 
+// Style partagé des boutons de la barre d'actions sur sélection.
+const selectionActionBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
+  padding: '3px 8px',
+  borderRadius: 5,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--origin-fg-default)',
+  cursor: 'pointer',
+  fontSize: '11px',
+  fontFamily: 'var(--font-sans)',
+  whiteSpace: 'nowrap',
+};
+
+// ── Surbrillance de sélection épinglée (« Add to AI ») ────────────────────────
+// CodeMirror ne conserve pas le surlignage natif après un clic hors éditeur :
+// on matérialise donc nous-mêmes la plage épinglée par une décoration persistante,
+// pour que l'utilisateur voie exactement ce qu'il a envoyé au chat.
+
+const pinnedMark = Decoration.mark({ class: 'origin-pinned-selection' });
+
+/** Effet : fixe (ou efface avec `null`) la plage épinglée. */
+const setPinnedRange = StateEffect.define<{ from: number; to: number } | null>();
+
+/** Plage épinglée + sa décoration de fond. CodeMirror n'affiche pas la sélection
+ *  native après un blur : cette décoration persiste donc indépendamment d'elle,
+ *  pour que l'utilisateur voie ce qu'il a envoyé au chat (« Add to AI »). */
+const pinnedSelectionField = StateField.define<RangeSet<Decoration>>({
+  create: () => RangeSet.empty,
+  update(deco, tr) {
+    let range: { from: number; to: number } | null = null;
+    for (const e of tr.effects) if (e.is(setPinnedRange)) range = e.value;
+    if (range === null && deco.size > 0) {
+      // Conserve la plage existante en la remappant au fil des éditions.
+      const it = deco.iter();
+      range = { from: tr.changes.mapPos(it.from), to: tr.changes.mapPos(it.to) };
+    }
+    if (!range || range.from >= range.to) return RangeSet.empty;
+    const from = Math.max(0, Math.min(range.from, tr.state.doc.length));
+    const to = Math.max(from, Math.min(range.to, tr.state.doc.length));
+    if (from >= to) return RangeSet.empty;
+    const builder = new RangeSetBuilder<Decoration>();
+    builder.add(from, to, pinnedMark);
+    return builder.finish();
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+// ── Syntax token colors — all via CSS variables ────────────────────────────────
 export const originHighlight = HighlightStyle.define([
   { tag: t.comment,                                    color: 'var(--origin-syntax-comment)', fontStyle: 'italic' },
   { tag: t.lineComment,                                color: 'var(--origin-syntax-comment)', fontStyle: 'italic' },
@@ -158,10 +228,19 @@ export const originBaseTheme = EditorView.theme({
     cursor: 'pointer',
   },
   '.cm-sticky-scroll-row:hover': { color: 'var(--origin-fg-default)', backgroundColor: 'var(--origin-bg-hover)' },
-  '.cm-activeLine': { backgroundColor: 'var(--origin-bg-hover)' },
+  // Ligne active — surbrillance volontairement très discrète (l'ancienne, sur
+  // `--origin-bg-hover`, était trop marquée sur les thèmes sombres/appliqués).
+  '.cm-activeLine': { backgroundColor: 'var(--origin-bg-editor-line-highlight, var(--origin-bg-hover))' },
   '.cm-activeLineGutter': {
-    backgroundColor: 'var(--origin-bg-hover)',
+    backgroundColor: 'var(--origin-bg-editor-line-highlight, var(--origin-bg-hover))',
     color: 'var(--origin-fg-muted)',
+  },
+  // Sélection de texte : fond neutre et translucide, jamais saturé.
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
+    backgroundColor: 'color-mix(in srgb, var(--origin-accent-blue) 22%, transparent)',
+  },
+  '::selection': {
+    backgroundColor: 'color-mix(in srgb, var(--origin-accent-blue) 26%, transparent)',
   },
   '.cm-cursor, .cm-dropCursor': {
     borderLeftColor: 'var(--origin-accent-blue)',
@@ -589,6 +668,8 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
   const bracketColorCompartment = useRef(new Compartment());
   // Annotation « blame » inline (auteur + date) sur la ligne du curseur
   const blameCompartment = useRef(new Compartment());
+  // Minuterie d'auto-effacement de la surbrillance épinglée
+  const pinnedTimerRef = useRef<number | null>(null);
   // Stable ref — trigger plugin reads .current so it always calls the latest function
   const getAiCompletionRef = useRef(getAiCompletion);
   getAiCompletionRef.current = getAiCompletion;
@@ -692,10 +773,28 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
 
   // Diff state
   const [diffPending, setDiffPending] = useState(false);
-  const diffOriginalRef = useRef<string>('');
+  // Contenu d'ORIGINE du diff en attente. `null` = aucun diff actif.
+  // (Avant : `''` servait de sentinelle, ce qui confondait « pas de diff » avec
+  // « original vide » — un fichier créé vide ne pouvait plus être restauré.)
+  const diffOriginalRef = useRef<string | null>(null);
 
   type CtxMenu = { x: number; y: number; ctx: EditorContext };
   const [contextMenu, setContextMenu] = useState<CtxMenu | null>(null);
+
+  // ── Barre d'actions sur sélection (« Add to AI » / « Edit inline ») ──────────
+  // Vrai dès qu'une sélection non vide existe. La barre suit la fin de la
+  // sélection (comme VS Code / Trae) pour rester à portée de regard.
+  const [hasSelection, setHasSelection] = useState(false);
+  // Ancre écran de la barre (viewport-relatif au host de l'éditeur).
+  const [selAnchor, setSelAnchor] = useState<{ top: number; left: number } | null>(null);
+  // Popup d'édition inline : instruction utilisateur + état de chargement.
+  const [inlinePromptOpen, setInlinePromptOpen] = useState(false);
+  const [inlineInstruction, setInlineInstruction] = useState('');
+  const [inlineBusy, setInlineBusy] = useState(false);
+  // Plage de la sélection au moment de l'ouverture de la popup : on la fige pour
+  // que le remplacement cible EXACTEMENT le texte vu par l'utilisateur, même si
+  // la sélection bouge ensuite (perte de focus au clic).
+  const inlineRangeRef = useRef<{ from: number; to: number; original: string } | null>(null);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -708,6 +807,11 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       document.removeEventListener('keydown', onKey);
     };
   }, [contextMenu]);
+
+  // Nettoyage : ne pas laisser une minuterie de surbrillance courir après le démontage.
+  useEffect(() => () => {
+    if (pinnedTimerRef.current) window.clearTimeout(pinnedTimerRef.current);
+  }, []);
 
   useImperativeHandle(ref, () => ({
     getEditorContext(): EditorContext | null {
@@ -924,7 +1028,15 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       effects: mergeCompartment.current.reconfigure([]),
     });
     setDiffPending(false);
-    diffOriginalRef.current = '';
+    diffOriginalRef.current = null;
+    // Persiste explicitement le contenu accepté : on ne dépend PAS uniquement de
+    // l'autosave (debounce), sinon un « Accept All » suivi d'une fermeture rapide
+    // pourrait laisser le fichier non sauvegardé sur disque.
+    const view = viewRef.current;
+    if (view) {
+      onChangeRef.current?.(view.state.doc.toString());
+      window.dispatchEvent(new Event('origin:autosave-change'));
+    }
     onAcceptDiffRef.current?.();
   }
 
@@ -933,15 +1045,138 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
 
   function handleRejectDiff() {
     const view = viewRef.current;
-    if (view && diffOriginalRef.current !== '') {
+    const original = diffOriginalRef.current;
+    if (view && original !== null) {
       // Restore original document and remove merge view in one transaction.
       view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: diffOriginalRef.current },
+        changes: { from: 0, to: view.state.doc.length, insert: original },
         effects: mergeCompartment.current.reconfigure([]),
       });
+      // Le document revient à l'original : on resynchronise l'état applicatif et
+      // on annule toute sauvegarde automatique en attente, pour ne PAS persister
+      // par erreur le contenu rejeté.
+      onChangeRef.current?.(original);
+      window.dispatchEvent(new Event('origin:autosave-cancel'));
     }
     setDiffPending(false);
-    diffOriginalRef.current = '';
+    diffOriginalRef.current = null;
+  }
+
+  // ── Actions sur la sélection courante ───────────────────────────────────────
+
+  /** Sélection courante du document, ou `null` si vide. */
+  function currentSelection(): { from: number; to: number; text: string } | null {
+    const view = viewRef.current;
+    if (!view) return null;
+    const sel = view.state.selection.main;
+    if (sel.from === sel.to) return null;
+    return { from: sel.from, to: sel.to, text: view.state.sliceDoc(sel.from, sel.to) };
+  }
+
+  /** Souligne durablement la sélection épinglée (« Add to AI ») jusqu'à ce que
+   *  l'utilisateur reprenne la main dans l'éditeur (clic, déplacement, saisie). */
+  function highlightPinnedSelection(from: number, to: number) {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: setPinnedRange.of({ from, to }) });
+    if (pinnedTimerRef.current) window.clearTimeout(pinnedTimerRef.current);
+    pinnedTimerRef.current = window.setTimeout(() => {
+      pinnedTimerRef.current = null;
+      clearPinnedSelection();
+    }, 8000);
+  }
+
+  /** Retire la surbrillance de sélection épinglée (et la minuterie associée). */
+  function clearPinnedSelection() {
+    const view = viewRef.current;
+    if (pinnedTimerRef.current) {
+      window.clearTimeout(pinnedTimerRef.current);
+      pinnedTimerRef.current = null;
+    }
+    if (!view || view.state.field(pinnedSelectionField).size === 0) return;
+    view.dispatch({ effects: setPinnedRange.of(null) });
+  }
+
+  /** « Add to AI » : épingle la sélection comme contexte du chat. */
+  function addSelectionToAi() {
+    const view = viewRef.current;
+    const sel = currentSelection();
+    if (!view || !sel || !onAddToAiContext) return;
+    const filename = path.startsWith('__untitled__') ? 'Untitled' : (path.split(/[/\\]/).pop() ?? path);
+    onAddToAiContext({
+      filename,
+      language: languageLabel(path),
+      code: sel.text,
+      type: 'selection',
+      startLine: view.state.doc.lineAt(sel.from).number,
+      endLine: view.state.doc.lineAt(sel.to).number,
+    });
+    // Surbrillance persistante : l'utilisateur voit ce qu'il vient d'épingler.
+    highlightPinnedSelection(sel.from, sel.to);
+  }
+
+  /** Ouvre la popup « Edit inline » en figeant la sélection courante. */
+  function openInlineEdit() {
+    const sel = currentSelection();
+    if (!sel) return;
+    inlineRangeRef.current = { from: sel.from, to: sel.to, original: sel.text };
+    setInlineInstruction('');
+    setInlinePromptOpen(true);
+  }
+
+  /** Applique un remplacement CIBLÉ sur la sélection (pas tout le document),
+   *  sous forme de diff reviewable : merge view limitée à la plage concernée. */
+  function applyInlineDiff(from: number, to: number, original: string, rewritten: string) {
+    const view = viewRef.current;
+    if (!view) return;
+    // Le document peut avoir changé depuis l'ouverture (édition concurrente) :
+    // on relit la plage courante et on abandonne proprement si elle a bougé.
+    if (to > view.state.doc.length || view.state.sliceDoc(from, to) !== original) {
+      showToast('Selection changed; inline edit cancelled.', 'error');
+      return;
+    }
+    diffOriginalRef.current = view.state.doc.toString();
+    view.dispatch({
+      changes: { from, to, insert: rewritten },
+      effects: mergeCompartment.current.reconfigure([
+        unifiedMergeView({
+          original,
+          highlightChanges: true,
+          collapseUnchanged: { margin: 3, minSize: 4 },
+          mergeControls: false,
+        }),
+        createHunkControls(() => hunkAllResolvedRef.current()),
+      ]),
+      scrollIntoView: true,
+    });
+    setDiffPending(true);
+  }
+
+  /** Exécute l'édition inline : réécrit UNIQUEMENT la sélection via le modèle
+   *  actif, puis présente le résultat en diff ciblé (Accepter / Rejeter). */
+  async function runInlineEdit() {
+    const target = inlineRangeRef.current;
+    const instruction = inlineInstruction.trim();
+    if (!target || !instruction || inlineBusy) return;
+    setInlineBusy(true);
+    try {
+      const res = await editSelectionInline(target.original, instruction, languageLabel(path));
+      if (!res.ok) {
+        showToast(inlineFailureMessage(res.reason), 'error');
+        return;
+      }
+      // Résultat identique → rien à réviser, on évite un diff vide.
+      if (res.text === target.original) {
+        showToast('No change produced for this instruction.', 'info');
+        setInlinePromptOpen(false);
+        return;
+      }
+      setInlinePromptOpen(false);
+      applyInlineDiff(target.from, target.to, target.original, res.text);
+    } finally {
+      setInlineBusy(false);
+      inlineRangeRef.current = null;
+    }
   }
 
   // ── LSP : formatage, rename, code actions ───────────────────────────────────
@@ -1135,6 +1370,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
         getLanguageExtension(path),
         dynLangCompartment.current.of(dynLang ?? []),
         mergeCompartment.current.of([]),
+        pinnedSelectionField,
         lspCompartment.current.of([]),
         dapCompartment.current.of([]),
         gitCompartment.current.of([]),
@@ -1155,6 +1391,29 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
             const pos  = update.state.selection.main.head;
             const line = update.state.doc.lineAt(pos);
             onCursorRef.current?.(line.number, pos - line.from + 1);
+          }
+          // Barre d'actions sur sélection : visible seulement si une sélection
+          // non vide existe (une popup inline ouverte la masque pour éviter le
+          // chevauchement avec le champ de saisie). On recalcule aussi son ancre
+          // écran (fin de sélection) à chaque changement de sélection/document,
+          // et au défilement/redimensionnement (voir `update.geometryChanged`).
+          if (update.selectionSet || update.docChanged || update.geometryChanged) {
+            const sel = update.state.selection.main;
+            setHasSelection(sel.from !== sel.to);
+            // Toute interaction de l'utilisateur (clic, saisie, déplacement)
+            // retire la surbrillance de la sélection épinglée.
+            if ((update.selectionSet || update.docChanged) && update.view.state.field(pinnedSelectionField).size > 0) {
+              clearPinnedSelection();
+            }
+            setSelAnchor(
+              sel.from === sel.to
+                ? null
+                : (() => {
+                    const rect = update.view.coordsAtPos(sel.to) ?? update.view.coordsAtPos(sel.head);
+                    const host = update.view.dom.getBoundingClientRect();
+                    return rect ? { top: rect.bottom - host.top, left: rect.right - host.left } : null;
+                  })(),
+            );
           }
           // Ampoule : vrai si la ligne du curseur porte au moins un diagnostic.
           const curLine = update.state.doc.lineAt(update.state.selection.main.head).number;
@@ -1215,7 +1474,7 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       view.destroy();
       viewRef.current = null;
       setDiffPending(false);
-      diffOriginalRef.current = '';
+      diffOriginalRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
@@ -1306,6 +1565,34 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dapCompartment is a stable ref, never reassigned
       viewRef.current?.dispatch({ effects: dapCompartment.current.reconfigure([]) });
     };
+  }, [path]);
+
+  // Clic sur le badge de contexte du chat → surligne la sélection épinglée qui
+  // lui correspond (l'utilisateur voit exactement ce qu'il a envoyé). On ne
+  // surligne que si le fichier et le contenu correspondent encore.
+  useEffect(() => {
+    const fileName = path.split(/[/\\]/).pop() ?? path;
+    return onRevealSelection(req => {
+      if (req.filename !== fileName) return;
+      const view = viewRef.current;
+      if (!view) return;
+      const doc = view.state.doc;
+      if (req.startLine < 1 || req.endLine > doc.lines) return;
+      const from = doc.line(req.startLine).from;
+      const to = doc.line(req.endLine).to;
+      // Le contexte épinglé porte le texte SÉLECTIONNÉ et la plage de lignes le
+      // couvrant : la sélection est donc contenue dans [from, to], pas égale.
+      // On la localise exactement pour ne surligner que le bon fragment.
+      const slice = view.state.sliceDoc(from, to);
+      const offset = slice.indexOf(req.code);
+      if (offset < 0) return;
+      const selFrom = from + offset;
+      const selTo = selFrom + req.code.length;
+      highlightPinnedSelection(selFrom, selTo);
+      view.dispatch({ selection: { anchor: selFrom, head: selTo }, scrollIntoView: true });
+      view.focus();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- highlightPinnedSelection est stable vis-à-vis de viewRef
   }, [path]);
 
   // Gutter « inline diff » git — compare le tampon courant au contenu à HEAD.
@@ -1489,6 +1776,129 @@ const Editor = forwardRef<EditorHandle, Props>(function Editor(
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--origin-semantic-error)'; }}
             >
               Reject All
+            </button>
+          </div>
+        )}
+
+        {/* Barre d'actions sur sélection — suit la fin de la sélection pour
+            rester à portée de regard (comme VS Code / Trae). Repli en haut-à-
+            droite si l'ancre n'est pas encore connue. */}
+        {hasSelection && !diffPending && !inlinePromptOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: selAnchor ? Math.min(Math.max(selAnchor.top + 4, 4), containerRef.current ? containerRef.current.clientHeight - 34 : 9999) : 8,
+              left: selAnchor ? Math.min(Math.max(selAnchor.left - 8, 8), (containerRef.current ? containerRef.current.clientWidth : 9999) - 210) : undefined,
+              right: selAnchor ? undefined : 12,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              zIndex: 52,
+              backgroundColor: 'var(--origin-bg-base)',
+              border: '1px solid var(--origin-border-default)',
+              borderRadius: 7,
+              padding: '3px 4px',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <button
+              // onMouseDown + preventDefault : le clic ne doit PAS vider la
+              // sélection avant qu'on la capture.
+              onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+              onClick={() => { addSelectionToAi(); }}
+              title="Add selection to the AI chat input"
+              style={selectionActionBtnStyle}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--origin-bg-hover)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              <Sparkles size={12} style={{ color: 'var(--origin-accent-default)' }} />
+              Add to AI
+            </button>
+            <span style={{ width: 1, height: 14, background: 'var(--origin-border-default)' }} />
+            <button
+              onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+              onClick={() => { openInlineEdit(); }}
+              title="Rewrite the selection with AI"
+              style={selectionActionBtnStyle}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--origin-bg-hover)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              <Wand2 size={12} style={{ color: 'var(--origin-accent-default)' }} />
+              Edit inline
+            </button>
+          </div>
+        )}
+
+        {/* Popup « Edit inline » : saisie de l'instruction, ancrée en haut. */}
+        {inlinePromptOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              // La popup suit la fin de la sélection (comme la barre d'actions) :
+              // rester à portée de regard de l'utilisateur, sans sortir du conteneur.
+              top: selAnchor
+                ? Math.min(selAnchor.top + 6, (containerRef.current?.clientHeight ?? 9999) - 52)
+                : 8,
+              // Ancrée au bord gauche de la sélection (pas centrée) : la popup
+              // reste collée au code concerné, avec clamp aux bords du conteneur.
+              left: selAnchor
+                ? Math.min(Math.max(selAnchor.left - 12, 8), Math.max((containerRef.current?.clientWidth ?? 9999) - 532, 8))
+                : 8,
+              width: 'min(520px, calc(100% - 24px))',
+              zIndex: 56,
+              backgroundColor: 'var(--origin-bg-base)',
+              border: '1px solid var(--origin-border-default)',
+              borderRadius: 8,
+              padding: '8px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              fontFamily: 'var(--font-sans)',
+              display: 'flex',
+              gap: 6,
+              alignItems: 'center',
+            }}
+          >
+            <Wand2 size={14} style={{ color: 'var(--origin-accent-default)', flexShrink: 0 }} />
+            <input
+              autoFocus
+              value={inlineInstruction}
+              onChange={e => setInlineInstruction(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); void runInlineEdit(); }
+                if (e.key === 'Escape') { e.preventDefault(); setInlinePromptOpen(false); inlineRangeRef.current = null; }
+              }}
+              placeholder="Describe the change for the selected code…"
+              disabled={inlineBusy}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: 'var(--origin-bg-elevated, var(--origin-bg-base))',
+                border: '1px solid var(--origin-border-default)',
+                borderRadius: 6,
+                padding: '6px 8px',
+                fontSize: '12px',
+                color: 'var(--origin-fg-default)',
+                outline: 'none',
+              }}
+            />
+            <button
+              onClick={() => void runInlineEdit()}
+              disabled={inlineBusy || !inlineInstruction.trim()}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                border: 'none',
+                backgroundColor: inlineBusy || !inlineInstruction.trim()
+                  ? 'var(--origin-bg-hover)'
+                  : 'var(--origin-accent-default)',
+                color: inlineBusy || !inlineInstruction.trim() ? 'var(--origin-fg-subtle)' : '#fff',
+                cursor: inlineBusy || !inlineInstruction.trim() ? 'default' : 'pointer',
+                fontSize: '12px',
+                fontWeight: 500,
+                flexShrink: 0,
+              }}
+            >
+              {inlineBusy ? 'Generating…' : 'Generate'}
             </button>
           </div>
         )}

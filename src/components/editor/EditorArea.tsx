@@ -1,6 +1,7 @@
 import type { Ref } from 'react';
 import Editor, { type EditorHandle, type EditorContext } from './Editor';
 import AiDiffPane, { type AiDiffTabData } from './AiDiffPane';
+import GitDiffPane from './GitDiffPane';
 import WebPreviewPane from './WebPreviewPane';
 import MarkdownPreviewPane from './MarkdownPreviewPane';
 import ImageViewerPane from './ImageViewerPane';
@@ -79,6 +80,13 @@ export default function EditorArea(props: EditorAreaProps) {
     const diffTab = tabs.find(t => t.path === activeTab) as AiDiffTabData | undefined;
     if (!diffTab) return null;
     return <AiDiffPane tab={diffTab} onClose={() => onCloseTab(activeTab)} />;
+  }
+  if (activeTab?.startsWith('__gitdiff__')) {
+    const gitTab = tabs.find(t => t.path === activeTab);
+    const fp = gitTab?.filePath ?? activeTab.slice('__gitdiff__'.length);
+    // `originalContent` porte la racine du dépôt pour cet onglet (cf. useTabs).
+    const repo = gitTab?.originalContent ?? folderPath ?? '';
+    return <GitDiffPane filePath={fp} repoPath={repo} />;
   }
   if (activeTab === '__preview__') {
     return <WebPreviewPane />;

@@ -12,6 +12,7 @@
     "bg.input":               "#000000",
     "bg.selection":           "#1d3e5e",
     "bg.selection-focused":   "#264f78",
+    "bg.editor-line-highlight": "#ffffff0d",
 
     "fg.default": "#ededed",
     "fg.muted":   "#a1a1a1",

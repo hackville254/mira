@@ -5,6 +5,234 @@
 
 ---
 
+### [2026-10-20T19:55] | Badge de contexte du chat : clic direct → surlignage (bug de garde)
+
+- **Contexte :** *« j'ai sélectionné un fichier, c'est dans l'input c'est bon,
+  mais quand je reclique dessus ça ne met pas l'élément en surbrillance ; je dois
+  pouvoir cliquer dans l'input pour être sûr d'avoir sélectionné le bon élément,
+  comme sur Trae »*.
+
+- **Modifications effectuées :**
+  - `ChatBox.tsx` — **tout le badge** est désormais cliquable (nom de fichier +
+    libellé de plage), plus seulement la petite icône ⤢ : le `onMouseDown` de
+    révélation est remonté sur le conteneur du badge, `cursor: pointer`, et le
+    bouton de fermeture (✕) fait `stopPropagation` pour ne pas déclencher la
+    révélation. L'icône ⤢ devenue redondante est retirée.
+  - `Editor.tsx` — **correction du bug de garde** : la vérification comparait
+    `sliceDoc(ligneDébut.from, ligneFin.to) !== code`, c'est-à-dire le **texte des
+    lignes entières** à la **sélection seule** (qui est un sous-ensemble des
+    lignes). L'égalité était donc toujours fausse → aucun surlignage. On localise
+    maintenant la sélection exacte par `indexOf` dans la plage de lignes et on ne
+    surligne que ce fragment.
+
+- **Décisions Techniques :** (a) **Badge entièrement cliquable** : une cible de
+  quelques pixels (l'icône) est contraire à l'usage attendu et à Trae ; (b)
+  **localisation par sous-chaîne** plutôt qu'égalité stricte : le contexte épinglé
+  porte la sélection, la plage porte les lignes — l'inclusion est la bonne
+  relation, pas l'égalité. Un `indexOf < 0` (contenu absent) abandonne proprement,
+  garantissant qu'on ne surligne jamais le mauvais code.
+
+- **Impacts & Dépendances :** `ChatBox.tsx`, `Editor.tsx`.
+
+- **Vérifications :** `npx tsc --noEmit` (propre hors `bench/`), diagnostics IDE
+  sans erreur.
+
+- **Prochaines étapes :** aucun. Cas résiduel connu : si le fichier épinglé n'est
+  plus l'onglet actif, le surlignage ne s'applique qu'à l'onglet actif — envisager
+  plus tard d'ouvrir automatiquement l'onglet du fichier concerné.
+
+---
+
+### [2026-10-20T19:35] | Éditeur : surbrillance de ligne active adoucie + popup inline proche de la sélection
+
+- **Contexte :** deux retours d'ergonomie :
+  1. *« quand on met le curseur sur un élément dans l'éditeur, la couleur de
+     surbrillance fait mal aux yeux, c'est trop fort »* → la ligne active utilisait
+     `--origin-bg-hover` (`#ffffff1a` en sombre, `#0000001a` en clair), soit 10 %
+     d'opacité — trop marqué sur les fonds purs ; la sélection native
+     (`bg.selection-focused`) était elle aussi très saturée ;
+  2. *« même l'input inline est trop éloigné »* → la popup d'instruction
+     « Edit inline » était centrée en haut de l'éditeur, à l'opposé du code.
+
+- **Modifications effectuées :**
+  - **Nouveau token de thème `bg.editor-line-highlight`** — `#ffffff0d` (sombre) /
+    `#0000000d` (clair), soit ~5 % : deux fois plus discret que l'ancien hover.
+    Ajouté aux deux thèmes et mappé sur `editor.lineHighlightBackground` dans
+    `vscodeTheme.ts` (import de thèmes VS Code). Token dédié plutôt que modifier
+    `--origin-bg-hover` : celui-ci sert à tous les hovers de panneaux, on ne
+    dégrade pas le reste de l'UI.
+  - `Editor.tsx` — `.cm-activeLine` / `.cm-activeLineGutter` utilisent désormais
+    `var(--origin-bg-editor-line-highlight, var(--origin-bg-hover))` (repli sur
+    l'ancien token si un thème importé ne définit pas le nouveau).
+  - `Editor.tsx` — sélection de texte adoucie : `.cm-selectionBackground` (y
+    compris l'état focalisé) et `::selection` passent à un
+    `color-mix(accent-blue 22-26 %, transparent)` au lieu du bleu saturé.
+  - `Editor.tsx` — la popup inline d'« Edit inline » **suit la sélection** (top =
+    fin de sélection + 6 px, `left` = bord gauche − 12 px, clamp aux bords du
+    conteneur) au lieu d'être centrée en haut ; cohérent avec la barre d'actions.
+
+- **Décisions Techniques :** (a) **Token dédié** pour la ligne active : ne pas
+  casser les hovers de panneaux qui partagent `--origin-bg-hover`. (b) Estimations
+  en `color-mix` sur `accent-blue` : un seul point de vérité pour la teinte de
+  sélection, lisible sur tous les thèmes, avec repli explicite pour les thèmes
+  importés qui n'auraient pas le nouveau token. (c) La popup suit la sélection
+  avec clamp : même logique que la barre d'actions, jamais hors écran ni sur le code.
+
+- **Impacts & Dépendances :** `Editor.tsx`, `themes/origin-dark/theme.json`,
+  `themes/origin-light/theme.json`, `themes/vscodeTheme.ts`.
+
+- **Vérifications :** `npx tsc --noEmit` (propre hors `bench/`), diagnostics IDE
+  sans erreur.
+
+- **Prochaines étapes :** si des thèmes importés (VS Code) n'exposent pas
+  `editor.lineHighlightBackground`, le repli sur `--origin-bg-hover` s'applique —
+  vérifier au besoin que l'intensité reste acceptable sur ces thèmes.
+
+---
+
+### [2026-10-20T19:15] | Sélection épinglée : surbrillance persistante + barre d'actions à portée
+
+- **Contexte :** deux retours utilisateur sur le geste « sélection → IA » :
+  1. après « Add to AI », l'utilisateur n'a aucune confirmation visuelle dans
+     l'éditeur : la sélection native disparaît au blur → impossible d'être sûr de
+     ce qui a été envoyé. Il demande qu'un clic sur le badge du chat remette
+     l'élément **en surbrillance** ;
+  2. la barre « Add to AI / Edit inline », ancrée en haut-à-droite, était **trop
+     éloignée** de la sélection (à l'autre bout de l'écran) : « on ne voit
+     presque pas ».
+
+- **Modifications effectuées :**
+  - `src/components/editor/Editor.tsx` —
+    - nouveau `StateField` `pinnedSelectionField` (+ `StateEffect` `setPinnedRange`) :
+      décoration `mark` de fond, **indépendante de la sélection native** de
+      CodeMirror, donc persistante au blur. La plage est remappée à chaque
+      édition (`tr.changes.mapPos`) et effacée à la première interaction de
+      l'utilisateur (clic, saisie) ou après 8 s (minuterie nettoyée au démontage).
+    - `highlightPinnedSelection()` / `clearPinnedSelection()`.
+    - `addSelectionToAi()` déclenche la surbrillance après l'épinglage.
+    - la barre d'actions **suit la fin de la sélection** : ancre écran recalculée
+      dans l'`updateListener` (`coordsAtPos(sel.to)` — `selectionSet` /
+      `docChanged` / `geometryChanged`), avec repli en haut-à-droite si l'ancre
+      est inconnue et **clamp** aux bords du conteneur pour ne jamais sortir.
+    - `useEffect` abonné à `onRevealSelection` : surligne + scrolle + focus la
+      plage demandée par le chat, **uniquement si le fichier (basename) et le
+      contenu correspondent encore** (garde anti-dérive).
+  - **nouveau `src/lib/selectionRevealBus.ts`** : `revealSelection()` /
+    `onRevealSelection()` — `CustomEvent` window `origin:reveal-selection`
+    (même pattern que `gitDiffBus` / `origin:git-changed`). Le `ChatBox` vit dans
+    le panneau IA, sans accès à la vue CodeMirror : ce bus évite de faire
+    remonter une prop à travers toute la hiérarchie.
+  - `src/components/ai/ChatBox.tsx` — bouton `Map` (⤢) dans le badge de contexte :
+    au clic, émet `revealSelection({ filename, startLine, endLine, code })`
+    (ignoré pour une sélection terminal). `onMouseDown` + `preventDefault` pour
+    ne pas voler le focus de l'input.
+  - `src/index.css` — classe `.origin-pinned-selection` : fond accentué
+    (`color-mix` accent 28 %) + liseré, pour un rendu lisible sur tous les thèmes.
+
+- **Décisions Techniques :** (a) **Décoration dédiée** plutôt que de forcer la
+  sélection native : la sélection CodeMirror est effacée par le navigateur au
+  blur, une décoration est le seul moyen fiable de « figer » visuellement la
+  plage. (b) **Bus window** pour le badge ↔ éditeur (découplage panneau IA ↔
+  éditeur, cohérent avec l'existant). (c) **Barre qui suit la sélection** avec
+  clamp et repli : proximité voulue par l'utilisateur sans jamais recouvrir le
+  code (elle est placée *après* la fin de la sélection) ni sortir de l'écran.
+  (d) **Garde de correspondance** (basename + contenu) avant de surligner : on ne
+  ment jamais sur ce qui est épinglé.
+
+- **Impacts & Dépendances :** `Editor.tsx`, `ChatBox.tsx`,
+  `selectionRevealBus.ts` (nouveau), `index.css`.
+
+- **Vérifications :** `npx tsc --noEmit` (propre hors `bench/`),
+  `npx vitest run src/lib` (805 tests OK), diagnostics IDE sans erreur.
+
+- **Prochaines étapes :** si un fichier est renommé/déplacé entre l'épinglage et
+  le clic, la garde par basename ne retrouve plus la plage → aucun surlignage
+  (comportement sûr) ; envisager plus tard d'ajouter le chemin absolu à
+  `EditorContext` pour lever toute ambiguïté entre homonymes.
+
+---
+
+### [2026-10-20T18:40] | Git : bug « not a git repository », sélection → IA, diff cliquable, icônes
+
+- **Contexte :** plusieurs retours utilisateur sur la partie Git et l'éditeur :
+  1. blocage total : *« This folder is not a git repository. Initialize git first
+     (git init) »* alors que le dépôt **est** initialisé ;
+  2. aucune action IA quand on sélectionne du code dans un fichier (il faut « Add
+     to AI » **et** « Edit inline » comme Trae) ;
+  3. cliquer sur un fichier modifié dans le panneau Source Control **n'ouvre pas
+     le diff** (VS Code le fait) ;
+  4. les lignes du panneau Git affichent des icônes génériques au lieu des vraies
+     icônes de type de fichier (comme l'explorateur).
+
+- **Modifications effectuées :**
+  - **Bug Git (cause racine) — `src-tauri/src/git.rs` :** une app Tauri lancée
+    depuis le Finder n'hérite PAS du `PATH` du shell → `git` (Homebrew,
+    `/opt/homebrew/bin`) introuvable → l'erreur « not a git repository » était
+    **mensongère**. Correctif : `git_cmd()` applique
+    `cmd.env("PATH", crate::env_path::enriched_path_os())`. Ajout de la variante
+    `CommitDiffResult::GitUnavailable` pour distinguer « git absent » de
+    « pas un dépôt » (ne plus mentir au client).
+  - **Sélection → IA (`src/components/editor/Editor.tsx`) :** barre flottante
+    ancrée **à droite fixe** (`top:8, right:12`) — jamais au-dessus du texte —
+    avec deux boutons « Add to AI » (`Sparkles`) et « Edit inline » (`Wand2`),
+    `onMouseDown` + `preventDefault` pour lire la sélection avant que le clic ne
+    la vide. « Edit inline » ouvre une popup centrée (Entrée = générer, Échap =
+    fermer) ; l'IA réécrit **uniquement la sélection**.
+  - **nouveau `src/lib/inlineEdit.ts` :** `editSelectionInline()` — prompt
+    `INLINE_EDIT_SYSTEM_PROMPT` (réécrit la sélection, sortie = code brut,
+    préserve indentation/guillemets, pas d'imports superflus, renvoie inchangé si
+    impossible). Résolution du modèle via `resolveActiveModelTarget` (source
+    unique : sélection UI > localStorage > `.env` > défaut).
+  - **Diff ciblé (accept/reject durci) :** `applyInlineDiff` remplace **seulement
+    la plage** sélectionnée et reconfigure la merge view avec `original` = texte
+    d'origine de la sélection ; vérifie que la plage n'a pas bougé entre-temps
+    (sinon toast + abandon, pour ne jamais appliquer un diff sur du texte
+    décalé).
+  - **Diff Git cliquable :** nouveau bus `src/lib/gitDiffBus.ts`
+    (`origin:open-git-diff`, `{ filePath, repoPath }`) — le panneau latéral n'a
+    pas accès aux onglets de l'éditeur, on passe donc par un `CustomEvent` window
+    (même pattern que `origin:git-changed`). `SourceTreePanel` émet,
+    `App.tsx` écoute → `useTabs.openGitDiffTab()` ouvre l'onglet
+    `__gitdiff__<filePath>` (`kind: 'git-diff'`, icône `GitCompare` dans la
+    `TabBar`).
+  - **nouveau `src/components/editor/GitDiffPane.tsx` :** lecture seule (parité
+    VS Code) ; lit le working tree (`readFile`) + HEAD (`gitFileHead` +
+    `relativeToRoot`) puis construit un `unifiedMergeView({ original,
+    highlightChanges:true, collapseUnchanged:{margin:3,minSize:4} })`. Gère
+    untracked (original `''`), fichier supprimé (current `''`), loading, erreur.
+    Rendu dans `EditorArea.tsx` **et** `AgentModeView.tsx` (le mode IA ne le
+    rendait pas → l'onglet aurait été invisible en mode IA).
+  - **Vraies icônes (`src/components/SourceTreePanel.tsx`) :** `<FileIcon
+    name={fileName} size={13} />` sur chaque ligne (réutilise le composant de
+    l'explorateur) ; `e.stopPropagation()` sur tous les boutons d'action
+    (stage/unstage/discard/confirmer/annuler) pour qu'ils ne déclenchent plus
+    l'ouverture du diff.
+
+- **Décisions Techniques :** (a) **PATH enrichi côté Rust**, pas côté JS : le
+  sous-process `git` doit hériter d'un PATH utilisable quel que soit le mode de
+  lancement du binaire. (b) **Distinguer** `not-a-repo` de `git-unavailable` :
+  un message faux est pire qu'un message manquant. (c) **Diff ciblé** sur la
+  sélection plutôt que de réutiliser `showDiff` (qui remplace tout le document) :
+  on n'affecte que la plage sélectionnée, avec garde anti-décalage. (d) **Bus
+  window** pour découpler le panneau latéral des onglets (pas de prop drilling ni
+  de couplage sidebar ↔ éditeur). (e) Réutilisation de `FileIcon` : une seule
+  source d'icônes pour l'explorateur et la partie Git.
+
+- **Impacts & Dépendances :** `git.rs`, `Editor.tsx`, `gitDiffBus.ts` (nouveau),
+  `inlineEdit.ts` (nouveau), `GitDiffPane.tsx` (nouveau), `useTabs.ts`,
+  `EditorArea.tsx`, `AgentModeView.tsx`, `TabBar.tsx`, `App.tsx`,
+  `SourceTreePanel.tsx`.
+
+- **Vérifications :** `cargo check` (exit 0), `npx tsc --noEmit` (propre hors
+  `bench/`), `npx vitest run src/lib` (805 tests OK), diagnostics IDE sans erreur.
+
+- **Prochaines étapes :** surveiller le comportement de `GitDiffPane` sur de très
+  gros fichiers (collapse des zones inchangées) ; le diff est en lecture seule —
+  si l'édition depuis le diff devient nécessaire, passer par un merge view
+  éditable partagé avec l'éditeur.
+
+---
+
 ### [2026-10-20T16:05] | Terminal : bouton « Add to AI » sur la sélection
 
 - **Contexte :** sélectionner une ligne dans le terminal ne proposait aucune action

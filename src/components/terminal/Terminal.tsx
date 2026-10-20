@@ -80,9 +80,11 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
   // eslint-disable-next-line react-hooks/refs
   onAddSelectionRef.current = onAddSelectionToAi;
 
-  // Bouton flottant « Add to AI » : positionné en pixels (relatifs au conteneur)
-  // au-dessus du début de la sélection. `null` = aucune sélection → bouton masqué.
-  const [addBtn, setAddBtn] = useState<{ x: number; y: number } | null>(null);
+  // Bouton flottant « Add to AI » affiché en haut à DROITE du terminal dès
+  // qu'une sélection existe. On ne le positionne PAS au-dessus de la sélection :
+  // il recouvrirait la ligne de texte précédente (rendu non professionnel). Une
+  // barre d'action ancrée au bord droit ne masque jamais le contenu.
+  const [hasSelection, setHasSelection] = useState(false);
 
   useEffect(() => {
     if (!clearKey) return;
@@ -229,31 +231,11 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
       }
     });
 
-    // Suivi de la sélection : on positionne le bouton « Add to AI » au-dessus du
-    // début de la sélection. xterm ne fournit que des coordonnées de CELLULE
-    // (colonne, ligne) ; on les convertit en pixels avec la taille de cellule
-    // réelle du renderer pour aligner le bouton, quel que soit le zoom/taille.
+    // Suivi de la sélection : on affiche/masque la barre « Add to AI ». Un simple
+    // booléen suffit — le bouton est ancré au bord droit, pas collé au texte.
     const selectionDisposable = xterm.onSelectionChange(() => {
-      if (!onAddSelectionRef.current) return;
       const sel = xterm.getSelection();
-      if (!sel || !sel.trim()) {
-        setAddBtn(null);
-        return;
-      }
-      const pos = xterm.getSelectionPosition();
-      if (!pos) {
-        setAddBtn(null);
-        return;
-      }
-      // Taille d'une cellule (px) d'après le conteneur du screen xterm.
-      const screen = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null;
-      const cellW = screen && xterm.cols ? screen.clientWidth / xterm.cols : 8;
-      const cellH = screen && xterm.rows ? screen.clientHeight / xterm.rows : 16;
-      setAddBtn({
-        x: pos.start.x * cellW,
-        // On place le bouton juste au-dessus du début de la sélection, borné à 0.
-        y: Math.max(0, pos.start.y * cellH - 26),
-      });
+      setHasSelection(!!sel && !!sel.trim());
     });
 
     const observer = new ResizeObserver(() => {
@@ -321,40 +303,41 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
       }}
     >
       <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />
-      {/* Bouton « Add to AI » — visible uniquement quand une sélection existe.
-          `onMouseDown` + `preventDefault` : on agit AVANT que le clic ne vide la
-          sélection du terminal (sinon `getSelection()` serait déjà vide). */}
-      {addBtn && (
+      {/* Barre « Add to AI » — ancrée en HAUT À DROITE, jamais sur le texte.
+          `onMouseDown` + `preventDefault` : on lit la sélection AVANT que le clic
+          ne la vide (sinon `getSelection()` serait déjà vide au moment de l'envoi). */}
+      {hasSelection && onAddSelectionToAi && (
         <button
           onMouseDown={(e) => {
             e.preventDefault();
+            e.stopPropagation();
             const sel = xtermRef.current?.getSelection();
             if (sel && sel.trim()) onAddSelectionRef.current?.(sel);
-            setAddBtn(null);
+            setHasSelection(false);
             xtermRef.current?.clearSelection();
           }}
           title="Add terminal selection to AI"
           style={{
             position: "absolute",
-            left: addBtn.x + 12,
-            top: addBtn.y + 8,
+            top: 8,
+            right: 14,
             zIndex: 10,
             display: "flex",
             alignItems: "center",
-            gap: 4,
-            height: 22,
-            padding: "0 8px",
-            borderRadius: 5,
+            gap: 5,
+            height: 24,
+            padding: "0 10px",
+            borderRadius: 6,
             border: "1px solid var(--origin-border-default)",
-            background: "var(--origin-bg-active)",
+            background: "var(--origin-bg-elevated, var(--origin-bg-panel))",
             color: "var(--origin-fg-default)",
-            fontSize: 11,
+            fontSize: 11.5,
             fontFamily: "var(--font-mono)",
             cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
           }}
         >
-          <Sparkles size={11} style={{ color: "var(--origin-accent-blue, #4a9eff)" }} />
+          <Sparkles size={12} style={{ color: "var(--origin-accent-blue, #4a9eff)" }} />
           Add to AI
         </button>
       )}

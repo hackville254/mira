@@ -14,6 +14,8 @@ import {
   type StatusFile, type FullCommitEntry, type BranchEntry, type StashEntry,
 } from '../lib/git';
 import { generateCommitMessage } from '../lib/gitCommitMessage';
+import { openGitDiff } from '../lib/gitDiffBus';
+import FileIcon from './FileIcon';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,11 +33,6 @@ function statusLabel(raw: string): string {
   if (raw === '??') return 'U';
   const s = raw.replace(/\s/g, '');
   return s[0] ?? '?';
-}
-
-function shortPath(p: string): string {
-  const parts = p.replace(/\\/g, '/').split('/');
-  return parts.length > 2 ? parts.slice(-2).join('/') : p;
 }
 
 /** Un fichier est "staged" si son index (1er caractère du porcelain) n'est ni
@@ -153,6 +150,8 @@ export default function SourceTreePanel() {
         // changements ou configurer une clé API, au lieu d'un message ambigu.
         if (result.reason === 'no-provider') {
           showToast('No AI provider configured. Add an API key in Settings → Connect AI, or pick a local model.', 'error');
+        } else if (result.reason === 'git-unavailable') {
+          showToast('Git could not be found. Install Git (or add it to your shell PATH), then restart Mira.', 'error');
         } else if (result.reason === 'not-a-repo') {
           showToast('This folder is not a git repository. Initialize git first (git init) to describe changes.', 'error');
         } else if (result.reason === 'empty-input') {
@@ -557,12 +556,21 @@ export default function SourceTreePanel() {
                   const staged = isStaged(f.status);
                   const untracked = isUntracked(f.status);
                   const confirming = pendingDelete === f.path;
+                  const fileName = f.path.split(/[/\\]/).filter(Boolean).pop() ?? f.path;
+                  // Chemin absolu du fichier : `git_status_files` renvoie un chemin
+                  // relatif au dépôt (avec `/`), il faut le recomposer pour l'ouvrir.
+                  const absPath = f.path.startsWith('/')
+                    ? f.path
+                    : `${folderPath.replace(/[/\\]+$/, '')}/${f.path}`;
                   return (
                   <div
                     key={i}
                     className="origin-scm-row"
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 6px 3px 32px' }}
+                    onClick={() => openGitDiff({ filePath: absPath, repoPath: folderPath })}
+                    title={`Open changes of ${f.path}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px 3px 22px', cursor: 'pointer' }}
                   >
+                    <FileIcon name={fileName} size={13} />
                     <span style={{
                       fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
                       color: statusColor(f.status), flexShrink: 0, width: 12, textAlign: 'center',
@@ -573,30 +581,30 @@ export default function SourceTreePanel() {
                       fontSize: 12, color: 'var(--origin-fg-default)', flex: 1, minWidth: 0,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>
-                      {shortPath(f.path)}
+                      {f.path}
                     </span>
                     {confirming ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                         <span style={{ fontSize: 11, color: 'var(--origin-fg-subtle)' }}>Discard?</span>
-                        <button onClick={() => discardFile(f.path)} title="Confirm discard" style={rowBtn}>
+                        <button onClick={e => { e.stopPropagation(); discardFile(f.path); }} title="Confirm discard" style={rowBtn}>
                           <Check size={13} style={{ color: 'var(--origin-semantic-error)' }} />
                         </button>
-                        <button onClick={() => setPendingDelete(null)} title="Cancel" style={rowBtn}>
+                        <button onClick={e => { e.stopPropagation(); setPendingDelete(null); }} title="Cancel" style={rowBtn}>
                           <Minus size={13} />
                         </button>
                       </div>
                     ) : (
                       <div className="origin-scm-actions" style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
                         {staged || untracked ? (
-                          <button onClick={() => unstageFile(f.path)} title="Unstage" style={rowBtn}>
+                          <button onClick={e => { e.stopPropagation(); unstageFile(f.path); }} title="Unstage" style={rowBtn}>
                             <Minus size={13} />
                           </button>
                         ) : (
-                          <button onClick={() => stageFile(f.path)} title="Stage" style={rowBtn}>
+                          <button onClick={e => { e.stopPropagation(); stageFile(f.path); }} title="Stage" style={rowBtn}>
                             <Plus size={13} />
                           </button>
                         )}
-                        <button onClick={() => setPendingDelete(f.path)} title="Discard changes" style={rowBtn}>
+                        <button onClick={e => { e.stopPropagation(); setPendingDelete(f.path); }} title="Discard changes" style={rowBtn}>
                           <Undo2 size={13} />
                         </button>
                       </div>

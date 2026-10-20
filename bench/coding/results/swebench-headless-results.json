@@ -1382,5 +1382,2579 @@
     "termination": "completed",
     "inconclusive": false,
     "modelPatch": "diff --git a/astropy/units/core.py b/astropy/units/core.py\nindex e9bd986d3..1b202395e 100644\n--- a/astropy/units/core.py\n+++ b/astropy/units/core.py\n@@ -1710,6 +1710,8 @@ class UnrecognizedUnit(IrreducibleUnit):\n         _unrecognized_operator\n \n     def __eq__(self, other):\n+        if other is None:\n+            return False\n         other = Unit(other, parse_strict='silent')\n         return isinstance(other, UnrecognizedUnit) and self.name == other.name\n \n"
+  },
+  {
+    "taskId": "django__django-14053",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 813233,
+    "testMs": 872,
+    "failToPass": [
+      {
+        "name": "post_processing behaves correctly.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_hashed_name (staticfiles_tests.test_storage.TestCollectionNoneHashStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_collect_static_files_default_permissions (staticfiles_tests.test_storage.TestStaticFilePermissions)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_collect_static_files_permissions (staticfiles_tests.test_storage.TestStaticFilePermissions)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_collect_static_files_subclass_of_static_storage (staticfiles_tests.test_storage.TestStaticFilePermissions)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "With storage classes having several file extension patterns, only the",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_return (staticfiles_tests.test_storage.TestCollectionSimpleStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_simple_content (staticfiles_tests.test_storage.TestCollectionSimpleStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_file_change_after_collectstatic (staticfiles_tests.test_storage.TestCollectionHashedFilesCache)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_clear_empties_manifest (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_css_import_case_insensitive (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_import_loop (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "See #18050",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_intermediate_files (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_loaded_cache (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_manifest_does_not_exist (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_manifest_does_not_ignore_permission_error (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_manifest_exists (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_missing_entry (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_parse_cache (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_path_ignored_completely (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_path_with_fragment (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_path_with_querystring (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_path_with_querystring_and_fragment (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "post_processing indicates the origin of the error when it fails.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_absolute (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Like test_template_tag_absolute, but for a file in STATIC_ROOT (#26249).",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_deep_relative (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_relative (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_return (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_simple_content (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_template_tag_url (staticfiles_tests.test_storage.TestCollectionManifestStorage)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "turns": 34,
+    "toolCalls": 34,
+    "inputTokens": 728323,
+    "outputTokens": 7963,
+    "metrics": {
+      "turns": 34,
+      "toolCalls": 34,
+      "inputTokens": 728323,
+      "outputTokens": 7963,
+      "ttftMs": 0,
+      "totalMs": 813326,
+      "toolNameCounts": {
+        "codebase_search": 1,
+        "search_codebase": 6,
+        "read_files": 10,
+        "run_commands": 11,
+        "editor": 5,
+        "fetch_web_content": 1
+      },
+      "maxConsecutiveSameTool": 9,
+      "convergence": {
+        "toolNameCounts": {
+          "codebase_search": 1,
+          "search_codebase": 6,
+          "read_files": 10,
+          "run_commands": 11,
+          "editor": 5,
+          "fetch_web_content": 1
+        },
+        "maxConsecutiveSameTool": 9,
+        "writeCalls": 5,
+        "loopDetected": true,
+        "stalled": false
+      },
+      "termination": "completed"
+    },
+    "termination": "completed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/django/contrib/staticfiles/storage.py b/django/contrib/staticfiles/storage.py\nindex 494890cc23..ef72e65534 100644\n--- a/django/contrib/staticfiles/storage.py\n+++ b/django/contrib/staticfiles/storage.py\n@@ -236,7 +236,6 @@ class HashedFilesMixin:\n         for i in range(self.max_post_process_passes):\n             substitutions = False\n             for name, hashed_name, processed, subst in self._post_process(paths, adjustable_paths, hashed_files):\n-                yield name, hashed_name, processed\n                 substitutions = substitutions or subst\n \n             if not substitutions:\n"
+  },
+  {
+    "taskId": "django__django-16662",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 425472,
+    "testMs": 885,
+    "failToPass": [
+      {
+        "name": "#24155 - Tests ordering of imports.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_args_kwargs_signature (migrations.test_writer.OperationWriterTests.test_args_kwargs_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_args_signature (migrations.test_writer.OperationWriterTests.test_args_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_empty_signature (migrations.test_writer.OperationWriterTests.test_empty_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_expand_args_signature (migrations.test_writer.OperationWriterTests.test_expand_args_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_kwargs_signature (migrations.test_writer.OperationWriterTests.test_kwargs_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_multiline_args_signature (migrations.test_writer.OperationWriterTests.test_multiline_args_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_nested_args_signature (migrations.test_writer.OperationWriterTests.test_nested_args_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_nested_operation_expand_args_signature (migrations.test_writer.OperationWriterTests.test_nested_operation_expand_args_signature)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_custom_operation (migrations.test_writer.WriterTests.test_custom_operation)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_deconstruct_class_arguments (migrations.test_writer.WriterTests.test_deconstruct_class_arguments)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Test comments at top of file.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_migration_path (migrations.test_writer.WriterTests.test_migration_path)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "django.db.models shouldn't be imported if unused.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_register_non_serializer (migrations.test_writer.WriterTests.test_register_non_serializer)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_register_serializer (migrations.test_writer.WriterTests.test_register_serializer)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_builtin_types (migrations.test_writer.WriterTests.test_serialize_builtin_types)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_builtins (migrations.test_writer.WriterTests.test_serialize_builtins)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_choices (migrations.test_writer.WriterTests.test_serialize_choices)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Ticket #22943: Test serialization of class-based validators, including",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_collections (migrations.test_writer.WriterTests.test_serialize_collections)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Make sure compiled regex can be serialized.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_complex_func_index (migrations.test_writer.WriterTests.test_serialize_complex_func_index)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_constants (migrations.test_writer.WriterTests.test_serialize_constants)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_datetime (migrations.test_writer.WriterTests.test_serialize_datetime)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Ticket #22679: makemigrations generates invalid code for (an empty",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_enum_flags (migrations.test_writer.WriterTests.test_serialize_enum_flags)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_enums (migrations.test_writer.WriterTests.test_serialize_enums)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_fields (migrations.test_writer.WriterTests.test_serialize_fields)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_frozensets (migrations.test_writer.WriterTests.test_serialize_frozensets)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_functions (migrations.test_writer.WriterTests.test_serialize_functions)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_functools_partial (migrations.test_writer.WriterTests.test_serialize_functools_partial)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_functools_partialmethod (migrations.test_writer.WriterTests.test_serialize_functools_partialmethod)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_iterators (migrations.test_writer.WriterTests.test_serialize_iterators)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_lazy_objects (migrations.test_writer.WriterTests.test_serialize_lazy_objects)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "A reference in a local scope can't be serialized.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_managers (migrations.test_writer.WriterTests.test_serialize_managers)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_multiline_strings (migrations.test_writer.WriterTests.test_serialize_multiline_strings)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_nested_class (migrations.test_writer.WriterTests.test_serialize_nested_class)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_numbers (migrations.test_writer.WriterTests.test_serialize_numbers)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_path_like (migrations.test_writer.WriterTests.test_serialize_path_like)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_pathlib (migrations.test_writer.WriterTests.test_serialize_pathlib)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_range (migrations.test_writer.WriterTests.test_serialize_range)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_set (migrations.test_writer.WriterTests.test_serialize_set)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_settings (migrations.test_writer.WriterTests.test_serialize_settings)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_strings (migrations.test_writer.WriterTests.test_serialize_strings)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_timedelta (migrations.test_writer.WriterTests.test_serialize_timedelta)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_type_model (migrations.test_writer.WriterTests.test_serialize_type_model)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_type_none (migrations.test_writer.WriterTests.test_serialize_type_none)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "An unbound method used within a class body can be serialized.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_serialize_uuid (migrations.test_writer.WriterTests.test_serialize_uuid)",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "Tests serializing a simple migration.",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "turns": 19,
+    "toolCalls": 19,
+    "inputTokens": 382530,
+    "outputTokens": 3757,
+    "metrics": {
+      "turns": 19,
+      "toolCalls": 19,
+      "inputTokens": 382530,
+      "outputTokens": 3757,
+      "ttftMs": 0,
+      "totalMs": 425570,
+      "toolNameCounts": {
+        "codebase_search": 1,
+        "search_codebase": 3,
+        "read_files": 5,
+        "run_commands": 9,
+        "editor": 1
+      },
+      "maxConsecutiveSameTool": 6,
+      "convergence": {
+        "toolNameCounts": {
+          "codebase_search": 1,
+          "search_codebase": 3,
+          "read_files": 5,
+          "run_commands": 9,
+          "editor": 1
+        },
+        "maxConsecutiveSameTool": 6,
+        "writeCalls": 1,
+        "loopDetected": true,
+        "stalled": false
+      },
+      "termination": "completed"
+    },
+    "termination": "completed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/django/db/migrations/writer.py b/django/db/migrations/writer.py\nindex a59f0c8dcb..b5338568a9 100644\n--- a/django/db/migrations/writer.py\n+++ b/django/db/migrations/writer.py\n@@ -175,7 +175,7 @@ class MigrationWriter:\n \n         # Sort imports by the package / module to be imported (the part after\n         # \"from\" in \"from ... import ...\" or after \"import\" in \"import ...\").\n-        sorted_imports = sorted(imports, key=lambda i: i.split()[1])\n+        sorted_imports = sorted(imports, key=lambda i: (i.split()[0] != \"import\", i.split()[1]))\n         items[\"imports\"] = \"\\n\".join(sorted_imports) + \"\\n\" if imports else \"\"\n         if migration_imports:\n             items[\"imports\"] += (\ndiff --git a/other_1.sqlite3 b/other_1.sqlite3\nnew file mode 100644\nindex 0000000000..e69de29bb2\ndiff --git a/other_2.sqlite3 b/other_2.sqlite3\nnew file mode 100644\nindex 0000000000..e69de29bb2\ndiff --git a/other_3.sqlite3 b/other_3.sqlite3\nnew file mode 100644\nindex 0000000000..e69de29bb2\ndiff --git a/other_4.sqlite3 b/other_4.sqlite3\nnew file mode 100644\nindex 0000000000..e69de29bb2\ndiff --git a/other_5.sqlite3 b/other_5.sqlite3\nnew file mode 100644\nindex 0000000000..e69de29bb2\n"
+  },
+  {
+    "taskId": "matplotlib__matplotlib-14623",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 719347,
+    "testMs": 6788,
+    "failToPass": [
+      {
+        "name": "test_inverted_limits",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_get_labels",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_spy_invalid_kwargs",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twinx_cla",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twinx_axis_scales[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twin_inherit_autoscale_setting",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_inverted_cla",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minorticks_on_rcParams_both[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_autoscale_tiny_range[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_autoscale_tight",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_autoscale_log_shared",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_use_sticky_edges",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_arrow_simple[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_arrow_empty",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_annotate_default_arrow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_structured_data",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hexbin_extent[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hexbin_empty[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hexbin_pickable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_imshow[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_polycollection_joinstyle[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_between_input[2d_x_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_between_input[2d_y1_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_between_input[2d_y2_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_betweenx_input[2d_y_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_betweenx_input[2d_x1_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_betweenx_input[2d_x2_input]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_between_interpolate[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fill_between_interpolate_decreasing[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorargs_5205",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolormesh[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorargs",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_arc_angles[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_arc_ellipse[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_markevery_linear_scales[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_markevery_linear_scales_zoomed[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_markevery_log_scales[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_marker_edges[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_ticklabel_fail",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_color_none_alpha",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_edgecolor_none_alpha",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_timedelta",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_log[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_bar_empty[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_step_empty[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_step_filled[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_step_log_bottom[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_unequal_bins_density",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_datetime_datasets",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_with_empty_input[data0-1]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_with_empty_input[data1-1]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_with_empty_input[data2-2]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_contour_hatching[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_plot[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_2D[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_color",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_invalid_color[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_no_invalid_color[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[0.5-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[rgby-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[rgb-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[rgbrgb-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case4-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[red-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[none-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[None-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case8-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[jaune-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case10-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case11-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case12-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case13-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case14-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case15-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case16-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case17-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case18-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case19-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case20-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case21-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case22-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case23-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case24-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case25-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case26-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case27-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case28-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case29-shape]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case30-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case31-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_c[c_case32-conversion]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args[params0-expected_result0]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args[params1-expected_result1]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args[params2-expected_result2]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args[params3-expected_result3]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args[params4-expected_result4]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs0-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs1-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs2-r]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs3-expected_edgecolors3]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs4-r]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs5-face]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs6-none]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs7-r]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs8-r]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs9-r]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_parse_scatter_color_args_edgecolors[kwargs10-g]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pyplot_axes",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stackplot_baseline[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_horizontal[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_patchartist[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_custompatchartist[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_customoutlier[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_showcustommean[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_custombox[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_custommedian[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_customcap[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_customwhisker[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_shownotches[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_nocaps[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_nobox[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_no_flier_stats[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_showmean[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_showmeanasline[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_scalarwidth[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_customwidths[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_custompositions[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_bad_widths",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bxp_bad_positions",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_sym2[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_sym[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_rc_parameters[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_with_CIarray[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_no_weird_whisker[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_bad_medians_1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_bad_medians_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_bad_ci_1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_zorder",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_bad_ci_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_mod_artist_after_plotting[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_violinplot_bad_positions",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_violinplot_bad_widths",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_manage_xticks",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_boxplot_not_single",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_tick_space_size_0",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_colorcycle",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_shape",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errobar_nonefmt",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_with_prop_cycle[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_step[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stem[png-w/",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stem[png-w/o",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stem_params[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stem_args",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_stem_dates",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_normed_density[False-False]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_normed_density[False-True]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_normed_density[True-False]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_normed_density[True-True]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_step_bottom[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_labels",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_transparent_markers[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_rgba_markers[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_mollweide_grid[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_mollweide_forward_inverse_closure",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_mollweide_inverse_forward_closure",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_alpha[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_defaults[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_colors[colors0]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_colors[colors1]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_colors[colors2]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_colors[colors3]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_problem_kwargs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_empty_eventplot",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data0-_empty]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data1-vertical]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data2-horizontal]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data3-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data4-none]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data5-_empty]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data6-vertical]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data7-horizontal]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data8-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data9-none]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data10-_empty]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data11-vertical]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data12-horizontal]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data13-None]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_orientation[data14-none]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_marker_styles[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_vertex_markers[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_step_linestyle[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_mixed_collection[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_subplot_key_hash",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_magnitude_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_magnitude_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_angle_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_noise_angle[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_freqs_phase[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_specgram_noise_phase[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_psd_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_psd_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_csd_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_csd_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_magnitude_spectrum_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_magnitude_spectrum_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_angle_spectrum_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_angle_spectrum_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_phase_spectrum_freqs[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_phase_spectrum_noise[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twin_spines[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twin_spines_on_top[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_rcparam_grid_minor",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_vline_limit",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_empty_shared_subplots",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_shared_with_aspect_1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_shared_with_aspect_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_shared_with_aspect_3",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twin_with_aspect[x]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twin_with_aspect[y]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_relim_visible_only",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_text_labelsize",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pie_textprops",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_tick_label_update",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_margins",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_length_one_hist",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pathological_hexbin",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_color_None",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_color_alias",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_numerical_hist_label",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_unicode_hist_label",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_move_offsetlabel",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_rc_tick",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_rc_major_minor_tick",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_no_None",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorfast_colormapped[xy0-AxesImage]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorfast_colormapped[xy1-AxesImage]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorfast_colormapped[xy2-AxesImage]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorfast_colormapped[xy3-PcolorImage]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_pcolorfast_colormapped[xy4-QuadMesh]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_shared_scale",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_violin_point_mass",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs0]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs1]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs2]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs3]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs4]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs5]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs6]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs7]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs8]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs9]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs10]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs11]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs12]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs13]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs14]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs15]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs16]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs17]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs18]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs19]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs20]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs21]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs22]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs23]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs24]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs25]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs26]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs27]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs28]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs29]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs30]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs31]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs32]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs33]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs34]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs35]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs36]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs37]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs38]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs39]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs40]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs41]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs42]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs43]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs44]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs45]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs46]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs47]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs48]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs49]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs50]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs51]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs52]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs53]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs54]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs55]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs56]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs57]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs58]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs59]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs60]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs61]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs62]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs63]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs64]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs65]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs66]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs67]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs68]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs69]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs70]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs71]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs72]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs73]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs74]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs75]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs76]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs77]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs78]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs79]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs80]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs81]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs82]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_errorbar_inputs_shotgun[kwargs83]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_dash_offset[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_title_pad",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_title_location_roundtrip",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_loglog[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_loglog_nonpos[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axes_margins",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[gca-x]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[gca-y]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[subplots-x]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[subplots-y]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[subplots_shared-x]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[subplots_shared-y]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[add_axes-x]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes[add_axes-y]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_remove_shared_axes_relim",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_shared_axes_autoscale",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_adjust_numtick_aspect",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_broken_barh_empty",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_broken_barh_timedelta",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axis_set_tick_params_labelsize_labelcolor",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axes_tick_params_gridlines",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axes_tick_params_ylabelside",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axes_tick_params_xlabelside",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_none_kwargs",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_ls_ds_conflict",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_uint8",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axisbelow[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_titlesetpos",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_title_xticks_top",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_title_xticks_top_both",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_offset_label_color",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_large_offset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_barb_units",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_quiver_units",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_color_cycle",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_tick_param_label_rotation",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_fillbetween_cycle",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_log_margins",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_color_length_mismatch",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_eventplot_legend",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_broadcast_args",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_invalid_axis_limits",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minorticks_on[symlog-symlog]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minorticks_on[symlog-log]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minorticks_on[log-symlog]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minorticks_on[log-log]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_twinx_knows_limits",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_zero_linewidth",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_empty_errorbar_legend",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_plot_columns_cycle_deprecation",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_markerfacecolor_none_alpha[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_tick_padding_tightbbox",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_zoom_inset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_set_position",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_spines_properbbox_after_zoom",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_cartopy_backcompat",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_gettightbbox_ignoreNaN",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_scatter_empty_data",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_annotate_across_transforms[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_deprecated_uppercase_colors",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_secondary_fail",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_secondary_resize",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_nodecorator",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_displaced_spine",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_tickdirs",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_minor_accountedfor",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axis_bool_arguments[png]",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_axis_extent_arg",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_datetime_masked",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_nan_data",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_hist_range_and_density",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      },
+      {
+        "name": "test_bar_errbar_zorder",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=4)"
+      }
+    ],
+    "turns": 31,
+    "toolCalls": 34,
+    "inputTokens": 614768,
+    "outputTokens": 13014,
+    "metrics": {
+      "turns": 31,
+      "toolCalls": 34,
+      "inputTokens": 614768,
+      "outputTokens": 13014,
+      "ttftMs": 0,
+      "totalMs": 719439,
+      "toolNameCounts": {
+        "codebase_search": 2,
+        "search_codebase": 8,
+        "read_files": 13,
+        "run_commands": 10,
+        "editor": 1
+      },
+      "maxConsecutiveSameTool": 3,
+      "convergence": {
+        "toolNameCounts": {
+          "codebase_search": 2,
+          "search_codebase": 8,
+          "read_files": 13,
+          "run_commands": 10,
+          "editor": 1
+        },
+        "maxConsecutiveSameTool": 3,
+        "writeCalls": 1,
+        "loopDetected": false,
+        "stalled": false
+      },
+      "termination": "completed"
+    },
+    "termination": "completed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/lib/matplotlib/ticker.py b/lib/matplotlib/ticker.py\nindex 209a3f92c..67d5e6378 100644\n--- a/lib/matplotlib/ticker.py\n+++ b/lib/matplotlib/ticker.py\n@@ -2381,6 +2381,10 @@ class LogLocator(Locator):\n \n         if vmin > vmax:\n             vmin, vmax = vmax, vmin\n+            swap = True\n+        else:\n+            swap = False\n+\n         if vmax <= 0:\n             cbook._warn_external(\n                 \"Data has no positive values, and therefore cannot be \"\n@@ -2395,6 +2399,8 @@ class LogLocator(Locator):\n         if vmin == vmax:\n             vmin = _decade_less(vmin, self._base)\n             vmax = _decade_greater(vmax, self._base)\n+        if swap:\n+            vmin, vmax = vmax, vmin\n         return vmin, vmax\n \n \n"
   }
 ]

@@ -10,6 +10,7 @@ import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
 import { optimizePrompt } from "../../lib/promptOptimizer";
+import { revealSelection } from "../../lib/selectionRevealBus";
 import { copyPath, createDirCmd, pathExists, readDir } from "../../lib/fs";
 import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 import {
@@ -1580,7 +1581,21 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
           padding: "6px 10px 4px",
           flexWrap: "wrap",
         }}>
-          <div style={{
+          <div
+            // Tout le badge est cliquable (comme Trae) : un clic surligne dans
+            // l'éditeur le code exact épinglé, pour être certain de la sélection.
+            onMouseDown={e => {
+              e.preventDefault(); // ne pas voler le focus de l'input
+              if (contextSnap!.type === 'terminal') return;
+              revealSelection({
+                filename: contextSnap!.filename,
+                startLine: contextSnap!.startLine,
+                endLine: contextSnap!.endLine,
+                code: contextSnap!.code,
+              });
+            }}
+            title={contextSnap!.type === 'terminal' ? undefined : 'Show this selection in the editor'}
+            style={{
             display: "inline-flex",
             alignItems: "center",
             gap: "5px",
@@ -1592,6 +1607,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             border: "1px solid var(--origin-border-default)",
             color: "var(--origin-fg-default)",
             maxWidth: "100%",
+            cursor: contextSnap!.type === 'terminal' ? "default" : "pointer",
           }}>
             {contextSnap!.type === 'terminal'
               ? <SquareTerminal size={11} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
@@ -1611,6 +1627,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             <button
               onMouseDown={e => {
                 e.preventDefault(); // don't steal focus from editable
+                e.stopPropagation(); // ne pas déclencher la révélation du badge
                 setContextDismissed(true);
                 setContextSnap(null);
               }}
