@@ -72,6 +72,7 @@ import { buildBrowserTools, type BrowserInvokeRequest } from "./browserTool";
 import { buildTabTools, type TabInvokeRequest } from "./tabTool";
 import { buildCodeIndexTool } from "./codeIndexTool";
 import { buildProjectTools } from "./projectTools";
+import { buildQualityTools } from "./qualityTool";
 import { resolveSessionExtensions, type SessionExtensions } from "./instructions";
 import { buildBlockedTools } from "./blockedTool";
 import { neutralizeForClient } from "./brand";
@@ -145,7 +146,7 @@ interface StartCommand {
 
 /** Spécification déclarative d'un outil custom (pas de code exécutable). */
 interface ExtraToolSpec {
-  kind: "todo" | "browser" | "code_index" | "team_escalate" | "project";
+  kind: "todo" | "browser" | "code_index" | "team_escalate" | "project" | "quality";
   /** Id de session UI, pour attribuer les todos côté front. */
   sessionId: string;
   /**
@@ -570,6 +571,13 @@ function buildExtraTools(specs: ExtraToolSpec[] | undefined, cwd: string) {
       // noms de commandes Tauri FIGÉS dans `./projectTools` : le modèle ne peut
       // choisir que les paramètres (requête, chemin relatif borné).
       tools.push(...buildProjectTools(cwd, originInvoke));
+    } else if (spec.kind === "quality") {
+      // Outils de CONTRÔLE QUALITÉ (détection des commandes de vérification du
+      // projet : typecheck, tests, lint, build). Lecture seule : l'outil se
+      // contente de LIRE des manifestes FIGÉS (package.json, Cargo.toml…) et de
+      // renvoyer les commandes à lancer. L'exécution reste portée par
+      // `run_commands` (natif SDK) — un seul chemin d'exécution.
+      tools.push(...buildQualityTools(cwd, originInvoke));
     } else if (spec.kind === "team_escalate") {
       // Escalade d'équipe « à la demande » : l'outil ne fait que REMONTER une
       // intention au front (`tool_event`). C'est le front qui coupe le run léger
@@ -1062,6 +1070,13 @@ const TOOL_POLICIES: Record<string, { enabled?: boolean; autoApprove?: boolean }
   git_diff: { autoApprove: true },
   search_symbols: { autoApprove: true },
   find_imports: { autoApprove: true },
+  // Outil CUSTOM de CONTRÔLE QUALITÉ (voir `./qualityTool`) : `detect_checks`
+  // ne fait que LIRE des manifestes FIGÉS du workspace et renvoyer les commandes
+  // de vérification détectées. Aucun effet de bord, aucune exécution → auto-
+  // approuvé (une carte de confirmation pour « quel est ta commande de test »
+  // serait absurde). L'exécution, elle, reste portée par `run_commands`, qui
+  // N'EST PAS auto-approuvé : l'utilisateur garde le contrôle des commandes.
+  detect_checks: { autoApprove: true },
   // Outil CUSTOM `escalate_to_team` (voir `./teamEscalateTool`) : simple demande
   // d'escalade, AUCUN effet de bord. Auto-approuvé, sinon une carte de
   // confirmation apparaîtrait au moment précis où le modèle veut gagner en

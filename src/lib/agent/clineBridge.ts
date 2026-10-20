@@ -98,6 +98,9 @@ export const SEARCH_TOOL_NAMES: readonly string[] = [
   "git_diff",
   "search_symbols",
   "find_imports",
+  // Contrôle qualité (cf. `qualityTool` côté sidecar) : DÉTECTION en lecture
+  // seule des commandes de vérification du projet — même nature (reconnaissance).
+  "detect_checks",
 ];
 
 /** Outils d'ÉNUMÉRATION de fichiers/dossiers (listage). */

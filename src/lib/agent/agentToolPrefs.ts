@@ -46,6 +46,12 @@ export const AGENT_TOOLS: AgentToolDef[] = [
     tools: ["project_overview", "git_status", "git_diff", "search_symbols", "find_imports"],
   },
   {
+    id: "quality",
+    label: "Quality checks",
+    description: "Detect the project's verification commands (typecheck, tests, lint, build) from its manifests.",
+    tools: ["detect_checks"],
+  },
+  {
     id: "editor",
     label: "Edit files",
     description: "Create and edit files in the workspace.",

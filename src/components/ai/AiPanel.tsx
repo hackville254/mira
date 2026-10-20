@@ -46,6 +46,7 @@ import { PREVIEW_ACTIVE_TARGET } from "../../lib/ai/previewTabs";
 import { listExtensions as listClineExtensions, EXTENSIONS_CHANGED_EVENT } from "../../lib/agent/clineClient";
 import type { ClineRunHandle, ClineSessionExtensions } from "../../lib/agent/clineClient";
 import { isWriteTool } from "../../lib/agent/clineBridge";
+import { isVerificationCommand, shouldBlockForVerification, VERIFY_BEFORE_FINISH_REMINDER } from "../../lib/agent/terminationGate";
 import { toPendingAction } from "../../lib/agent/clineApproval";
 import { agentTerminalCommandStart, agentTerminalCommandEnd, agentTerminalOutput } from "../../lib/agent/agentTerminalStore";
 import { log } from "../../lib/logger";
@@ -1714,6 +1715,18 @@ export default function AiPanel({
           if (isWriteTool(event.toolName)) {
             run.dirty = true;
           }
+          // Faits du GATE DE TERMINAISON (Lot D) : on mémorise, à titre
+          // d'OBSERVATION, si ce tour a réellement vérifié son travail ou
+          // sollicité l'utilisateur. Aucune décision ici — elle est prise à la
+          // clôture (cf. `shouldBlockForVerification`).
+          if (event.toolName === "ask_question") {
+            run.askedUser = true;
+          } else if (isShellTool(event.toolName)) {
+            const cmd = toPendingAction(event.toolName, event.args);
+            if (cmd?.type === "bash_run" && isVerificationCommand(cmd.command)) {
+              run.ranVerification = true;
+            }
+          }
           // MULTITASKING : dès qu'un outil (du root) démarre, la tâche passe en
           // « waiting » — elle reste VIVANTE (donc basculable sans perte), mais le
           // rail peut l'afficher comme « en attente d'outil ». Les outils de
@@ -2031,6 +2044,53 @@ export default function AiPanel({
 
         case "finish": {
           if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
+          // ── GATE DE TERMINAISON (Lot D) ──────────────────────────────────────
+          // Avant d'accepter la clôture : si ce tour a ÉCRIT sans rien vérifier
+          // puis revendiqué un succès, on REFUSE le `finish` et on relance un
+          // tour de VÉRIFICATION. Décision fondée sur des faits observés
+          // (cf. `shouldBlockForVerification`), jamais sur la formulation seule.
+          // Une seule relance par run (`verificationGuardFired`).
+          {
+            const decision = shouldBlockForVerification(run.pendingContent, {
+              wroteWorkspace: run.dirty,
+              ranVerification: run.ranVerification,
+              askedUser: run.askedUser,
+              // Le gate n'a de sens que si l'outillage de contrôle est branché.
+              qualityToolsAvailable: isFamilyEnabled(["detect_checks"]),
+              guardFired: run.verificationGuardFired,
+            });
+            if (decision.action === "verify") {
+              run.verificationGuardFired = true;
+              // On abandonne PROPREMENT ce tour : le contenu déjà écrit est
+              // persisté, le run reste vivant (pas de `complete`), et le
+              // rappel de vérification part comme tour de SUIVI immédiat.
+              const vDbId = run.pendingAssistantDbId;
+              const vContent = run.pendingContent;
+              const vParts = run.pendingParts;
+              run.pendingAssistantDbId = null;
+              run.pendingContent = "";
+              run.pendingParts = [];
+              if (vDbId) updateMessageContent(vDbId, vContent, "complete").catch(() => {});
+              updateThread(prev => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === "assistant" && last.streaming) {
+                  next[next.length - 1] = { ...last, content: vContent, parts: vParts, streaming: false };
+                }
+                return next;
+              });
+              log.info("ai/panel", `gate de terminaison: relance de vérification (${decision.reason})`);
+              // Reset des faits pour le tour de vérification.
+              run.dirty = false;
+              run.ranVerification = false;
+              run.askedUser = false;
+              setTimeout(() => {
+                handleSendRef.current?.(VERIFY_BEFORE_FINISH_REMINDER, modelId, providerId, [], null, "agent", [])
+                  .catch(err => log.warn("ai/panel", `relance de vérification échouée: ${String(err)}`));
+              }, 0);
+              break;
+            }
+          }
           // Trace d'orchestration discrète : on consigne le nombre de sous-agents
           // réellement lancés pendant le tour. Aucune ligne si le root a choisi
           // de tout faire lui-même (choix légitime) — c'est un journal, pas une
@@ -2330,6 +2390,16 @@ export default function AiPanel({
         !!sessionId
         && opts.sdkMode === "act"
         && isFamilyEnabled(["project_overview", "git_status", "git_diff", "search_symbols", "find_imports"]);
+      // CONTRÔLE QUALITÉ : l'outil `detect_checks` lit les manifestes du projet
+      // (via `read_file`, confiné au workspace) pour en déduire les commandes de
+      // vérification (typecheck, tests, lint, build). Il DÉTECTE mais N'EXÉCUTE
+      // PAS : l'exécution reste sur `run_commands` (chemin unique, une seule
+      // politique d'approbation). Mêmes conditions de branchement que la
+      // compréhension projet + respect de la préférence Settings › Agent.
+      const wantsQualityTools =
+        !!sessionId
+        && opts.sdkMode === "act"
+        && isFamilyEnabled(["detect_checks"]);
       // Escalade d'équipe « à la demande » : en mode IA et sans agent
       // personnalisé, on offre TOUJOURS l'outil léger `escalate_to_team`. Le
       // modèle l'appelle s'il juge la tâche trop large, ce qui déclenche une
@@ -2343,6 +2413,7 @@ export default function AiPanel({
           : []),
         ...(wantsCodeIndex ? [{ kind: "code_index" as const, sessionId }] : []),
         ...(wantsProjectTools ? [{ kind: "project" as const, sessionId }] : []),
+        ...(wantsQualityTools ? [{ kind: "quality" as const, sessionId }] : []),
         ...(wantsEscalate ? [{ kind: "team_escalate" as const, sessionId }] : []),
       ];
       // Dotation MCP d'un agent personnalisé : on n'autorise que les serveurs

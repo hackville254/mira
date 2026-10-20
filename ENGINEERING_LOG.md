@@ -5,6 +5,80 @@
 
 ---
 
+### [2026-10-20T20:10] | Chantier architecture agent (Lot C + Lot D) — contrôle qualité & gate de terminaison
+
+- **Contexte :** second chantier demandé — *« en mode IA, l'agent gère-t-il lui-même
+  son contexte, a-t-il des checkpoints et de la récupération ? »*, avec l'objectif
+  d'un agent autonome capable de travailler sur des projets de plus de 5 millions
+  de lignes sans se tromper : explorer, planifier, agir, vérifier, corriger,
+  terminer. Cinq piliers posés par l'utilisateur. Audit préalable : boucle agent
+  (Lot 3), gestion du contexte (Lot 6 — `tokenBudget`/`compactHistory`/`ContextUsageBar`)
+  et checkpoints (Lot 7 — `turnCheckpoint`/`checkpoint.rs`) déjà complets. Décision :
+  traiter les lots manquants **lot par lot**, et **différer le Lot E** (index
+  sémantique embeddings) pour discussion.
+
+- **Modifications effectuées :**
+  - **Lot B (rappel, terminé session précédente) :** outils de compréhension du
+    projet exposés à l'agent — `project_overview`, `git_status`, `git_diff`,
+    `search_symbols`, `find_imports` (`projectTools.ts` côté sidecar), branchés
+    conditionnellement au mode `act` et à la préférence Settings › Agent.
+  - **Lot A (terminé session précédente) :** blocs de prompt `PLAN_BEFORE_ACTING`
+    et `ANSWER_COHERENCE_RULES` (plan avant édition ; juger la réponse de
+    l'utilisateur, re-questionner si vague/contradictoire, ne jamais implémenter
+    une décision non prise).
+  - **Lot C — Contrôle qualité :**
+    - `cline-sidecar/src/qualityTool.ts` : outil `detect_checks` qui lit une liste
+      FIGÉE de manifestes (`package.json`, `Cargo.toml`, `pyproject.toml`… via
+      `read_file`) et renvoie les commandes de vérification (typecheck/tests/lint/
+      build). **Détecte, n'exécute pas.**
+    - `cline-sidecar/src/index.ts` : import, `ExtraToolSpec.kind` étendu (`quality`),
+      branchement `buildExtraTools`, `TOOL_POLICIES.detect_checks = autoApprove`
+      (lecture pure).
+    - `clineClient.ts` : handler `read_file` dans `respondToInvoke` (chaîne brute,
+      comme `git_diff`) + `read_file` dans `INVOKE_ALLOWLIST`.
+    - `AiPanel.tsx` : `wantsQualityTools` + branchement `{ kind: "quality" }`.
+    - `agentToolPrefs.ts` : famille `quality` (outil `detect_checks`).
+    - `toolPresentation.ts` : `QUALITY_CONTRACT_ACT`, `FULL_TOOL_NAMES` enrichi,
+      famille `quality` dans `CONTRACT_LINES_BY_TOOL` et `flattenFamilies`.
+    - `clineApproval.ts` (`READ_TOOLS`) et `clineBridge.ts` (`SEARCH_TOOL_NAMES`) :
+      `detect_checks` ajouté.
+  - **Lot D — Gate de terminaison :**
+    - `lib/agent/terminationGate.ts` (nouveau) : `isVerificationCommand`,
+      `claimsSuccess` (avec fenêtre anti-négation), `shouldBlockForVerification`,
+      `VERIFY_BEFORE_FINISH_REMINDER`.
+    - `lib/agent/runState.ts` : trois faits observés par run — `ranVerification`,
+      `askedUser`, `verificationGuardFired` (collant).
+    - `AiPanel.tsx` : collecte des faits dans `case "tool-call"` ; à la clôture
+      (`case "finish"`), si le tour a écrit sans vérifier et revendique un succès,
+      on REFUSE le `finish` et on relance un tour de vérification (une seule fois).
+    - `__tests__/terminationGate.test.ts` (nouveau) : 13 tests.
+
+- **Décisions Techniques :** (a) **`detect_checks` DÉTECTE, ne lance pas** — un seul
+  chemin d'exécution (`run_commands`, non auto-approuvé) : pas de duplication de
+  politique, l'utilisateur garde le contrôle des commandes. (b) **Gate fondé sur
+  des faits observables** (a-t-on écrit ? a-t-on exécuté un check ?), jamais sur la
+  seule formulation — anti-biais. (c) **Une seule relance** (`verificationGuardFired`)
+  pour ne jamais boucler ; (d) **abstention** si l'outillage de contrôle est coupé
+  (un gate sans échappatoire serait un piège). (e) Négation gérée dans
+  `claimsSuccess` : un aveu d'échec (« not done ») n'est pas une revendication.
+  (f) Budget prompt : agent/max = 9906 caractères, sous le plafond documenté de
+  10000 (test `prompts.metrics`).
+
+- **Impacts & Dépendances :** côté sidecar `qualityTool.ts`, `index.ts` ; côté front
+  `clineClient.ts`, `AiPanel.tsx`, `runState.ts`, `agentToolPrefs.ts`,
+  `toolPresentation.ts`, `clineApproval.ts`, `clineBridge.ts`, `terminationGate.ts`.
+  Effet de bord : un nouveau tour peut s'enchaîner automatiquement après un `finish`
+  (relance de vérification) — visible dans le fil comme un tour de suivi.
+
+- **Vérifications :** `npx tsc --noEmit` (propre hors `bench/` pré-existant),
+  `tsc --noEmit` sidecar (propre), `cargo check` (OK), `npx vitest run src/lib`
+  (**818 tests verts**), budget prompt mesuré 9906 < 10000.
+
+- **Prochaines étapes :** **Lot E** (index sémantique embeddings) — à DISCUTER avant
+  toute implémentation, comme convenu avec l'utilisateur.
+
+---
+
 ### [2026-10-20T19:55] | Badge de contexte du chat : clic direct → surlignage (bug de garde)
 
 - **Contexte :** *« j'ai sélectionné un fichier, c'est dans l'input c'est bon,

@@ -49,6 +49,24 @@ export interface RunState {
   /** Nombre de sous-agents lancés pendant ce run (trace d'orchestration). */
   spawned: number;
   /**
+   * Vrai dès qu'un tour de CE run a exécuté une commande de VÉRIFICATION
+   * (`run_commands` avec une commande de contrôle : tests, typecheck, lint,
+   * build). Preuve que le modèle a vérifié son travail — cf. `terminationGate`.
+   */
+  ranVerification: boolean;
+  /**
+   * Vrai dès que le modèle a posé une QUESTION à l'utilisateur (`ask_question`).
+   * Un tour qui se termine sur une question n'est pas une clôture « succès » :
+   * le gate de terminaison ne doit pas le viser (décision non prise).
+   */
+  askedUser: boolean;
+  /**
+   * Vrai si le GATE de terminaison a déjà REFUSÉ une clôture non prouvée sur ce
+   * run. COLLANT : on n'accorde qu'UNE relance de vérification par run, jamais
+   * une boucle (un gate qui boucle bloquerait l'utilisateur).
+   */
+  verificationGuardFired: boolean;
+  /**
    * Vrai dès qu'un tour de cette session a activé l'outillage d'équipe Cline.
    * COLLANT : une fois les équipes ouvertes dans une conversation, on ne
    * rebascule pas sur un runtime allégé en plein travail (sinon on rouvrirait
@@ -83,6 +101,9 @@ function fresh(): RunState {
     flushTimer: null,
     dirty: false,
     spawned: 0,
+    ranVerification: false,
+    askedUser: false,
+    verificationGuardFired: false,
     teamsEnabled: false,
     messages: null,
     task: null,

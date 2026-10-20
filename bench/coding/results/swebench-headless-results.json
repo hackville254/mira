@@ -15250,14 +15250,14 @@
     "inputTokens": 207893,
     "outputTokens": 3986,
     "metrics": {
-      "turns": 18,
-      "toolCalls": 19,
-      "inputTokens": 207893,
-      "outputTokens": 3986,
+      "turns": 40,
+      "toolCalls": 41,
+      "inputTokens": 848381,
+      "outputTokens": 8205,
       "ttftMs": 0,
       "totalMs": 245010,
       "error": "erreur agent",
-      "recoverable": true,
+      "recoverable": false,
       "toolNameCounts": {
         "codebase_search": 2,
         "search_codebase": 2,
@@ -15286,5 +15286,1392 @@
     "termination": "provider-error",
     "inconclusive": true,
     "modelPatch": "diff --git a/sphinx/domains/std.py b/sphinx/domains/std.py\nindex d820cfe5c..edc110d2a 100644\n--- a/sphinx/domains/std.py\n+++ b/sphinx/domains/std.py\n@@ -305,7 +305,7 @@ def make_glossary_term(env: \"BuildEnvironment\", textnodes: Iterable[Node], index\n         term['ids'].append(node_id)\n \n     std = cast(StandardDomain, env.get_domain('std'))\n-    std.note_object('term', termtext.lower(), node_id, location=term)\n+    std.note_object('term', termtext, node_id, location=term)\n \n     # add an index entry too\n     indexnode = addnodes.index()\n"
+  },
+  {
+    "taskId": "sympy__sympy-15599",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 906828,
+    "testMs": 828,
+    "failToPass": [
+      {
+        "name": "test_Mod",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_bug1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Symbol",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_arit0",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_div",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow3",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mod_pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_E",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_issue_3516",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_im",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_real_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_ncmul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_ncpow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_powerbug",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_doesnt_expand_exp",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_Mul_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_Mul_is_finite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_evenness_in_ternary_integer_product_with_even",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_oddness_in_ternary_integer_product_with_even",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_rational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_rational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_negative_positive_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_real",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_real_Pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_finite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_zero",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_imaginary_real",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_hermitian_antihermitian",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_positive_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_irrational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_3531b",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_bug3",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_suppressed_evaluation",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_as_coeff_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_as_coeff_mul_doesnt_expand",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_3514",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_make_args",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5126",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Rational_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5460",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_product_irrational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5919",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mod_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mod_is_nonposneg",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6001",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_polar",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6040",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6082",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6077",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_flatten_oo",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_add_flatten",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5160_6087_6089_6090",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_float_int",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6611a",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_denest_add_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_coeff",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_zero_detection",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_with_zero_infinite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_does_not_cancel_infinities",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_does_not_distribute_infinity",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_8247_8354",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_zero",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_14392",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "turns": 29,
+    "toolCalls": 28,
+    "inputTokens": 623130,
+    "outputTokens": 17023,
+    "metrics": {
+      "turns": 29,
+      "toolCalls": 28,
+      "inputTokens": 623130,
+      "outputTokens": 17023,
+      "ttftMs": 0,
+      "totalMs": 1487065,
+      "toolNameCounts": {
+        "read_files": 7,
+        "run_commands": 15,
+        "editor": 2,
+        "fetch_web_content": 3,
+        "search_codebase": 1
+      },
+      "maxConsecutiveSameTool": 6,
+      "convergence": {
+        "toolNameCounts": {
+          "read_files": 7,
+          "run_commands": 15,
+          "editor": 2,
+          "fetch_web_content": 3,
+          "search_codebase": 1
+        },
+        "maxConsecutiveSameTool": 6,
+        "writeCalls": 2,
+        "loopDetected": true,
+        "stalled": false
+      },
+      "termination": "completed"
+    },
+    "termination": "completed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/sympy/core/mod.py b/sympy/core/mod.py\nindex eae25630c..7a8d548ea 100644\n--- a/sympy/core/mod.py\n+++ b/sympy/core/mod.py\n@@ -139,6 +139,16 @@ def doit(p, q):\n                 net = prod_mod1*prod_mod\n                 return prod_non_mod*cls(net, q)\n \n+            if q.is_Integer and q is not S.One:\n+                _ = []\n+                for i in non_mod_l:\n+                    if i.is_Integer and i % q is not S.Zero:\n+                        _.append(i % q)\n+                    else:\n+                        _.append(i)\n+                non_mod_l = _\n+            p = Mul(*(non_mod_l + mod_l))\n+\n         # XXX other possibilities?\n \n         # extract gcd; any further simplification should be done by the user\n"
+  },
+  {
+    "taskId": "sympy__sympy-16988",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 858280,
+    "testMs": 973,
+    "failToPass": [
+      {
+        "name": "test_imageset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_intersection",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_interval_arguments",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_interval_symbolic_end_points",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_union",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_union_iter",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_difference",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Complement",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_complement",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_intersect1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9623",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_disjoint",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_ProductSet_of_single_arg_is_arg",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_interval_subs",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_interval_to_mpi",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_measure",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_subset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_proper_subset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_superset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_proper_superset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_contains",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_interval_symbolic",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_union_contains",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_number",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Interval_is_left_unbounded",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Interval_is_right_unbounded",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Interval_as_relational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Finite_as_relational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Union_as_relational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Intersection_as_relational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_EmptySet",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_finite_basic",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_powerset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_product_basic",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_real",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_supinf",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_universalset",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Union_of_ProductSets_shares",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Interval_free_symbols",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_image_interval",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_image_piecewise",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_image_FiniteSet",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_image_Union",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_image_EmptySet",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5724_7680",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_boundary",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_boundary_Union",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_boundary_ProductSet",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_boundary_ProductSet_line",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_open",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_is_closed",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_closure",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_interior",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_7841",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Eq",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_SymmetricDifference",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9536",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9637",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9956",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_Symbol_inter",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_11827",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_10113",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_10248",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9447",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_10337",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_10326",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_2799",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_9706",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_8257",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_10931",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_11174",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_finite_set_intersection",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_union_intersection_constructor",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Union_contains",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "turns": 40,
+    "toolCalls": 44,
+    "inputTokens": 837353,
+    "outputTokens": 12733,
+    "metrics": {
+      "turns": 40,
+      "toolCalls": 44,
+      "inputTokens": 837353,
+      "outputTokens": 12733,
+      "ttftMs": 0,
+      "totalMs": 858325,
+      "error": "erreur agent",
+      "recoverable": false,
+      "toolNameCounts": {
+        "codebase_search": 2,
+        "search_codebase": 5,
+        "read_files": 14,
+        "run_commands": 17,
+        "editor": 5,
+        "fetch_web_content": 1
+      },
+      "maxConsecutiveSameTool": 4,
+      "convergence": {
+        "toolNameCounts": {
+          "codebase_search": 2,
+          "search_codebase": 5,
+          "read_files": 14,
+          "run_commands": 17,
+          "editor": 5,
+          "fetch_web_content": 1
+        },
+        "maxConsecutiveSameTool": 4,
+        "writeCalls": 5,
+        "loopDetected": false,
+        "stalled": false
+      },
+      "termination": "failed"
+    },
+    "termination": "failed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py\nindex 03cf57a30b..28d9fcef6b 100644\n--- a/sympy/sets/sets.py\n+++ b/sympy/sets/sets.py\n@@ -1265,7 +1265,7 @@ def __new__(cls, *args, **kwargs):\n         # Reduce sets using known rules\n         if evaluate:\n             args = list(cls._new_args_filter(args))\n-            return simplify_intersection(args)\n+            return simplify_intersection(set(args))\n \n         args = list(ordered(args, Set._infimum_key))\n \n",
+    "error": "agent: erreur agent"
+  },
+  {
+    "taskId": "sympy__sympy-21379",
+    "modelId": "orvyx-code/deepseek-v4-flash-0731",
+    "run": 1,
+    "outcome": "unresolved",
+    "agentMs": 857054,
+    "testMs": 1327,
+    "failToPass": [
+      {
+        "name": "test_Mod",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "passToPass": [
+      {
+        "name": "test_bug1",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Symbol",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_arit0",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_div",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow3",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mod_pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_E",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_issue_3516",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_pow_im",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_real_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_ncmul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_add_identity",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_ncpow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_powerbug",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_doesnt_expand_exp",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_Mul_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_Mul_is_finite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_evenness_in_ternary_integer_product_with_even",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_oddness_in_ternary_integer_product_with_even",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_rational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_rational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_negative_positive_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_real",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_real_Pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_finite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_even_odd",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_negative_positive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_zero",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_nonpositive_nonnegative",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_imaginary_real",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_hermitian_antihermitian",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_is_comparable",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_positive_2",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_irrational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_is_irrational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_3531",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_3531b",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_bug3",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_suppressed_evaluation",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_AssocOp_doit",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_Mul_Expr_args",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_as_coeff_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_as_coeff_mul_doesnt_expand",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_3514_18626",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_make_args",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5126",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Rational_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Pow_as_content_primitive",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5460",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_product_irrational",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5919",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mod_Pow",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mod_is_integer",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mod_is_nonposneg",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6001",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_polar",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6040",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6082",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6077",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_flatten_oo",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_add_flatten",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_5160_6087_6089_6090",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_float_int_round",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_6611a",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_denest_add_mul",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_coeff",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_mul_zero_detection",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_with_zero_infinite",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_does_not_cancel_infinities",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Mul_does_not_distribute_infinity",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_8247_8354",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_Add_is_zero",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_14392",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_divmod",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test__neg__",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_18507",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      },
+      {
+        "name": "test_issue_17130",
+        "passed": false,
+        "detail": "non parsé — sortie non reconnue (exit=1)"
+      }
+    ],
+    "turns": 36,
+    "toolCalls": 35,
+    "inputTokens": 778586,
+    "outputTokens": 8923,
+    "metrics": {
+      "turns": 36,
+      "toolCalls": 35,
+      "inputTokens": 778586,
+      "outputTokens": 8923,
+      "ttftMs": 0,
+      "totalMs": 857159,
+      "toolNameCounts": {
+        "run_commands": 21,
+        "search_codebase": 3,
+        "read_files": 5,
+        "fetch_web_content": 2,
+        "editor": 4
+      },
+      "maxConsecutiveSameTool": 6,
+      "convergence": {
+        "toolNameCounts": {
+          "run_commands": 21,
+          "search_codebase": 3,
+          "read_files": 5,
+          "fetch_web_content": 2,
+          "editor": 4
+        },
+        "maxConsecutiveSameTool": 6,
+        "writeCalls": 4,
+        "loopDetected": true,
+        "stalled": false
+      },
+      "termination": "completed"
+    },
+    "termination": "completed",
+    "inconclusive": false,
+    "modelPatch": "diff --git a/sympy/core/mod.py b/sympy/core/mod.py\nindex b4f3de2523..2fc3e90bc5 100644\n--- a/sympy/core/mod.py\n+++ b/sympy/core/mod.py\n@@ -40,6 +40,7 @@ def eval(cls, p, q):\n         from sympy.core.mul import Mul\n         from sympy.core.singleton import S\n         from sympy.core.exprtools import gcd_terms\n+        from sympy.polys.polyerrors import PolynomialError\n         from sympy.polys.polytools import gcd\n \n         def doit(p, q):\n@@ -166,7 +167,11 @@ def doit(p, q):\n         # XXX other possibilities?\n \n         # extract gcd; any further simplification should be done by the user\n-        G = gcd(p, q)\n+        try:\n+            G = gcd(p, q)\n+        except PolynomialError:\n+            # issue 21373\n+            G = S.One\n         if G != 1:\n             p, q = [\n                 gcd_terms(i/G, clear=False, fraction=False) for i in (p, q)]\n"
   }
 ]

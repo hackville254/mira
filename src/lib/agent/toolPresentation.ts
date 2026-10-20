@@ -66,7 +66,7 @@ export const SKILLS_CONTRACT_LINE = [
 
 /** Outils exposés en mode Agent (act), dans l'ordre de présentation. */
 export const FULL_TOOL_NAMES =
-  "read_files, search_codebase, codebase_search, project_overview, git_status, git_diff, search_symbols, find_imports, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload, browser_list_tabs/open_tab/close_tab/activate_tab";
+  "read_files, search_codebase, codebase_search, project_overview, git_status, git_diff, search_symbols, find_imports, detect_checks, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload, browser_list_tabs/open_tab/close_tab/activate_tab";
 
 /** Outils exposés en mode Plan / ASK (read-only) : aucune écriture possible. */
 export const READ_ONLY_TOOL_NAMES =
@@ -105,6 +105,22 @@ const PROJECT_CONTRACT_ACT = [
 ].join("\n");
 
 /**
+ * Contrat du CONTRÔLE QUALITÉ (mode Agent uniquement).
+ *
+ * POURQUOI : sur un projet inconnu, le modèle ne devine pas les commandes de
+ * vérification réelles (tel script npm, tel runner de tests). `detect_checks`
+ * les DÉTECTE depuis les manifestes du projet. Il ne les EXÉCUTE PAS : le modèle
+ * lance ensuite la commande choisie via `run_commands` (chemin d'exécution
+ * unique). Insister sur « verify BEFORE reporting success » est le cœur de la
+ * boucle de vérification.
+ */
+const QUALITY_CONTRACT_ACT = [
+  "- Quality checks (read-only discovery; know how to VERIFY before claiming success):",
+  "  - `detect_checks`: list the project's own verification commands (typecheck, tests, lint, build) read from its manifests.",
+  "  - These are commands to RUN via `run_commands` — never assume a command exists. Verify the change BEFORE reporting it done.",
+].join("\n");
+
+/**
  * Contrat d'outils du mode Agent. Chaque puce documente UN outil : son rôle et
  * son usage. C'est ce qui apprend au modèle la mécanique RÉELLE (notamment la
  * limite de 6000 caractères de `editor`, qui n'est pas devinable).
@@ -115,6 +131,7 @@ export const TOOL_CONTRACT_FULL = [
   "- `search_codebase`: search the workspace by pattern or meaning. Use it before opening files to locate what matters.",
   "- `codebase_search`: search the LOCAL codebase index (fast, offline, ranked workspace-relative paths). Use it FIRST to locate code.",
   PROJECT_CONTRACT_ACT,
+  QUALITY_CONTRACT_ACT,
   "- `editor`: the primary way to create or edit files. Match the call to your intent:",
   "  - CREATE a file: `path` + `new_text`, and NO `old_text`.",
   "  - REPLACE in an existing file: `path` + `old_text` + `new_text` (omitting `old_text` on an existing file fails).",
@@ -170,6 +187,8 @@ const CONTRACT_LINES_BY_TOOL: Record<string, string[]> = {
   // Compréhension du projet : mode Agent UNIQUEMENT (cf. `buildFullToolContract`).
   // Jamais dans le contrat read-only — ces outils ne sont pas exposés en ask/plan.
   project: [PROJECT_CONTRACT_ACT],
+  // Contrôle qualité : mode Agent UNIQUEMENT (cf. `buildFullToolContract`).
+  quality: [QUALITY_CONTRACT_ACT],
   editor: [
     "- `editor`: the primary way to create or edit files. Match the call to your intent:",
     "  - CREATE a file: `path` + `new_text`, and NO `old_text`.",
@@ -195,7 +214,7 @@ const CONTRACT_LINES_BY_TOOL: Record<string, string[]> = {
 export function buildFullToolContract(disabled: ReadonlySet<string> = new Set()): string {
   const lines: string[] = [
     "## Tools",
-    ...flattenFamilies(["read_files", "search_codebase", "project", "editor", "run_commands", "fetch_web_content"], disabled),
+    ...flattenFamilies(["read_files", "search_codebase", "project", "quality", "editor", "run_commands", "fetch_web_content"], disabled),
     SKILLS_CONTRACT_LINE,
     `- \`todo_write\`: publish the live task checklist. Call it with the FULL list; each item has an \`id\`, a \`content\` (one line), and a \`status\` (${TODO_STATUSES.join(" | ")}).`,
     "- `todo_read`: re-read the current checklist (rarely needed: the list is shown to the user).",

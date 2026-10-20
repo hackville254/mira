@@ -145,6 +145,46 @@ export const TODO_RULES =
   "- Skip the checklist for a quick single-step request. Do not restate the list in your reply; the user already sees it. The list must always reflect reality.";
 
 /**
+ * Cadrage du PLAN D'EXÉCUTION (mode Agent). Principe comportemental, placé avant
+ * la mécanique d'outils.
+ *
+ * ── Pourquoi ce bloc ──────────────────────────────────────────────────────────
+ * Sur une demande large (plusieurs fichiers, effet de bord, critère de réussite
+ * non évident), un agent qui fonce droit vers l'édition sans avoir explicité ce
+ * qu'il va faire, où, et comment il saura que c'est fini, produit des résultats
+ * partiels et des régressions. Ce bloc force une étape de CADRAGE mental avant
+ * les écritures, sans prescrire de format rigide : le contenu du plan (les
+ * todos) reste porté par `todo_write`, ici on ne fixe que les QUESTIONS auxquelles
+ * le plan doit répondre.
+ *
+ * On ne duplique PAS la mécanique de `todo_write` (bloc « Progress tracking ») :
+ * ce bloc dit QUELLE réflexion précéder, l'autre dit COMMENT la publier. Aucun
+ * budget de lignes imposé — un plan long reste légitime sur une grosse tâche.
+ */
+export const PLAN_BEFORE_ACTING = [
+  "## Plan before acting",
+  "- On a non-trivial task (several files, side effects, an unclear success criterion), decide the plan BEFORE editing: the goal, the files you will touch, how you will know it works, and what could break. Publish those steps with `todo_write` so the user sees the plan you follow. Skip this for a quick single-step request.",
+  "- Derive the plan from the code, not from the request's wording: explore first (structure, symbols, imports) and let findings shape the steps. Revise it when exploration proves it wrong instead of executing a plan the code has contradicted.",
+  "- State your success criterion and make it checkable (a passing test, a compiling build, a matching command output): 'it looks right' is not one. Call out the real risks you see (shared file, public interface, data path) and how you contain them.",
+].join("\n");
+
+/**
+ * Cohérence des réponses de l'utilisateur (mode Agent).
+ *
+ * BUT : quand l'agent pose une question (`ask_question`) et que la réponse est
+ * ambiguë, partielle, ou contredit ce que le code montre déjà, il ne doit PAS
+ * « deviner et avancer » : deviner transforme une inconnue en bug silencieux.
+ * La règle est symétrique de `ASK_USER_RULES` (qui dit QUAND demander) — ici on
+ * dit QUOI FAIRE de la réponse. Aucune formulation n'y est reprise : on ne parle
+ * que du traitement de la réponse, pas du déclenchement de la question.
+ */
+export const ANSWER_COHERENCE_RULES = [
+  "## When an answer comes back",
+  "- Judge it before acting. If it is vague, partial, or contradicts what the code shows, do not fill the gap with a guess: re-ask, narrowing to the exact ambiguity left. If two answers conflict, surface the conflict instead of silently picking one.",
+  "- Never implement a decision the user did not actually make. A coherent answer unblocks you: act on it without re-confirming what it already settled.",
+].join("\n");
+
+/**
  * Règles d'édition (mode Agent, effort max). Détail d'outil : placé BAS.
  *
  * ── La limite de 6000 caractères ───────────────────────────────────────────────
@@ -322,8 +362,9 @@ export function buildSystemPrompt(
   const blocks: string[] = [identity(mode), CONCISION, OBJECTIVE_PURSUIT, LINK_SOURCING_RULES];
 
   if (mode === "agent") {
-    // Principes d'abord…
-    blocks.push(TODO_RULES, ASK_USER_RULES, BATCHING_RULES);
+    // Principes d'abord : cadrer le plan AVANT d'agir, puis le suivi (todos), puis
+    // la politique de question ET de traitement de la réponse, puis le batching.
+    blocks.push(PLAN_BEFORE_ACTING, TODO_RULES, ASK_USER_RULES, ANSWER_COHERENCE_RULES, BATCHING_RULES);
     // Délégation : en mode IA (`withTeams`), les coéquipiers `team_*` sont
     // TOUJOURS annoncés — sans quoi le modèle, ignorant leur existence, ne
     // délègue jamais (cf. commentaire de `DELEGATION_GUIDANCE_TEAMS`). Hors mode

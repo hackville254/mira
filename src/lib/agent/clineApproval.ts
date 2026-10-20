@@ -77,6 +77,7 @@ const READ_TOOLS = new Set([
   "git_diff",
   "search_symbols",
   "find_imports",
+  "detect_checks",
 ]);
 
 /** Noms d'outils Cline qui posent une question à l'utilisateur. */

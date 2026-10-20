@@ -148,15 +148,16 @@ export interface ClineExtraToolSpec {
 /**
  * Spécification d'un outil custom. Aujourd'hui : la todo list (`todo`), le
  * navigateur piloté (`browser`), la recherche dans l'index de codebase
- * (`code_index`), la compréhension du projet (`project`) et la demande
- * d'escalade d'équipe (`team_escalate`). On ne transporte qu'un `kind` fermé —
- * jamais de code exécutable (voir le sidecar).
+ * (`code_index`), la compréhension du projet (`project`), le contrôle qualité
+ * (`quality`) et la demande d'escalade d'équipe (`team_escalate`). On ne
+ * transporte qu'un `kind` fermé — jamais de code exécutable (voir le sidecar).
  */
 export type ClineExtraToolSpecAny =
   | ClineExtraToolSpec
   | { kind: "browser"; sessionId: string; panelId: string }
   | { kind: "code_index"; sessionId: string }
   | { kind: "project"; sessionId: string }
+  | { kind: "quality"; sessionId: string }
   | { kind: "team_escalate"; sessionId: string };
 
 /** Effet d'un outil custom, relayé par le sidecar (`kind:"tool_event"`). */
@@ -649,6 +650,10 @@ const INVOKE_ALLOWLIST = new Set<string>([
   "git_diff",
   "search_symbols",
   "get_import_edges",
+  // Contrôle qualité (outil `detect_checks` côté sidecar, cf. `qualityTool`).
+  // LECTURE seule : le sidecar lit des manifestes FIGÉS via `read_file`, borné
+  // au workspace par le Rust (`assert_in_workspace`). Aucune exécution.
+  "read_file",
 ]);
 
 /**
@@ -776,6 +781,15 @@ async function respondToInvoke(request: { requestId: string; command: string; ar
     if (request.command === "git_diff") {
       const diff = await invoke<string>("git_diff", request.args);
       await reply({ output: typeof diff === "string" ? diff : "" });
+      return;
+    }
+    // `read_file` est une LECTURE CONFINÉE au workspace (`assert_in_workspace`
+    // côté Rust) utilisée par le CONTRÔLE QUALITÉ : l'outil `detect_checks` lit
+    // les manifestes (`package.json`, `Cargo.toml`, …) pour en déduire les
+    // commandes de vérification. Renvoie une CHAÎNE brute, comme `git_diff`.
+    if (request.command === "read_file") {
+      const content = await invoke<string>("read_file", request.args);
+      await reply({ output: typeof content === "string" ? content : "" });
       return;
     }
     // Gestion des ONGLETS (`browser_list_tabs`, `browser_open_tab`, …).
