@@ -2,11 +2,12 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Info, Check } from "lucide-react";
 import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
+import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
 import { accentForModel } from "./providers";
 
 interface Props {
   anchorEl: HTMLElement | null;
-  /** Clé du modèle actif (clé custom) */
+  /** Clé du modèle actif (clé Mira ou clé custom) */
   selectedModelId: string;
   onSelect: (modelKey: string, modelId: string) => void;
   onClose: () => void;
@@ -15,15 +16,47 @@ interface Props {
 const MENU_WIDTH = 260;
 const MENU_MAX_HEIGHT = 440;
 
+/** Entrée unifiée du sélecteur : un modèle Mira ou un modèle du client. */
+interface Row {
+  key: string;
+  displayName: string;
+  subtitle: string;
+  /** Modèle fourni par Mira (badge « Mira »). */
+  fromMira: boolean;
+}
+
 // ── Main dropdown (model list) ────────────────────────────────────────────────
 
 export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelect, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
+  /** Modèles fournis par Mira (catalogue de l'éditeur), chargés une fois. */
+  const [miraModels, setMiraModels] = useState<MiraModel[]>([]);
 
   // Source unique de vérité : le magasin de modèles, rafraîchi à chaque changement.
   useEffect(() => subscribeCustomModels(() => setModels(loadCustomModels())), []);
+
+  useEffect(() => {
+    let alive = true;
+    loadMiraModels().then(list => { if (alive) setMiraModels(list); });
+    return () => { alive = false; };
+  }, []);
+
+  const rows: Row[] = [
+    ...miraModels.map((m): Row => ({
+      key: m.key,
+      displayName: m.displayName,
+      subtitle: m.modelId,
+      fromMira: true,
+    })),
+    ...models.map((m): Row => ({
+      key: m.key,
+      displayName: m.displayName,
+      subtitle: m.modelId,
+      fromMira: false,
+    })),
+  ];
 
   useEffect(() => {
     if (!anchorEl) return;
@@ -72,20 +105,21 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
 
       {/* Scrollable list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 6px" }}>
-        {models.length === 0 && (
+        {rows.length === 0 && (
           <div style={{ padding: "10px 8px", fontSize: 12, color: "var(--origin-fg-subtle)", lineHeight: 1.5 }}>
-            No model configured yet.
+            No model available yet. Add one to get started.
           </div>
         )}
 
-        {models.map((m) => {
-          const isSelected = m.key === selectedModelId;
-          const accent = accentForModel(m.key);
+        {rows.map((row) => {
+          const isSelected = row.key === selectedModelId;
+          const accent = accentForModel(row.key);
           return (
             <button
-              key={m.key}
-              onMouseDown={(e) => { e.stopPropagation(); onSelect(m.key, m.modelId); onClose(); }}
+              key={row.key}
+              onMouseDown={(e) => { e.stopPropagation(); onSelect(row.key, row.subtitle); onClose(); }}
               onMouseEnter={hoverOn} onMouseLeave={hoverOff}
+              title={`${row.displayName} · ${row.subtitle}`}
               style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
             >
               <span
@@ -95,11 +129,26 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
                   background: `${accent}22`, color: accent, fontSize: 9, fontWeight: 700,
                 }}
               >
-                {m.displayName.slice(0, 2).toUpperCase()}
+                {row.displayName.slice(0, 2).toUpperCase()}
               </span>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {m.displayName}
+              <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {row.displayName}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {row.subtitle}
+                </span>
               </span>
+              {row.fromMira && (
+                <span style={{
+                  flexShrink: 0, fontSize: 9, fontWeight: 600, letterSpacing: "0.03em",
+                  padding: "1px 5px", borderRadius: 4,
+                  color: "var(--origin-accent-blue, #3b82f6)",
+                  background: "color-mix(in srgb, var(--origin-accent-blue, #3b82f6) 15%, transparent)",
+                }}>
+                  MIRA
+                </span>
+              )}
               {isSelected && <Check size={15} style={{ color: "var(--origin-accent-blue)", flexShrink: 0 }} />}
             </button>
           );

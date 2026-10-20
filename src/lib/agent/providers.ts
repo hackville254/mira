@@ -5,6 +5,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import { tauriFetch } from "../tauri-fetch";
 import { findCustomModel, isCustomModelKey, toClientType, type ApiFormat } from "./customModels";
+import { isMiraModelKey, MIRA_PROVIDER_ID } from "./miraModels";
 
 export { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "../ai/modelDefaults";
 
@@ -39,12 +40,13 @@ export interface ClineProviderConfig {
 }
 
 /**
- * Traduit une CIBLE (modèle personnalisé OU provider natif) en configuration
- * compréhensible par le moteur d'agent.
+ * Traduit une CIBLE (modèle Mira, modèle personnalisé OU provider natif) en
+ * configuration compréhensible par le moteur d'agent.
  *
- * Un modèle personnalisé porte TOUT ce qu'il faut (URL, format d'API) : on
- * n'invente rien et on ne retombe jamais sur un catalogue figé. Les providers
- * natifs restent routés par leur identifiant.
+ * Ordre de résolution :
+ *   1. Modèle personnalisé (déclaré par le client) : il porte TOUT (URL, format).
+ *   2. Modèle Mira (`mira-<id>`) : provider interne, base URL = celle de Mira.
+ *   3. Provider natif (usage interne uniquement).
  *
  * Lève une erreur pour une cible inconnue : mieux vaut échouer franchement que
  * d'envoyer une requête au mauvais endpoint.
@@ -59,6 +61,13 @@ export function resolveClineProvider(modelKeyOrProviderId: string): ClineProvide
       clientType: toClientType(custom.apiFormat),
       ...(custom.toolCallRounds ? { maxIterations: custom.toolCallRounds } : {}),
     };
+  }
+
+  // Modèles Mira : un seul provider, protocole OpenAI-compatible. La base URL
+  // est récupérée à l'exécution (elle vient de la config Mira, pas d'un
+  // catalogue figé côté front) ; on retombe sur le provider Mira si absente.
+  if (isMiraModelKey(modelKeyOrProviderId)) {
+    return { providerId: MIRA_PROVIDER_ID, baseUrl: undefined, clientType: "openai-compatible" };
   }
 
   const native = CLINE_NATIVE_PROVIDERS[modelKeyOrProviderId];
@@ -82,15 +91,23 @@ export function resolveClineProvider(modelKeyOrProviderId: string): ClineProvide
  * compaction, message de commit, édition inline, optimisation de prompt).
  *
  * Les modèles personnalisés sont reconnus par leur clé préfixée et routés
- * selon leur format d'API ; les providers natifs gardent leur SDK dédié.
+ * selon leur format d'API ; le provider Mira pointe vers l'endpoint Mira ;
+ * les providers natifs gardent leur SDK dédié.
  */
 export function buildLanguageModel(
   modelKeyOrProviderId: string,
   modelId: string,
   apiKey: string,
+  miraBaseUrl?: string,
 ): LanguageModel {
   const custom = findCustomModel(modelKeyOrProviderId);
   if (custom) return buildCustomLanguageModel(custom.apiFormat, custom.baseUrl, modelId, apiKey);
+
+  // Provider Mira : endpoint OpenAI-compatible fourni par Mira.
+  if (modelKeyOrProviderId === MIRA_PROVIDER_ID) {
+    if (!miraBaseUrl) throw new Error("Mira provider is not configured (missing base URL)");
+    return buildCustomLanguageModel("openai-chat", miraBaseUrl, modelId, apiKey);
+  }
 
   switch (modelKeyOrProviderId) {
     case "anthropic":

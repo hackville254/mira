@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { resolveMiraModel, MIRA_MODEL_PREFIX } from './agent/miraModels';
 
 // Accounts are namespaced as "provider:<providerId>" e.g. "provider:anthropic"
 function accountKey(providerId: string) {
@@ -100,6 +101,39 @@ export async function resolveDefaultModel(fallback: string): Promise<string> {
   // Le modèle du `.env` n'est cohérent qu'avec son propre provider.
   if (storedProvider && dev.provider && storedProvider !== dev.provider) return fallback;
   return dev.model;
+}
+
+/**
+ * Résout le COUPLE (provider, modèle) par défaut, en tenant compte des modèles
+ * Mira.
+ *
+ * POURQUOI ce n'est pas fait dans `resolveDefaultProvider`/`resolveDefaultModel`
+ * séparément : un modèle Mira a besoin que le provider ET le modèle soient
+ * cohérents. Si le `.env` déclare un provider Mira, le provider par défaut doit
+ * être la CLÉ du modèle principal (`mira-<id>`) et non le nom interne du
+ * provider — sinon le sélecteur ne reconnaîtrait pas la sélection au démarrage.
+ *
+ * Priorité : sélection mémorisée > défaut Mira (`.env`) > défauts fournis.
+ */
+export async function resolveDefaultTarget(
+  fallbackProvider: string,
+  fallbackModel: string,
+): Promise<{ providerId: string; modelId: string }> {
+  const storedProvider = localStorage.getItem('origin-ai-provider');
+  const storedModel = localStorage.getItem('origin-ai-model');
+  if (storedProvider && storedModel) return { providerId: storedProvider, modelId: storedModel };
+
+  const dev = await loadDevAiConfig();
+  if (dev.provider && dev.model) {
+    // Défaut fourni par Mira : c'est le modèle principal du catalogue.
+    const mira = await resolveMiraModel(`${MIRA_MODEL_PREFIX}${dev.model}`);
+    if (mira) return { providerId: mira.key, modelId: mira.key };
+    return { providerId: storedProvider ?? dev.provider, modelId: storedModel ?? dev.model };
+  }
+  return {
+    providerId: storedProvider ?? fallbackProvider,
+    modelId: storedModel ?? fallbackModel,
+  };
 }
 
 /**

@@ -1,6 +1,7 @@
 import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from "../secrets";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "../ai/modelDefaults";
 import { findCustomModel } from "./customModels";
+import { resolveMiraModel } from "./miraModels";
 
 /**
  * Providers purement locaux : ils ne requièrent AUCUNE clé API (l'authentification
@@ -24,6 +25,12 @@ export interface ActiveModelTarget {
   apiKey: string | null;
   /** Le provider est-il exploitable (clé présente ou provider local) ? */
   usable: boolean;
+  /**
+   * Base URL à utiliser, uniquement pour les providers qui en portent une
+   * (aujourd'hui : Mira). `undefined` = laisser le SDK/le moteur appliquer son
+   * défaut (providers natifs, modèles personnalisés lus depuis le magasin).
+   */
+  baseUrl?: string;
 }
 
 /**
@@ -71,6 +78,20 @@ export async function resolveActiveModelTarget(
   // Fallback = le modèle par défaut de l'app (un VRAI id de modèle), jamais le
   // providerId : passer un id de provider comme modèle produirait un appel cassé.
   const mid = modelId || (await resolveDefaultModel(DEFAULT_MODEL_ID));
+  // Modèle MIRA : la clé d'UI (`mira-<id>`) n'est PAS l'id attendu par l'API et
+  // la clé n'est PAS celle du client. On redirige donc vers le provider Mira,
+  // son id de modèle réel et sa base URL.
+  const mira = await resolveMiraModel(pid);
+  if (mira) {
+    const apiKey = await loadApiKey(mira.providerId);
+    return {
+      providerId: mira.providerId,
+      modelId: mira.modelId,
+      apiKey,
+      usable: !!apiKey,
+      baseUrl: mira.baseUrl,
+    };
+  }
   // Un modèle PERSONNALISÉ est identifié par sa clé (qui sert aussi de compte
   // keychain) : on lit donc sa clé sous cette même clé. `modelId` peut être
   // l'id du modèle distant (« gpt-4o ») — c'est `pid` qui porte le modèle

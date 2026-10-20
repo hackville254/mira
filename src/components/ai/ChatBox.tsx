@@ -7,9 +7,10 @@ import logoCode from "../../assets/logo-code.svg";
 import MentionDropdown from "./MentionDropdown";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import { loadCustomModels, subscribeCustomModels } from "../../lib/agent/customModels";
+import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
-import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
+import { resolveDefaultTarget } from "../../lib/secrets";
 import { optimizePrompt } from "../../lib/promptOptimizer";
 import { revealSelection } from "../../lib/selectionRevealBus";
 import { copyPath, createDirCmd, pathExists, readDir } from "../../lib/fs";
@@ -691,22 +692,22 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   );
   /** Liste des modèles customs, tenue à jour pour refléter renommages/suppressions. */
   const [customModels, setCustomModels] = useState(() => loadCustomModels());
+  /** Modèles fournis par Mira (catalogue de l'éditeur), pour le libellé du modèle. */
+  const [miraModels, setMiraModels] = useState<MiraModel[]>([]);
   /** Un appel d'optimisation du prompt est-il en vol (évite les doubles clics) ? */
   const [optimizing, setOptimizing] = useState(false);
 
-  // Fallback dev : si rien n'est mémorisé, on adopte le provider/modèle du `.env`
-  // (lecture asynchrone). Les valeurs du localStorage restent prioritaires.
+  // Fallback : si rien n'est mémorisé, on adopte la cible par défaut (modèle
+  // Mira fourni par Mira si configuré, sinon valeurs du `.env`). La sélection
+  // mémorisée reste prioritaire.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      if (!localStorage.getItem("origin-ai-provider")) {
-        const provider = await resolveDefaultProvider(DEFAULT_PROVIDER_ID);
-        if (!cancelled) setSelectedProviderId(provider);
-      }
-      if (!localStorage.getItem("origin-ai-model")) {
-        const model = await resolveDefaultModel(DEFAULT_MODEL_ID);
-        if (!cancelled) setSelectedModelId(model);
-      }
+      if (localStorage.getItem("origin-ai-provider") && localStorage.getItem("origin-ai-model")) return;
+      const { providerId, modelId } = await resolveDefaultTarget(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_ID);
+      if (cancelled) return;
+      setSelectedProviderId(providerId);
+      setSelectedModelId(modelId);
     })();
     return () => {
       cancelled = true;
@@ -715,6 +716,13 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
   // Reflète immédiatement tout ajout / renommage / suppression fait dans les Settings.
   useEffect(() => subscribeCustomModels(() => setCustomModels(loadCustomModels())), []);
+
+  // Charge le catalogue Mira (modèles fournis par l'éditeur) une fois au montage.
+  useEffect(() => {
+    let alive = true;
+    loadMiraModels().then(list => { if (alive) setMiraModels(list); });
+    return () => { alive = false; };
+  }, []);
 
   const refreshContext = useCallback(() => {
     if (!getEditorContext || contextDismissed) return;
@@ -1393,7 +1401,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   };
 
   const showContextBadge = contextSnap && !contextDismissed;
-  const modelLabel = customModels.find(m => m.key === selectedModelId)?.displayName ?? selectedModelId;
+  const modelLabel = customModels.find(m => m.key === selectedModelId)?.displayName
+    ?? miraModels.find(m => m.key === selectedModelId)?.displayName
+    ?? selectedModelId;
 
   return (
     <div

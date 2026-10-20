@@ -19,7 +19,7 @@ import { setSetting, pushRecentProject } from "./lib/settings";
 import { useToast } from "./components/ui/Toast";
 import { streamText } from "ai";
 import { buildLanguageModel } from "./lib/agent/providers";
-import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from "./lib/secrets";
+import { resolveActiveModelTarget } from "./lib/agent/activeModel";
 import type { AiCompletionFn } from "./lib/aiAutocomplete";
 import { getBranch } from "./lib/git";
 import { onGitDiff } from "./lib/gitDiffBus";
@@ -228,12 +228,11 @@ function App() {
       if (localStorage.getItem('origin-editor-ai-autocomplete') === 'false') return;
       // CUE › Tab-Cue : coupe réellement les requêtes de complétion inline.
       if (localStorage.getItem('origin-cue-tab') === 'false') return;
-      const providerId = await resolveDefaultProvider('anthropic');
-      const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
-      const apiKey = await loadApiKey(providerId);
-      const LOCAL_IDS = ['ollama', 'lmstudio', 'vllm'];
-      if (!apiKey && !LOCAL_IDS.includes(providerId)) return;
-      const model = buildLanguageModel(providerId, modelId, apiKey ?? '');
+      // Cible résolue de façon centralisée : gère les modèles Mira (provider,
+      // id réel, base URL, clé) comme les modèles personnalisés du client.
+      const target = await resolveActiveModelTarget();
+      if (!target.usable) return;
+      const model = buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '', target.baseUrl);
       const result = streamText({
         model,
         system: [

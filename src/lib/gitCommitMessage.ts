@@ -83,7 +83,7 @@ export async function generateCommitMessage(
 
   const model = (() => {
     try {
-      return buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '');
+      return buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '', target.baseUrl);
     } catch (e: unknown) {
       return e instanceof Error ? e : new Error(String(e));
     }

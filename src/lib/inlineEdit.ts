@@ -54,7 +54,7 @@ export async function editSelectionInline(
   const target = await resolveActiveModelTarget(providerId, modelId);
   if (!target.usable) return { ok: false, reason: 'no-provider' };
 
-  const model = buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '');
+  const model = buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '', target.baseUrl);
 
   let text: string;
   try {

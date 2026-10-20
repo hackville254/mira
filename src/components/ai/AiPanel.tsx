@@ -28,6 +28,7 @@ import QuestionPrompt from "./QuestionPrompt";
 import MarkdownMessage from "./MarkdownMessage";
 import { accentForModel } from "./providers";
 import { findCustomModel } from "../../lib/agent/customModels";
+import { resolveMiraModel } from "../../lib/agent/miraModels";
 import logoCode from "../../assets/logo-code.svg";
 import {
   STYLE_GUARDRAIL,
@@ -819,10 +820,15 @@ export default function AiPanel({
     try {
       const providerId = activeProviderIdRef.current;
       const modelId = activeModelIdRef.current;
-      const apiKey = await loadApiKey(providerId);
+      // Résout la clé d'UI vers l'id réel attendu par l'API (Mira / custom).
+      const miraRef = await resolveMiraModel(providerId);
+      const apiModelId = miraRef?.modelId ?? findCustomModel(providerId)?.modelId ?? modelId;
+      // La clé est celle du PROVIDER : pour un modèle Mira, c'est la clé Mira
+      // (`orvyx`), jamais celle saisie par le client pour ce modèle.
+      const apiKey = await loadApiKey(miraRef?.providerId ?? providerId);
       const isLocal = LOCAL_PROVIDERS.has(providerId);
-      if (providerId && modelId && (apiKey || isLocal)) {
-        const model = buildLanguageModel(providerId, modelId, apiKey ?? "");
+      if (providerId && apiModelId && (apiKey || isLocal)) {
+        const model = buildLanguageModel(miraRef?.providerId ?? providerId, apiModelId, apiKey ?? "", miraRef?.baseUrl);
         const res = await summarizeHistory(
           modelAfterStale,
           PRESERVE_RECENT_TOKENS,
@@ -1350,6 +1356,13 @@ export default function AiPanel({
     run.pendingContent = "";
     run.pendingParts = [];
 
+    // ── Résolution de la CIBLE ───────────────────────────────────────────────
+    // `modelId`/`providerId` reçus du ChatBox sont des CLÉS d'UI. Pour un modèle
+    // personnalisé ou Mira, la clé n'est PAS l'id réel attendu par l'API.
+    // On résout donc ici, une seule fois, l'id à envoyer au moteur.
+    const miraTarget = await resolveMiraModel(providerId);
+    // Id modèle réellement transmis au provider (id Mira, id custom, ou id brut).
+    const apiModelId = miraTarget?.modelId ?? findCustomModel(providerId)?.modelId ?? modelId;
     // Mémorise la cible du tour pour permettre une régénération ultérieure.
     activeModelIdRef.current = modelId;
     activeProviderIdRef.current = providerId;
@@ -1406,7 +1419,11 @@ export default function AiPanel({
     // Clé API : lue en parallèle de la lecture des fichiers mentionnés (deux
     // familles d'IPC indépendantes). Le cache mémoire de `loadApiKey` évite de
     // re-sonder le keychain à chaque tour.
-    const apiKeyPromise = loadApiKey(providerId);
+    //
+    // Modèle Mira : ce n'est PAS la clé du client qui est utilisée, mais celle
+    // que Mira fournit (config d'env, provider `orvyx`). On résout donc la clé
+    // sur l'id de provider Mira, jamais sur la clé du modèle.
+    const apiKeyPromise = loadApiKey(miraTarget?.providerId ?? providerId);
     // Fichiers mentionnés : lus EN PARALLÈLE (une promesse par fichier) au lieu
     // d'une boucle séquentielle d'IPC.
     const mentionedFilesPromise = Promise.all(
@@ -1417,8 +1434,13 @@ export default function AiPanel({
     );
 
     const apiKey = await apiKeyPromise;
+    // Un modèle Mira est censé avoir SA clé fournie par Mira : si elle manque,
+    // c'est un problème de configuration côté Mira, pas une clé oubliée par le
+    // client. On affiche donc un message distinct (pas d'invite « ajoute ta clé »).
     const knownError = !apiKey && !LOCAL_PROVIDERS.has(providerId)
-      ? "No API key found for this model. Please add your API key in Settings → Models."
+      ? (miraTarget
+        ? "This model is temporarily unavailable. Please try later or pick another model."
+        : "No API key found for this model. Please add your API key in Settings → Models.")
       : null;
 
     // ── Session bookkeeping ──────────────────────────────────────────────────
@@ -2351,6 +2373,9 @@ export default function AiPanel({
       enableEscalate: boolean;
       prompt: string;
     }): Promise<ClineRunHandle | null> => {
+      // Modèle fourni par Mira (`mira-<id>`) : la base URL vient de la config
+      // Mira (`miraTarget`), pas d'un catalogue côté front.
+      if (miraTarget) clineProvider.baseUrl = miraTarget.baseUrl;
       const clineSessionId = sessionId ? await getClineSessionId(sessionId) : null;
       // Session NEUVE : la surface d'extension (skills/commands) va être
       // rescanée par le sidecar. On repart d'une base propre pour ne pas
@@ -2444,7 +2469,7 @@ export default function AiPanel({
         // Plafond de tours d'outils par tour (503 par défaut si non renseigné).
         ...(clineProvider.maxIterations ? { maxIterations: clineProvider.maxIterations } : {}),
         apiKey: apiKey ?? "",
-        modelId,
+        modelId: apiModelId,
         systemPrompt: opts.systemPrompt,
         mode: opts.sdkMode,
         enableTeams: opts.enableTeams,

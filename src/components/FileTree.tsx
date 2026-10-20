@@ -40,7 +40,7 @@ export default function FileTree({
   const { showToast } = useToast();
   const explorer = useExplorer(folderPath ?? null, refreshKey, onFileOpen);
   const {
-    rootName, rows, gitDecorations, selected, anchor, renamingPath, pendingCreate,
+    rows, gitDecorations, selected, anchor, renamingPath, pendingCreate,
     dragPaths, dropTarget, canPaste,
     toggleExpanded, setExpandedAll, select,
     beginDrag, endDrag, setDropTarget, dropInto, importInto,
@@ -303,29 +303,13 @@ export default function FileTree({
     );
   }
 
-  const selectedCount = selected.size;
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
-      {/* En-tête : nom de la racine + actions */}
-      <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "8px 8px 6px 12px", userSelect: "none" }}>
-        <span style={{
-          flex: 1, fontSize: 11, fontWeight: 600,
-          // Le nom du dossier est affiché TEL QUEL (casse d'origine) : c'est un
-          // nom de fichier, pas un libellé de section — le passer en majuscules
-          // trahissait le vrai nom et faisait perdre l'information.
-          textTransform: "none", letterSpacing: "normal",
-          color: "var(--origin-fg-default)",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {rootName}
-          {/* Sélection multiple : compteur discret entre parenthèses (VS Code). */}
-          {selectedCount > 1 && (
-            <span style={{ marginLeft: 6, fontWeight: 400, color: "var(--origin-fg-subtle)" }}>
-              ({selectedCount})
-            </span>
-          )}
-        </span>
+      {/* En-tête : actions de l'explorer uniquement. Ni le nom du dossier racine
+          ni le décompte de sélection ne sont affichés : l'en-tête reste une
+          simple barre d'actions, sans information redondante. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "6px 8px 6px 12px", userSelect: "none" }}>
+        <span style={{ flex: 1 }} />
         <button title="New File" onClick={() => startCreate(createTargetNow(), "file")} style={headerBtn}><FilePlus size={14} /></button>
         <button title="New Folder" onClick={() => startCreate(createTargetNow(), "folder")} style={headerBtn}><FolderPlus size={14} /></button>
         <button title="Refresh" onClick={refresh} style={headerBtn}><RefreshCw size={14} /></button>
