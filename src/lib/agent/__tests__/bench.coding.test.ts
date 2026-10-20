@@ -17,6 +17,7 @@ import { runTaskOnce, runTask, type AgentDriver } from "../../../../bench/coding
 import { loadTask, loadTasks, validateTask } from "../../../../bench/coding/tasks";
 import { parseTestOutcomes, runTestCommand } from "../../../../bench/coding/evaluator";
 import { summarize, formatTable, writeReport, type BenchReport } from "../../../../bench/coding/report";
+import { validateInstance, toCodingTask } from "../../../../bench/coding/swebench/instance";
 import type { AttemptResult } from "../../../../bench/coding/types";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -121,6 +122,60 @@ describe("parseTestOutcomes", () => {
     const out = parseTestOutcomes("  ✓ does a thing 12ms\n  × does another 3ms", "");
     expect(out.get("does a thing")).toBe(true);
     expect(out.get("does another")).toBe(false);
+  });
+
+  it("reconnaît la sortie pytest -rA (PASSED/FAILED) et réduit le nom", () => {
+    const out = parseTestOutcomes(
+      [
+        "PASSED astropy/modeling/tests/test_separable.py::test_coord_matrix",
+        "PASSED astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+        "FAILED astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]",
+        "ERROR astropy/modeling/tests/test_separable.py::test_arith_oper - AttributeError",
+      ].join("\n"),
+      "",
+    );
+    expect(out.get("test_coord_matrix")).toBe(true);
+    expect(out.get("test_separable[compound_model6-result6]")).toBe(true);
+    expect(out.get("test_separable[compound_model9-result9]")).toBe(false);
+    expect(out.get("test_arith_oper")).toBe(false);
+  });
+});
+
+// ── SWE-bench réel : loader et convertisseur de tâche ─────────────────────────
+
+describe("SWE-bench — instance réelle → CodingTask", () => {
+  const SWE_DIR = join(HERE, "..", "..", "..", "..", "bench", "coding", "swebench", "instances");
+  const ASTROPY = join(SWE_DIR, "astropy__astropy-12907.json");
+
+  it("charge et valide une instance réelle du dataset", async () => {
+    const raw = JSON.parse(await readFile(ASTROPY, "utf8"));
+    const inst = validateInstance(raw, ASTROPY);
+    expect(inst.instance_id).toBe("astropy__astropy-12907");
+    expect(inst.repo).toBe("astropy/astropy");
+    expect(inst.base_commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(inst.FAIL_TO_PASS.length).toBeGreaterThan(0);
+  });
+
+  it("convertit en CodingTask aux critères fidèles (noms de tests réduits)", async () => {
+    const raw = JSON.parse(await readFile(ASTROPY, "utf8"));
+    const task = toCodingTask(validateInstance(raw, ASTROPY));
+    expect(task.id).toBe("astropy__astropy-12907");
+    expect(task.criteria.failToPass).toContain("test_separable[compound_model6-result6]");
+    expect(task.criteria.failToPass).toContain("test_separable[compound_model9-result9]");
+    expect(task.criteria.passToPass).toContain("test_coord_matrix");
+    expect(task.testCommand).toMatch(/pytest/);
+    // L'instruction ne doit JAMAIS divulguer le patch oracle.
+    expect(task.instruction).not.toContain("cright");
+  });
+
+  it("refuse une instance au repo malformé", () => {
+    expect(() => validateInstance({ instance_id: "x", repo: "pas-de-slash", base_commit: "abcdef1",
+      problem_statement: "p", test_patch: "", FAIL_TO_PASS: ["a"], PASS_TO_PASS: [] }, "test")).toThrow();
+  });
+
+  it("refuse une instance sans FAIL_TO_PASS", () => {
+    expect(() => validateInstance({ instance_id: "x", repo: "a/b", base_commit: "abcdef1",
+      problem_statement: "p", test_patch: "", FAIL_TO_PASS: [], PASS_TO_PASS: [] }, "test")).toThrow();
   });
 });
 

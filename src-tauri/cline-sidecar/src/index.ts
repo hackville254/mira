@@ -69,6 +69,7 @@ import { buildToolExecutors, type ApprovalTransport } from "./approval";
 import { buildTodoTools } from "./todoTool";
 import { buildTeamEscalateTool } from "./teamEscalateTool";
 import { buildBrowserTools, type BrowserInvokeRequest } from "./browserTool";
+import { buildTabTools, type TabInvokeRequest } from "./tabTool";
 import { buildCodeIndexTool } from "./codeIndexTool";
 import { resolveSessionExtensions, type SessionExtensions } from "./instructions";
 import { buildBlockedTools } from "./blockedTool";
@@ -547,6 +548,14 @@ function buildExtraTools(specs: ExtraToolSpec[] | undefined, cwd: string) {
       if (spec.panelId && spec.panelId.trim().length > 0) {
         const { tools: browserTools } = buildBrowserTools(browserInvoke(spec.panelId));
         tools.push(...browserTools);
+        // Gestion des ONGLETS (ouvrir/fermer/lister/activer). Ces opérations ne
+        // touchent aucune webview : elles appartiennent au FRONT (`previewTabs`).
+        // On ne peut donc pas passer par `browserInvoke` (qui injecte un
+        // `panelId` de webview) : elles passent par `originInvoke`, et le front
+        // résout le `tabId` opaque vers l'onglet réel. Même condition d'activation
+        // que `browser_*` : pas de navigateur exposé → pas d'outils d'onglets.
+        const { tools: tabTools } = buildTabTools((req: TabInvokeRequest) => originInvoke(req.command, req.args));
+        tools.push(...tabTools);
       }
     } else if (spec.kind === "code_index") {
       // Recherche dans l'index local du workspace : l'outil relaie la requête

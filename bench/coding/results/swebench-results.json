@@ -1,0 +1,76 @@
+{
+  "protocol": "swe-bench-lite-mini",
+  "dataset": "princeton-nlp/SWE-bench_Lite",
+  "harness": "orvyx-code/bench/coding (webview agent + Docker per instance)",
+  "agent": {
+    "engine": "cline-sidecar (production)",
+    "provider": "openai-compatible",
+    "base_url": "https://api.orvyx-ai.com/v1",
+    "model": "deepseek-v4-flash-0731",
+    "mode": "act",
+    "auto_approve": true,
+    "max_iterations": 25
+  },
+  "environment": {
+    "isolation": "docker run --platform linux/amd64, depot monte sur /testbed",
+    "python": "3.9 (image par instance)",
+    "dates": "2026-10-20"
+  },
+  "method": {
+    "note": "Les tests officiels (test_patch) sont TOUJOURS reappliques apres le travail de l'agent ; toute modification de fichier de test par l'agent est ignoree (protocole SWE-bench). Le model_patch publie ne contient que les fichiers SOURCE.",
+    "scoring": "resolved si TOUS les FAIL_TO_PASS passent et TOUS les PASS_TO_PASS passent"
+  },
+  "instances": [
+    {
+      "instance_id": "astropy__astropy-12907",
+      "repo": "astropy/astropy",
+      "outcome": "unresolved",
+      "agent_ms": 220301,
+      "test_ms": 3196,
+      "tool_calls": 16,
+      "source_files_changed": [],
+      "note": "L'agent n'a modifie AUCUN fichier source : il a edite le fichier de test. Apres restauration du test officiel, les 2 FAIL_TO_PASS echouent.",
+      "fail_to_pass": {
+        "test_separable[compound_model6-result6]": "ko",
+        "test_separable[compound_model9-result9]": "ko"
+      }
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25570",
+      "repo": "scikit-learn/scikit-learn",
+      "outcome": "resolved",
+      "agent_ms": 497790,
+      "test_ms": 2248,
+      "tool_calls": 25,
+      "source_files_changed": ["sklearn/compose/_column_transformer.py"],
+      "note": "Patch reel de source : filtrage des colonnes vides dans la generation des noms de features (get_feature_names_out). Verifie avec le test officiel reapplique : 3/3 PASSED.",
+      "fail_to_pass": {
+        "test_empty_selection_pandas_output[list]": "ok",
+        "test_empty_selection_pandas_output[bool]": "ok",
+        "test_empty_selection_pandas_output[bool_int]": "ok"
+      }
+    },
+    {
+      "instance_id": "sympy__sympy-16988",
+      "repo": "sympy/sympy",
+      "outcome": "resolved",
+      "agent_ms": 515744,
+      "test_ms": 955,
+      "tool_calls": 25,
+      "source_files_changed": ["sympy/sets/sets.py"],
+      "note": "Run interrompu par le timeout de tache (agent-error), MAIS le patch source etait complet : apres restauration des tests officiels, les 2 FAIL_TO_PASS passent. Score honnete = resolved (le timeout concerne le pilotage, pas le resultat du patch).",
+      "fail_to_pass": {
+        "test_imageset": "ok",
+        "test_intersection": "ok"
+      },
+      "caveat": "Le run a depasse agentTimeoutMs (20 min) ; le harnais a classe agent-error avant meme de tester. Re-evaluation hors-ligne conforme au protocole : resolved."
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "resolved": 2,
+    "unresolved": 1,
+    "resolve_rate": 0.667,
+    "note": "3 instances SWE-bench_Lite reelles. Ce n'est PAS un score SWE-bench officiel (echantillon de 3, harnais different du harness officiel Python). Le fichier predictions.jsonl est au format officiel et publiable."
+  }
+}

@@ -182,9 +182,6 @@ function sizeInfo(prompt: string): string {
   return `${chars} car. (~${tokens} tok, ${sections} sect.)`;
 }
 
-function avg(ns: number[]): number {
-  return ns.reduce((a, b) => a + b, 0) / ns.length;
-}
 function median(ns: number[]): number {
   const s = [...ns].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);

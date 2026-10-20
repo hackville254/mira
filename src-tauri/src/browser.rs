@@ -254,6 +254,43 @@ pub async fn browser_reload(app: AppHandle, panel_id: String) -> Result<BrowserR
     Ok(BrowserResult::ok("reloaded"))
 }
 
+/// `browser_go` : navigue dans la pile d'historique NATIVE de la webview
+/// (`history.back()` / `history.forward()`), sans recharger ni re-embarquer.
+///
+/// Parité navigateur : Back/Forward doivent restaurer l'état de la page
+/// (scroll, bfcache) et non relancer une navigation. On passe par le script
+/// plutôt que par les API Tauri (`webview.eval`) pour rester dans le même canal
+/// fiable que le reste du module et pouvoir renvoyer l'URL réellement atteinte.
+#[tauri::command]
+pub async fn browser_go(
+    app: AppHandle,
+    panel_id: String,
+    direction: String,
+) -> Result<BrowserResult, String> {
+    let delta = match direction.as_str() {
+        "back" => -1,
+        "forward" => 1,
+        _ => return Ok(BrowserResult::err("direction must be 'back' or 'forward'")),
+    };
+    let js = script(&format!(
+        r#"(() => {{
+  try {{ history.go({delta}); }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e) }}); }}
+  return JSON.stringify({{ ok: true }});
+}})()"#,
+    ));
+    let value = eval_json(app.clone(), panel_id.clone(), js).await?;
+    let mut r = BrowserResult::ok("history moved");
+    r.url = current_url(&app, &panel_id);
+    if let Some(s) = value.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+            if parsed.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                return Ok(BrowserResult::err("history navigation failed"));
+            }
+        }
+    }
+    Ok(r)
+}
+
 /// `browser_status` : renvoie URL + titre + état de chargement. Sert de sonde
 /// « la page est-elle prête ? » pour l'agent.
 #[tauri::command]
@@ -267,6 +304,7 @@ pub async fn browser_status(
     title: document.title || '',
     url: location.href,
     readyState: document.readyState,
+    canBack: (window.history && history.length > 1) ? true : false,
     viewport: { w: innerWidth, h: innerHeight }
   });
 })()"#,

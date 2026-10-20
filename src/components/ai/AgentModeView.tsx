@@ -7,6 +7,7 @@ import DocViewPanel from "./DocViewPanel";
 import TaskRail from "./TaskRail";
 import TaskProgressBar from "./TaskProgressBar";
 import { activeFlowTab, shouldFlow, type FlowTabId } from "../../lib/agent/flow";
+import { subscribePreviewOpen } from "../../lib/ai/previewBus";
 import Sidebar from "../Sidebar";
 import TabBar, { type Tab } from "../editor/TabBar";
 import Editor, { type EditorHandle, type EditorContext } from "../editor/Editor";
@@ -125,6 +126,19 @@ export default function AgentModeView(props: AgentModeViewProps) {
     setActiveToolTab(id);
     setAddMenuOpen(false);
   }, []);
+
+  // Un lien cliqué dans un message de l'agent demande l'affichage du panneau
+  // web intégré : on ouvre/active l'onglet `browser`. L'URL, elle, est publiée
+  // sur le bus preview et chargée par `WebPreviewPane` (mémorisée si l'onglet
+  // n'est pas encore monté). Comme le panneau vient d'être ouvert, on suspend le
+  // Flow : l'utilisateur regarde ce qu'il a demandé, l'agent ne doit pas lui
+  // reprendre l'onglet au tool-call suivant.
+  useEffect(() => {
+    return subscribePreviewOpen(() => {
+      flowPausedRef.current = true;
+      openToolTab("browser");
+    });
+  }, [openToolTab]);
 
   // ── Flow (parité Trae) ────────────────────────────────────────────────────
   //

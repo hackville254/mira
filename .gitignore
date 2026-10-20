@@ -35,3 +35,12 @@ dist-ssr
 
 # Tauri signing keys (never commit the literal ~ folder npx created here)
 ~/
+
+# ── Benchmarks (artefacts volumineux / régénérables — jamais commités) ──
+# Clones de dépôts réels + environnements Docker préparés (plusieurs Go).
+bench/coding/.envs/
+bench/coding/swebench/.envs/
+# Datasets téléchargés/extraits (LiveCodeBench : >2 Go en brut).
+bench/coding/datasets/
+# Résultats bruts volumineux (les rapports/summaries restent commitables).
+bench/coding/results/*-payload.json

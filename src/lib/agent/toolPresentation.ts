@@ -45,13 +45,32 @@ type TodoStatus = "pending" | "in_progress" | "done" | "cancelled";
 /** Statuts rendus dans le prompt, dans l'ordre canonique. */
 const TODO_STATUSES: TodoStatus[] = ["pending", "in_progress", "done", "cancelled"];
 
+/**
+ * Puce du contrat décrivant l'outil `skills`.
+ *
+ * POURQUOI cette puce est détaillée : le SDK Cline expose l'outil `skills` avec
+ * sa propre description (qui inclut la liste `Available skills: …`), mais un
+ * modèle d'agent a une forte tendance à répondre DIRECTEMENT sans aller
+ * chercher l'aide disponible. La consigne doit donc être ACTIVE : vérifier la
+ * liste d'abord, puis invoquer dès qu'une skill correspond, plutôt qu'une
+ * formulation passive (« invoke … when it matches ») qui était ignorée.
+ *
+ * Le format d'appel est celui du SDK (vérifié dans `@cline/core`) :
+ * `skill` = nom EXACT (requis), `args` = chaîne optionnelle (jamais un objet).
+ * On ne cite PAS la liste ici : elle est injectée dynamiquement par le SDK dans
+ * la description de l'outil, donc propre à chaque workspace.
+ */
+export const SKILLS_CONTRACT_LINE = [
+  "- `skills`: run a configured skill when one fits the task. Check the `Available skills` list in this tool's description FIRST, then call `skills` with `skill` = the EXACT name (required) and optional `args` (a plain string, e.g. a glob or URL). A skill must win over improvising when its description matches; never claim a skill not in that list. One call runs one skill; chain several if needed.",
+].join("\n");
+
 /** Outils exposés en mode Agent (act), dans l'ordre de présentation. */
 export const FULL_TOOL_NAMES =
-  "read_files, search_codebase, codebase_search, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload";
+  "read_files, search_codebase, codebase_search, editor, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_navigate/query/read_text/read_dom/click/type/press_key/screenshot/status/reload, browser_list_tabs/open_tab/close_tab/activate_tab";
 
 /** Outils exposés en mode Plan / ASK (read-only) : aucune écriture possible. */
 export const READ_ONLY_TOOL_NAMES =
-  "read_files, search_codebase, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_status/read_text/read_dom/query/screenshot";
+  "read_files, search_codebase, run_commands, fetch_web_content, skills, ask_question, todo_write, todo_read, browser_status/read_text/read_dom/query/screenshot, browser_list_tabs/activate_tab";
 
 /**
  * Bloc du contrat décrivant le NAVIGATEUR PILOTÉ (parité Trae SOLO). Mutualisé
@@ -60,13 +79,15 @@ export const READ_ONLY_TOOL_NAMES =
  * cantonnées au mode Agent.
  */
 const BROWSER_CONTRACT_ACT = [
-  "- Embedded preview (parity with Trae SOLO). `browser_navigate`: open an absolute http(s) URL (dev server, e.g. http://localhost:5173); external hosts may need user confirmation.",
+  "- Embedded preview (parity with Trae SOLO). `browser_navigate`: open an absolute http(s) URL (dev server, e.g. http://localhost:5173); external hosts may need confirmation.",
   "- `browser_query` lists interactive elements with a stable `ref` (`e0`, `e1`…): call it BEFORE `browser_click`/`browser_type` and target by `ref`, not CSS. `browser_press_key` sends `Enter`/`Tab`. Inspect with `browser_read_text`/`read_dom`/`screenshot`/`status`/`reload`.",
+  "- Tabs: `browser_list_tabs` gives each tab an opaque `tabId`; the tools above act on the ACTIVE tab. `browser_open_tab`/`activate_tab`/`close_tab` manage them. Never invent a `tabId`.",
 ].join("\n");
 
 /** Variante lecture seule du contrat navigateur (mode Plan / ASK). */
 const BROWSER_CONTRACT_READ_ONLY = [
   "- Inspect the embedded preview only: `browser_status`, `browser_read_text`, `browser_read_dom`, `browser_query` (elements with `ref`), `browser_screenshot`. No `browser_navigate`/`click`/`type` here.",
+  "- Tabs: `browser_list_tabs` lists them (opaque `tabId`); tools act on the ACTIVE tab, `browser_activate_tab` switches it. No opening/closing here.",
 ].join("\n");
 
 /**
@@ -88,7 +109,7 @@ export const TOOL_CONTRACT_FULL = [
   "  - `old_text` must be copied VERBATIM (indentation included) and match EXACTLY ONE location (3 to 5 lines of unique context): 0 matches fail with \"text not found\", more than 1 with \"multiple occurrences\".",
   "- `run_commands`: run shell commands in the workspace (builds, tests, git, package managers).",
   "- `fetch_web_content`: fetch and read content from URLs (documentation, references).",
-  "- `skills`: invoke a configured skill by name when it matches the task.",
+  SKILLS_CONTRACT_LINE,
   `- \`todo_write\`: publish the live task checklist. Call it with the FULL list; each item has an \`id\`, a \`content\` (one line), and a \`status\` (${TODO_STATUSES.join(" | ")}).`,
   "- `todo_read`: re-read the current checklist (rarely needed: the list is shown to the user).",
   BROWSER_CONTRACT_ACT,
@@ -101,7 +122,7 @@ export const TOOL_CONTRACT_READ_ONLY = [
   "- `search_codebase`: search the workspace by pattern or meaning.",
   "- `run_commands`: run NON-mutating shell commands only (e.g. `git status`, listing). Never run anything that changes the workspace.",
   "- `fetch_web_content`: fetch and read content from URLs.",
-  "- `skills`: invoke a configured skill by name when it matches the task.",
+  SKILLS_CONTRACT_LINE,
   `- \`todo_write\`: publish the live task checklist (items have \`id\`, \`content\`, \`status\` = ${TODO_STATUSES.join(" | ")}).`,
   "- `todo_read`: re-read the current checklist.",
   BROWSER_CONTRACT_READ_ONLY,
@@ -157,7 +178,7 @@ export function buildFullToolContract(disabled: ReadonlySet<string> = new Set())
   const lines: string[] = [
     "## Tools",
     ...flattenFamilies(["read_files", "search_codebase", "editor", "run_commands", "fetch_web_content"], disabled),
-    "- `skills`: invoke a configured skill by name when it matches the task.",
+    SKILLS_CONTRACT_LINE,
     `- \`todo_write\`: publish the live task checklist. Call it with the FULL list; each item has an \`id\`, a \`content\` (one line), and a \`status\` (${TODO_STATUSES.join(" | ")}).`,
     "- `todo_read`: re-read the current checklist (rarely needed: the list is shown to the user).",
   ];
@@ -170,7 +191,7 @@ export function buildReadOnlyToolContract(disabled: ReadonlySet<string> = new Se
   const lines: string[] = [
     "## Tools (read-only)",
     ...flattenFamilies(["read_files", "search_codebase", "run_commands", "fetch_web_content"], disabled),
-    "- `skills`: invoke a configured skill by name when it matches the task.",
+    SKILLS_CONTRACT_LINE,
     `- \`todo_write\`: publish the live task checklist (items have \`id\`, \`content\`, \`status\` = ${TODO_STATUSES.join(" | ")}).`,
     "- `todo_read`: re-read the current checklist.",
   ];

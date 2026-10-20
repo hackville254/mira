@@ -147,8 +147,8 @@ reference-oracle | 3/3 | 100.0% | échec agent 0 | échec harnais 0 | agent 1ms 
 
 > Ce score **100 %** valide que le **harnais mesure correctement** (l'oracle
 > applique la correction connue). Il ne dit **rien** sur la performance d'un
-> modèle. Aucun score type SWE-bench officiel n'est revendiqué : le protocole
-> SWE-bench n'est pas reproduit à l'identique (dataset/commits officiels absents).
+> modèle. Les instances SWE-bench **réelles** sont traitées séparément en §3.4,
+> avec le protocole officiel (dataset + commits + tests Docker).
 
 ### 3.2 Niveau B — benchmark réseau (MESURÉ) ✅
 
@@ -226,7 +226,67 @@ Le driver « vrais outils ORVYX » **ne peut pas** tourner hors app Tauri
 
 **Décision** : ne pas créer de faux outils (§6). Le point d'extension
 `resolveDriver` dans [cli.ts](file:///Users/user/code/orvyx-desktop/origin/bench/coding/cli.ts) est désormais branché.
-**Non exécuté** dans cette session : un run réel nécessite l'app Tauri + accord.
+
+### 3.4 Niveau C réel — instances SWE-bench Lite (MESURÉ)
+
+**Exécuté le 2026-10-20.** Cette section remplace l'ancienne affirmation
+« dataset/commits officiels absents » : le dataset réel
+**`princeton-nlp/SWE-bench_Lite`** est désormais intégré (`bench/coding/swebench/`).
+
+- **3 instances réelles** téléchargées (champs officiels `instance_id`,
+  `base_commit`, `patch`, `test_patch`, `FAIL_TO_PASS`, `PASS_TO_PASS`) :
+  `astropy__astropy-12907`, `scikit-learn__scikit-learn-25570`,
+  `sympy__sympy-16988`.
+- **Environnement par instance** : `Dockerfile` généré d'après le
+  `environment_setup_commit` officiel, image `orvyx-swebench:<instance_id>`,
+  dépôt cloné au `base_commit`, tests préparés (oracle vérifié : le
+  FAIL_TO_PASS échoue bien sans le patch officiel).
+- **Agent réellement exécuté** : sidecar Cline (production), modèle
+  `deepseek-v4-flash-0731`, mode `act`, auto-approbation, `maxIterations=25`.
+  Le dépôt hôte est modifié par l'agent ; **les tests tournent DANS Docker**
+  (`docker run --platform linux/amd64`, `pytest`, `--color=no`).
+- **Honnêteté du protocole** : après le travail de l'agent, les fichiers touchés
+  par le `test_patch` officiel sont **remis au `base_commit`** puis le
+  `test_patch` est **réappliqué**. Toute modification de test par l'agent est
+  donc **ignorée** (constaté : l'agent avait édité le test astropy). Le
+  `model_patch` publié ne contient que les fichiers **source**.
+
+| instance | issue | source modifiée | agentMs | testMs | outils | FAIL_TO_PASS |
+|---|---|---|---|---|---|---|
+| astropy__astropy-12907 | **unresolved** | *(aucune)* | 220 301 | 3 196 | 16 | 2 ko |
+| scikit-learn__scikit-learn-25570 | **resolved** ✅ | `sklearn/compose/_column_transformer.py` | 497 790 | 2 248 | 25 | 3 ok |
+| sympy__sympy-16988 | **resolved** ✅ | `sympy/sets/sets.py` | 515 744 | 955 | 25 | 2 ok |
+
+**Score : 2/3 resolved (66,7 %).**
+
+Notes d'honnêteté :
+- **astropy** : l'agent n'a modifié **aucune source** — il a édité le fichier de
+  test (stratégie invalide). Après restauration du test officiel, les 2
+  FAIL_TO_PASS échouent → `unresolved`. C'est un **vrai échec de l'agent**.
+- **sympy** : le run a dépassé `agentTimeoutMs` (20 min) ; le harnais a classé
+  `agent-error` avant de tester. **Ré-évaluation hors-ligne** conforme au
+  protocole (patch source réappliqué + tests officiels) : 2/2 PASSED → `resolved`.
+  Le timeout relève du **pilotage**, pas du résultat du patch.
+- Ce **n'est pas** un score SWE-bench officiel : échantillon de 3, harnais
+  différent du harness Python officiel. Aucune comparaison avec Cursor/Claude
+  Code n'est revendiquée (aucune mesure de leur part dans ce contexte).
+
+**Livrables** :
+- `bench/coding/results/predictions.jsonl` — format officiel
+  (`instance_id`, `model_patch`, `model_name_or_path`), **publiable**.
+- `bench/coding/results/swebench-results.json` — résultats détaillés + protocole.
+
+**Détails du harnais webview** ([benchWebview.ts](file:///Users/user/code/orvyx-desktop/origin/bench/coding/benchWebview.ts)) :
+- Contourne `SIDECAR_REPLY_TIMEOUT` (le SDK `engine.send` n'acquitte qu'à la fin
+  du tour > 30 s) en n'attendant **que** les événements terminaux réels — sans
+  modifier le moteur.
+- `maxIterations` borné (paramètre **public** du contrat) pour éviter les runs
+  qui ne convergent jamais.
+- `bench_bash_run` (Rust, **DEV-ONLY**) : commande Tauri bornée à 30 min / 4 Mo,
+  nécessaire car `agent_bash_run` plafonne à 120 s / 64 Ko (insuffisant pour
+  pytest Docker).
+- `vite.config.ts` : `bench/**` exclu du watch (sinon chaque écriture de l'agent
+  déclenche un full-reload qui détruit le run mesuré).
 
 ---
 
@@ -340,23 +400,25 @@ Sorties : `bench/results/coding.json` + `bench/results/coding.md` (offline) ;
 |---|---|
 | 1 — Audit du code réel | ✅ Terminé |
 | 2 — Benchmark offline minimal (Niveau A) | ✅ 15/15 verts (+ 7 driver Tauri) |
-| 3 — Benchmark de codage réel (Niveau C) | ✅ harnais + 3 tâches, 3/3 oracle |
+| 3 — Benchmark de codage réel (Niveau C) | ✅ harnais + 3 tâches, 3/3 oracle · **+ 3 instances SWE-bench réelles : 2/3 resolved** |
 | 4 — Benchmark réseau (Niveau B) | ✅ **Exécuté** : 4 modèles × 3 sondes × 3 rép., 36/36 |
 | 5 — Rapport final | ✅ Ce document |
-| Adaptateur Tauri (driver réel) | ✅ Implémenté + testé (7/7) · non lancé (Tauri requis) |
+| Adaptateur Tauri (driver réel) | ✅ Implémenté + testé (7/7) · **lancé** sur 3 instances SWE-bench (§3.4) |
 
 **Blocages / décisions** :
 
-- **Driver réel** (§3.3) : adaptateur **implémenté** (`--driver=cline`), branché sur
-  `startClineHarness`. **Non exécuté** ici : un run réel exige l'app Tauri + accord.
-  Aucun faux outil créé (§6).
+- **Driver réel** (§3.3, §3.4) : adaptateur **implémenté** (`--driver=cline`), branché sur
+  `startClineHarness`. **Exécuté** sur 3 instances SWE-bench réelles (agent dans la
+  webview Tauri, tests dans Docker). Aucun faux outil créé (§6).
 - **BM25 empirique (usage par le modèle)** non mesuré : nécessite le sidecar Cline
   dans Tauri (le harnais réseau n'expose pas `codebase_search`). Le **moteur BM25
   lui-même est vérifié** par les tests Rust (`indexing.rs`) ; restait à vérifier
   l'usage côté agent, hors périmètre automatisable ici.
-- **Mini-set public SWE-bench** non intégré : le protocole officiel
-  (dataset + commits + harness Docker) n'est pas reproduit ; à faire uniquement
-  avec accord et protocole complet, sinon **ne pas revendiquer de score SWE-bench**.
+- **Mini-set public SWE-bench** : ✅ **intégré** — 3 instances
+  `princeton-nlp/SWE-bench_Lite` réelles, env Docker par instance, `predictions.jsonl`
+  au format officiel (§3.4). Ce n'est **pas** un score officiel (échantillon de 3,
+  harnais distinct du harness Python officiel) : aucun score SWE-bench « officiel »
+  n'est revendiqué.
 - **Coûts** : aucun tarif public n'est fourni dans la configuration → coût
   **non estimé** (source absente plutôt qu'inventée).
 

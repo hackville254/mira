@@ -1,5 +1,8 @@
 mod ai;
 mod ai_env;
+// Exécuteur de banc d'essai : DEV-ONLY (commande enregistrée uniquement en debug).
+#[cfg(debug_assertions)]
+mod bench;
 mod browser;
 mod checkpoint;
 mod context;
@@ -295,6 +298,7 @@ pub fn run() {
             git::git_commit_amend,
             git::git_commit_sync,
             git::git_diff,
+            git::git_commit_diff,
             git::git_file_head,
             git::git_stash_save,
             git::git_stash_list,
@@ -394,6 +398,7 @@ pub fn run() {
             // Navigateur piloté par l'agent (parité Trae SOLO). Voir `browser.rs`.
             browser::browser_navigate,
             browser::browser_reload,
+            browser::browser_go,
             browser::browser_status,
             browser::browser_read_text,
             browser::browser_read_dom,
@@ -403,6 +408,9 @@ pub fn run() {
             browser::browser_press_key,
             browser::browser_register,
             browser::browser_screenshot,
+            // Banc d'essai : DEV-ONLY (absente du binaire release).
+            #[cfg(debug_assertions)]
+            bench::bench_bash_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -12,12 +12,13 @@ import {
   EDIT_RULES_LITE,
   DELEGATION_GUIDANCE,
   DELEGATION_GUIDANCE_TEAMS,
+  LINK_SOURCING_RULES,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_SYSTEM_PROMPT_LITE,
   DEFAULT_ASK_PROMPT,
   DEFAULT_PLAN_PROMPT,
 } from "../prompts";
-import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY } from "../toolPresentation";
+import { TOOL_CONTRACT_FULL, TOOL_CONTRACT_READ_ONLY, SKILLS_CONTRACT_LINE } from "../toolPresentation";
 
 // Séparateur utilisé par le composeur entre deux blocs.
 const SEP = "\n\n---\n\n";
@@ -83,6 +84,12 @@ describe("buildSystemPrompt — invariants par mode", () => {
   it("mode AGENT max inclut la délégation, l'effort normal non", () => {
     expect(buildSystemPrompt("agent", true)).toContain(DELEGATION_GUIDANCE);
     expect(buildSystemPrompt("agent", false)).not.toContain(DELEGATION_GUIDANCE);
+  });
+
+  it("les trois modes portent la politique de liens (anti-404)", () => {
+    for (const mode of ["agent", "ask", "plan"] as const) {
+      expect(buildSystemPrompt(mode, true)).toContain(LINK_SOURCING_RULES);
+    }
   });
 
   it("mode IA (withTeams) annonce TOUJOURS les coéquipiers team_*, quel que soit l'effort", () => {
@@ -222,5 +229,20 @@ describe("anti-dérive — les noms d'outils cités existent", () => {
   it("rappelle la limite dure de 6000 caractères de `editor`", () => {
     expect(buildSystemPrompt("agent", true)).toContain("6000");
     expect(buildSystemPrompt("agent", false)).toContain("6000");
+  });
+
+  // Invariant verrouillé sur l'outil `skills` (SDK Cline) : le SDK appende la
+  // liste `Available skills: …` à la description de l'outil, mais une puce
+  // PASSIVE suffisait à ce que le modèle réponde sans jamais invoquer de skill.
+  // Les deux modes doivent donc porter la consigne ACTIVE, identique.
+  it("pousse à VÉRIFIER puis INVOQUER les skills, dans les deux modes", () => {
+    expect(SKILLS_CONTRACT_LINE).toContain("Available skills");
+    for (const p of [buildSystemPrompt("agent", true), buildSystemPrompt("plan", true)]) {
+      expect(p).toContain(SKILLS_CONTRACT_LINE);
+    }
+    // Aucune trace de l'ancienne formulation passive.
+    expect(buildSystemPrompt("agent", true)).not.toContain(
+      "- `skills`: invoke a configured skill by name when it matches the task.",
+    );
   });
 });

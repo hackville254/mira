@@ -614,6 +614,70 @@ pub fn git_diff(path: String, max_bytes: Option<usize>) -> String {
     combined
 }
 
+// ── Diff d'un fichier non suivi, façon `git diff` ─────────────────────────────
+
+/// Produit un diff unifié pour un fichier NON SUIVI (nouveau fichier), en
+/// utilisant `git diff --no-index /dev/null <file>`. Sans cette étape, un
+/// nouveau fichier n'apparaît dans aucun `git diff` : c'est précisément la cause
+/// d'un diff vide lors de la génération d'un message de commit.
+///
+/// `git diff --no-index` sort avec le code 1 quand il y a des différences
+/// (comportement documenté), ce n'est donc PAS une erreur à traiter comme telle.
+fn diff_untracked_file(repo: &str, file: &str) -> String {
+    let out = git_cmd()
+        .args(["diff", "--no-color", "--no-index", "--", "/dev/null", file])
+        .current_dir(repo)
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Diff destiné à la génération d'un message de commit : contrairement à
+/// [`git_diff`] (utilisé par l'éditeur, focalisé sur le suivi), il inclut AUSSI
+/// les fichiers non suivis. On assemble :
+///   1. `git diff --cached`  → index vs HEAD (ce qui sera committé) ;
+///   2. `git diff`           → working tree vs index (modifications non stagées) ;
+///   3. `git diff --no-index /dev/null` pour chaque fichier non suivi.
+/// Le tout est plafonné à `max_bytes` pour borner le coût du prompt.
+#[tauri::command]
+pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> String {
+    let cap = max_bytes.unwrap_or(12_000);
+
+    let run = |args: &[&str]| -> String {
+        git_cmd()
+            .args(args)
+            .current_dir(&path)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+
+    let staged = run(&["diff", "--cached", "--no-color"]);
+    let unstaged = run(&["diff", "--no-color"]);
+
+    // Fichiers non suivis (exclut ce qui est ignoré via `.gitignore`).
+    let untracked_list = run(&["ls-files", "--others", "--exclude-standard"]);
+    let mut untracked = String::new();
+    for file in untracked_list.lines().filter(|l| !l.trim().is_empty()) {
+        // Borne le nombre de fichiers pour éviter un prompt démesuré quand un
+        // dépôt contient beaucoup de nouveaux fichiers (ex. dépendances).
+        if untracked.len() >= cap {
+            break;
+        }
+        untracked.push_str(&diff_untracked_file(&path, file));
+    }
+
+    let mut combined = format!("{staged}{unstaged}{untracked}");
+    if combined.len() > cap {
+        combined.truncate(cap);
+        combined.push_str("\n… [diff truncated]");
+    }
+    combined
+}
+
 // ── Contenu d'un fichier à HEAD (base du gutter « inline diff » de l'éditeur) ─
 
 /// Résultat de [`git_file_head`] :

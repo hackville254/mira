@@ -97,6 +97,14 @@ export async function gitDiff(path: string, maxBytes?: number): Promise<string> 
   return invoke<string>('git_diff', { path, maxBytes }).catch(() => '');
 }
 
+/**
+ * Diff enrichi pour la génération d'un message de commit : inclut les fichiers
+ * non suivis (que `git_diff` ignore). Voir la commande Rust `git_commit_diff`.
+ */
+export async function gitCommitDiff(path: string, maxBytes?: number): Promise<string> {
+  return invoke<string>('git_commit_diff', { path, maxBytes }).catch(() => '');
+}
+
 // ── Contenu à HEAD (base de comparaison du gutter de l'éditeur) ───────────────
 
 export type GitHeadResult =

@@ -139,15 +139,22 @@ export default function SourceTreePanel() {
 
   async function aiGenerateMessage() {
     if (!folderPath || aiBusy) return;
-    if (files.length === 0) {
-      showToast('No changes to describe.', 'info');
-      return;
-    }
     setAiBusy(true);
     try {
+      // On recharge l'état git AVANT de juger : `files` peut dater du montage ou
+      // ne pas encore inclure un fichier tout juste créé. Sans ce rafraîchissement
+      // on affichait un « No changes » trompeur alors que des changements existent.
+      const fresh = await load();
+      const count = fresh?.files.length ?? files.length;
+      if (count === 0) {
+        showToast('No changes to describe.', 'info');
+        return;
+      }
       const msg = await generateCommitMessage(folderPath);
       if (!msg) {
-        showToast('Configure an AI provider in Settings to use AI commit.', 'error');
+        // `generateCommitMessage` renvoie null soit faute de provider configuré,
+        // soit parce que le diff est vide : on ne présuppose plus la cause.
+        showToast('Could not generate a message. Check that an AI provider is configured in Settings.', 'error');
         return;
       }
       setTitle(msg);

@@ -22,8 +22,14 @@ export interface TestRunResult {
 /**
  * Extrait les résultats par nom de test depuis la sortie d'un runner.
  *
- * Cherche les lignes marquées `✓`/`√` (succès) ou `✗`/`×`/`✕` (échec), telles
- * qu'émises par vitest/jest/mocha, et renvoie un index nom → passé.
+ * Reconnaît trois familles de sortie :
+ *  1. TAP (node --test) : `ok 1 - nom` / `not ok 1 - nom`.
+ *  2. Symboles vitest/jest/mocha : `✓ nom`, `✗ nom`.
+ *  3. pytest `-rA` : résumé court `PASSED path::test` / `FAILED path::test`, et
+ *     lignes longues `FAILED path::test - Error`.
+ *
+ * Renvoie un index nom → passé, où `nom` est la forme réduite utilisée par les
+ * critères (`test_separable[compound_model6-result6]`).
  */
 export function parseTestOutcomes(stdout: string, stderr: string): Map<string, boolean> {
   const out = new Map<string, boolean>();
@@ -40,6 +46,18 @@ export function parseTestOutcomes(stdout: string, stderr: string): Map<string, b
     if (tap) {
       const name = tap[2].trim();
       if (name) out.set(name, tap[1] === "ok");
+      continue;
+    }
+
+    // Format pytest -rA : « PASSED path::test » / « FAILED path::test - msg ».
+    // Les noms sont réduits à leur partie méthode (voir `testNameFromQualified`).
+    const pytest = line.match(/^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S.*)$/);
+    if (pytest) {
+      const status = pytest[1];
+      // Retire l'éventuel suffixe « - message d'erreur » ajouté par pytest.
+      const raw = pytest[2].split(/\s+-\s+/)[0].trim();
+      const name = raw.includes("::") ? raw.slice(raw.indexOf("::") + 2) : raw;
+      if (name) out.set(name, status === "PASSED" || status === "XPASS");
       continue;
     }
 

@@ -10,7 +10,13 @@ import ProblemsPanel from "../problems/ProblemsPanel";
 import OutputPanel from "../output/OutputPanel";
 
 const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 600;
+/**
+ * Marge conservée au-dessus du terminal quand il est étiré au maximum : on
+ * réserve ~96px pour la barre d'onglets et un reste d'éditeur visible, afin que
+ * le terminal puisse occuper « toute la hauteur disponible » sans jamais
+ * recouvrir complètement la zone de travail.
+ */
+const RESERVED_ABOVE = 96;
 const LS_TABS = "origin-terminal-tabs";
 const LS_ACTIVE = "origin-terminal-active-index";
 /** Onglet réservé au terminal de l'agent (clé négative : jamais un tab utilisateur). */
@@ -294,7 +300,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       function onMove(ev: MouseEvent) {
         if (!dragRef.current) return;
         const delta = dragRef.current.startY - ev.clientY;
-        onResize(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
+        // Plafond dynamique : la hauteur de la fenêtre moins une marge réservée
+        // au-dessus. Le terminal peut ainsi s'étendre bien au-delà de 600px
+        // (jusqu'à occuper toute la place) au lieu d'être coupé sur l'axe Y.
+        const maxH = Math.max(MIN_HEIGHT, window.innerHeight - RESERVED_ABOVE);
+        onResize(Math.min(maxH, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
       }
 
       function onUp() {

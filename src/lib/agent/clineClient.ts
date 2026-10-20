@@ -53,6 +53,14 @@ import { toPendingAction } from "./clineApproval";
 import type { AgentEvent } from "./run";
 import type { PendingAction } from "./tools";
 import { log } from "../logger";
+import {
+  resolvePreviewPanel,
+  listPreviewTabs,
+  openPreviewTab,
+  closePreviewTabById,
+  activatePreviewTabById,
+} from "../ai/previewTabs";
+import { requestPreviewFocus } from "../ai/previewBus";
 
 /** Nom du canal d'événements émis par Rust (cf. `sidecar.rs::EVENT_CLINE`). */
 const EVENT_CLINE = "cline://event";
@@ -619,11 +627,97 @@ const INVOKE_ALLOWLIST = new Set<string>([
   "browser_type",
   "browser_press_key",
   "browser_screenshot",
+  // Gestion des ONGLETS du navigateur intégré (outils `browser_list_tabs`,
+  // `browser_open_tab`, `browser_close_tab`, `browser_activate_tab`). Ce ne sont
+  // PAS des commandes Tauri : elles sont traitées localement par
+  // `handleTabCommand` (store d'onglets du front), sans toucher aux webviews.
+  "tabs_list",
+  "tabs_open",
+  "tabs_close",
+  "tabs_activate",
   // Recherche dans l'index local (outil `codebase_search`). LECTURE seule :
   // renvoie une liste de chemins relatifs issus de l'index du workspace, sans
   // jamais lire le disque ni écrire quoi que ce soit.
   "search_index",
 ]);
+
+/**
+ * Commandes de GESTION DES ONGLETS (table fermée, miroir de `TAB_COMMANDS` du
+ * sidecar). Elles ne touchent aucune webview : elles pilotent le store d'onglets
+ * du front. Les traiter séparément évite de leur imposer une résolution
+ * `panelId`, qui n'a aucun sens pour « lister/ouvrir/fermer » un onglet.
+ */
+const TAB_COMMANDS = new Set(["tabs_list", "tabs_open", "tabs_close", "tabs_activate"]);
+
+/** Vrai si la commande relève de la gestion des onglets. */
+function isTabCommand(command: string): boolean {
+  return TAB_COMMANDS.has(command);
+}
+
+/** Normalise une URL d'onglet : schéma http(s) imposé (miroir de Rust). */
+function normalizeTabUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  try {
+    const u = new URL(trimmed);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exécute une commande de gestion d'onglets et renvoie le TEXTE à présenter au
+ * modèle. Chaque issue produit une phrase exploitable (jamais une réussite
+ * silencieuse) : l'agent doit pouvoir enchaîner sans deviner.
+ *
+ * SÉCURITÉ : les `tabId` fournis par le modèle sont résolus contre le store —
+ * un identifiant inconnu est refusé, il ne peut donc pas viser « autre chose »
+ * que ce que `browser_list_tabs` lui a montré.
+ */
+function handleTabCommand(command: string, args: Record<string, unknown>): string {
+  switch (command) {
+    case "tabs_list": {
+      const rawMax = args.max;
+      const max = typeof rawMax === "number" && rawMax > 0 ? Math.min(rawMax, 50) : 50;
+      const tabs = listPreviewTabs();
+      if (tabs.length === 0) return "No tab is open in the embedded browser.";
+      const shown = tabs.slice(0, max);
+      const lines = shown.map(
+        (t) => `${t.active ? "*" : " "} ${t.tabId}  ${t.title}  —  ${t.url || "(empty)"}`,
+      );
+      const header = `${tabs.length} tab(s) open (* = active):`;
+      const more = tabs.length > shown.length ? `\n… ${tabs.length - shown.length} more not shown` : "";
+      return `${header}\n${lines.join("\n")}${more}`;
+    }
+    case "tabs_open": {
+      const url = normalizeTabUrl(args.url);
+      if (!url) return "error: `url` must be an absolute http(s) URL.";
+      const id = openPreviewTab(url);
+      requestPreviewFocus();
+      return `Opened a new tab (tabId: ${id}) at ${url}. It is now the active tab.`;
+    }
+    case "tabs_close": {
+      const tabId = typeof args.tabId === "string" ? args.tabId : "";
+      if (!tabId) return "error: `tabId` is required.";
+      return closePreviewTabById(tabId)
+        ? `Closed tab ${tabId}.`
+        : `error: unknown tabId "${tabId}". Call browser_list_tabs first.`;
+    }
+    case "tabs_activate": {
+      const tabId = typeof args.tabId === "string" ? args.tabId : "";
+      if (!tabId) return "error: `tabId` is required.";
+      if (!activatePreviewTabById(tabId)) {
+        return `error: unknown tabId "${tabId}". Call browser_list_tabs first.`;
+      }
+      requestPreviewFocus();
+      return `Activated tab ${tabId}. It is now the target of the browser_* tools.`;
+    }
+    default:
+      return `error: unsupported tab command "${command}".`;
+  }
+}
 
 /**
  * Exécute une commande navigateur demandée par un outil custom et renvoie son
@@ -654,9 +748,30 @@ async function respondToInvoke(request: { requestId: string; command: string; ar
       await reply({ output: JSON.stringify(hits ?? []) });
       return;
     }
+    // Gestion des ONGLETS (`browser_list_tabs`, `browser_open_tab`, …).
+    // Ces opérations ne touchent AUCUNE webview : elles appartiennent au store
+    // d'onglets (`previewTabs`), que seul le front connaît. On les traite ici,
+    // hors de la table `browser_*` (qui, elle, cible une page via `panelId`).
+    if (isTabCommand(request.command)) {
+      await reply({ output: handleTabCommand(request.command, request.args) });
+      return;
+    }
+    // Résolution du panneau cible : l'agent envoie un `panelId` LOGIQUE (voir
+    // `PREVIEW_ACTIVE_TARGET`) et ignore l'existence des onglets. On le remappe
+    // ici vers le label réel de l'onglet ACTIF. Sans onglet ouvert, la commande
+    // échoue proprement (l'agent reçoit une erreur, il n'agit pas dans le vide).
+    const args: Record<string, unknown> = { ...request.args };
+    if (typeof args.panelId === "string") {
+      const resolved = resolvePreviewPanel(args.panelId);
+      if (!resolved) {
+        await reply({ error: "no browser tab is open; call browser_navigate first" });
+        return;
+      }
+      args.panelId = resolved;
+    }
     const result = await invoke<{ ok?: boolean; value?: string; url?: string | null; truncated?: boolean }>(
       request.command,
-      request.args,
+      args,
     );
     if (result && result.ok === false) {
       await reply({ error: result.value || "browser command failed" });

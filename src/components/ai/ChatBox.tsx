@@ -23,6 +23,7 @@ import {
   getSlashQuery,
   mergeSlashCommands,
   SLASH_COMMANDS,
+  resolveHistoryNav,
 } from "../../lib/inputCommands";
 import type { ClineSkillInfo, ClineRuntimeCommand } from "../../lib/agent/clineClient";
 import {
@@ -622,9 +623,14 @@ interface ChatBoxProps {
    * l'agent ne doit jamais démarrer sans workspace.
    */
   onSelectFolder?: () => void;
+  /**
+   * Historique des messages envoyés par l'utilisateur (du plus ancien au plus
+   * récent), pour la navigation ↑/↓ comme dans Trae.
+   */
+  getUserHistory?: () => string[];
 }
 
-export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder }: ChatBoxProps) {
+export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder, getUserHistory }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
@@ -634,6 +640,10 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const mentionRangeRef = useRef<Range | null>(null);
   /** Position du curseur au moment où la requête `#` a été détectée. */
   const hashRangeRef = useRef<Range | null>(null);
+  /** Index courant dans l'historique des messages (`-1` = brouillon). */
+  const historyIndexRef = useRef(-1);
+  /** Brouillon saisi avant de commencer à naviguer dans l'historique. */
+  const historyDraftRef = useRef("");
 
   const [isEmpty, setIsEmpty] = useState(true);
   const [focused, setFocused] = useState(false);
@@ -729,6 +739,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const handleInput = () => {
     const el = editableRef.current;
     if (!el) return;
+    // Toute frappe manuelle annule la navigation dans l'historique : on repart
+    // du brouillon pour ne pas écraser la saisie au prochain ↑.
+    historyIndexRef.current = -1;
     setIsEmpty(el.textContent?.trim() === "" && !el.querySelector('[data-filepath]'));
 
     // Autocomplétion des slash-commands : on détecte `/foo` en fin de texte
@@ -889,6 +902,49 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     setContextSnap(null);
   };
 
+  /** Écrit du texte brut dans l'éditeur et place le curseur à la fin. */
+  const writeEditorText = useCallback((text: string) => {
+    const el = editableRef.current;
+    if (!el) return;
+    el.innerHTML = "";
+    el.appendChild(document.createTextNode(text));
+    setIsEmpty(text.trim() === "");
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = document.getSelection();
+    if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+  }, []);
+
+  /** Navigation ↑/↓ dans l'historique des messages envoyés (type Trae). */
+  const navigateHistory = useCallback((direction: "up" | "down") => {
+    const history = getUserHistory?.() ?? [];
+    if (history.length === 0) return;
+    const el = editableRef.current;
+    // On mémorise le brouillon à la première remontée (index encore sur -1).
+    if (direction === "up" && historyIndexRef.current === -1) {
+      historyDraftRef.current = el?.textContent ?? "";
+    }
+    const next = resolveHistoryNav({
+      direction,
+      index: historyIndexRef.current,
+      history,
+      draft: historyDraftRef.current,
+    });
+    if (!next) return;
+    historyIndexRef.current = next.index;
+    writeEditorText(next.text);
+    // Le texte injecté ne doit pas rouvrir les menus d'autocomplétion.
+    setSlashActive(false);
+    setHashActive(false);
+    setHashMenuOpen(false);
+    setMentionActive(false);
+    setMentionQuery("");
+    setSlashQuery("");
+    mentionRangeRef.current = null;
+    hashRangeRef.current = null;
+  }, [getUserHistory, writeEditorText]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Autocomplétion slash-commands active : on intercepte les flèches, Tab,
     // Enter (sélection) et Échap (dismiss) avant le reste.
@@ -958,6 +1014,24 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             }
           }
         }
+      }
+    }
+
+    // Navigation dans l'historique (type Trae) : ↑/↓ quand aucun menu
+    // d'autocomplétion n'est ouvert et que le curseur n'est pas dans un
+    // contexte de mention/slash. On laisse le déplacement du caret natif tant
+    // qu'il reste du texte sur plusieurs lignes.
+    if (
+      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !slashActive && !hashActive && !mentionActive &&
+      !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+    ) {
+      const el = editableRef.current;
+      const singleLine = !el || !(el.textContent ?? "").includes("\n");
+      if (el && singleLine) {
+        e.preventDefault();
+        navigateHistory(e.key === "ArrowUp" ? "up" : "down");
+        return;
       }
     }
 

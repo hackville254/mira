@@ -5,6 +5,456 @@
 
 ---
 
+### [2026-10-20T04:35] | Gestion des onglets du navigateur par l'agent (parité Trae SOLO)
+
+- **Contexte :** le navigateur intégré est multi-onglets (une webview vivante par
+  onglet, cf. entrée précédente), mais l'agent n'en avait **aucune
+  connaissance** : il ne pouvait viser que « ce qui est affiché ». Toute demande
+  « ouvre ceci dans un nouvel onglet », « qu'est-ce qui est ouvert ? », « lis la
+  page de l'autre onglet » était hors de portée. Besoin : rendre le navigateur
+  **pilotable au niveau onglet**, sans biais de source, et sans exposer
+  l'infrastructure (labels de webview) au modèle.
+
+- **Modifications effectuées :**
+  - `src-tauri/cline-sidecar/src/tabTool.ts` (nouveau) — 4 outils déclaratifs
+    (`createTool` @cline/core, `lifecycle.completesRun:false`) : `browser_list_tabs`,
+    `browser_open_tab`, `browser_close_tab`, `browser_activate_tab`. Table
+    **fermée** de commandes (`TAB_COMMANDS`) ; transport de **données typées**
+    uniquement (aucun code exécutable) ; sortie bornée (`clamp` 8 000 car.).
+  - `src-tauri/cline-sidecar/src/index.ts` — branche `spec.kind === "browser"` :
+    après `buildBrowserTools`, ajout de `buildTabTools((req) =>
+    originInvoke(req.command, req.args))`. Même condition d'activation que
+    `browser_*` (pas de navigateur exposé → pas d'outils d'onglets).
+  - `src/lib/ai/previewTabs.ts` — surface publique hors React :
+    `PreviewTabInfo {tabId,url,title,active}`, `listPreviewTabs()`,
+    `panelIdForAgentTab(tabId)`, `activatePreviewTabById(tabId)`,
+    `closePreviewTabById(tabId)` (`titleForUrl` dérivé du chemin).
+  - `src/lib/ai/previewBus.ts` — `requestPreviewFocus()` : notifie les abonnés
+    d'ouverture **sans** republier d'URL ni toucher au store (déjà à jour) —
+    garantit que le panneau est monté avant de piloter sa webview.
+  - `src/lib/agent/clineClient.ts` — `TAB_COMMANDS`/`isTabCommand`,
+    `normalizeTabUrl` (http(s) seul, miroir Rust), `handleTabCommand` (chaque
+    issue produit une phrase exploitable, jamais un succès silencieux), ajout des
+    4 commandes à `INVOKE_ALLOWLIST`, routage dans `respondToInvoke` **avant** la
+    résolution `panelId`.
+  - `src/lib/agent/toolPresentation.ts` — noms d'outils + deux lignes de contrat
+    (mode actif / lecture seule) rappelant `tabId` opaque et « ne jamais
+    inventer un `tabId` ».
+  - `src/lib/__tests__/prompts.metrics.test.ts` — budget prompt maintenu
+    **< 8 000** caractères sur le preset agent/max après condensation des lignes.
+
+- **Décisions Techniques :**
+  - **Séparation onglet / page.** Un onglet n'est pas une page : deux cycles de
+    vie distincts. La gestion d'onglets est purement **front** (store
+    `previewTabs`) — il n'y a **aucune webview à manipuler** pour ouvrir/fermer.
+    On ne réutilise donc **pas** `browserInvoke` (qui injecte un `panelId` de
+    webview) mais `originInvoke`, sans cible matérielle.
+  - **Frontière de confiance : `tabId` opaque ≠ `panelId`.** Le modèle ne
+    manipule jamais un label de webview (forgeable) ; il reçoit un `tabId` opaque
+    de `browser_list_tabs` que le **front seul** sait traduire. Un id inconnu est
+    refusé (`error: unknown tabId … call browser_list_tabs first`) : impossible de
+    viser autre chose que ce qui a été montré.
+  - **Fermeture non silencieuse.** `tabs_list` renvoie 0 ligne explicite quand
+    rien n'est ouvert ; `tabs_open`/`activate` appellent `requestPreviewFocus()`
+    pour rendre la cible visible (sinon l'agent piloterait une page invisible).
+
+- **Impacts & Dépendances :**
+  - Aucun fichier Rust modifié : le backend supportait déjà N webviews indexées
+    par label. Chemin de navigation d'un `tabs_open` inchangé (schéma http(s)
+    imposé côté Rust, confirmation utilisateur pour hôte externe).
+  - **Limite de timing assumée :** si la webview du nouvel onglet n'est pas encore
+    embarquée, la commande `browser_*` suivante reçoit une erreur explicite
+    (`browser panel '…' not found`) — l'agent doit alors relire l'état, pas
+    boucler.
+
+- **Prochaines étapes :**
+  - Valider en `tauri dev` le scénario « liste → ouvre 3 onglets → bascule →
+    lis/ferme », y compris l'ordre des événements quand plusieurs onglets
+    s'ouvrent en rafale.
+
+---
+
+### [2026-10-20T03:40] | Benchmark SWE-bench réel : 3 instances, protocole honnête, 2/3 resolved
+
+- **Contexte :** le benchmark de codage interne (6 mini-fixtures) était jugé trop
+  simple. Objectif : exécuter le **vrai agent** (sidecar Cline, production) sur de
+  **vraies instances SWE-bench Lite** (`princeton-nlp/SWE-bench_Lite`), tests dans
+  Docker par instance, et produire un `predictions.jsonl` publiable.
+
+- **Modifications effectuées :**
+  - `bench/coding/benchWebview.ts` — pilotage du VRAI agent depuis la webview Tauri :
+    - envoi **non bloquant** (`void handle.send(...).catch(...)`) : `engine.send` du
+      SDK n'acquitte `{accepted:true}` qu'à la **fin du tour** ; tout tour > 30 s
+      dépassait `COMMAND_REPLY_TIMEOUT` du sidecar Rust → `SIDECAR_REPLY_TIMEOUT`
+      alors que l'agent travaillait. On n'attend plus que les événements terminaux
+      réels (`finish`/`error`) ou le timer de tâche.
+    - `maxIterations` borné (défaut 25) — paramètre **public** du contrat, pas une
+      modification du moteur.
+    - **Remise à l'état officiel** avant Docker : les fichiers du `test_patch` sont
+      restaurés au `base_commit` puis le `test_patch` officiel est réappliqué. Toute
+      modification de test par l'agent est **ignorée** (constaté : l'agent avait
+      édité le test astropy pour « tricher »).
+    - `parsePatchTargets()` (chemins d'un patch unifié) + FAIL_TO_PASS qualifiés
+      (`testFilesFor`) pour cibler pytest même quand l'instance ne donne que des
+      noms de test nus (cas sympy).
+  - `bench/coding/swebench/instance.ts` — nouvelle fonction `testFilesFor` qui
+    résout le fichier de test via le `test_patch` quand `FAIL_TO_PASS` est non
+    qualifié. `toCodingTask` l'utilise.
+  - `vite.config.ts` — `watch.ignored` inclut `**/bench/**` : le dépôt cloné vit dans
+    l'arbre du projet ; sans exclusion, chaque écriture de l'agent déclenchait un
+    full-reload Vite qui **détruisait le run mesuré**.
+  - `src-tauri/src/bench.rs` (DEV-ONLY) + enregistrement dans `lib.rs` —
+    `bench_bash_run(command, cwd, timeout_ms)` borné à 30 min / 4 Mo
+    (`agent_bash_run` plafonne à 120 s / 64 Ko : insuffisant pour pytest Docker).
+
+- **Décisions techniques :**
+  - **Ne pas modifier le moteur** (§6 mission) : les correctifs sont dans le harnais
+    ou via des paramètres publics. Le `SIDECAR_REPLY_TIMEOUT` est un problème
+    structurel du moteur (acquittement en fin de tour) : il est **contourné côté
+    harnais**, il n'est pas corrigé dans le moteur (hors périmètre).
+  - **Honnêteté avant score** : les tests officiels sont toujours réappliqués ; un
+    patch qui ne touche que les tests ne peut pas « réussir ». Le `model_patch`
+    publié ne contient que les sources. `predictions.jsonl` au format officiel.
+  - **Score non revendiqué comme officiel** : échantillon de 3, harnais distinct du
+    harness Python officiel. Aucune comparaison Cursor/Claude Code inventée.
+
+- **Impacts & dépendances :** `bench/coding/results/predictions.jsonl` (2 patches
+  réels) et `bench/coding/results/swebench-results.json`. Le README `bench/README.md`
+  (§3.4 + §8) reflète désormais les vrais résultats. Les images Docker
+  `orvyx-swebench:*` et les envs préparés sont **réutilisés** (non supprimés).
+  Aucune modification de comportement de production : `bench_bash_run` est
+  `#[cfg(debug_assertions)]`, `installBenchHook` DEV-only.
+
+- **Prochaines étapes :**
+  - Corriger le comptage `turns` (basé sur `timing`, off : 0/1 pour 16-25 tool-calls).
+  - Réinitialiser le dépôt **entre** instances dans le runner webview (le harnais
+    officiel le fait systématiquement).
+  - Étendre l'échantillon (coût réseau → accord explicite requis).
+
+---
+
+### [2026-10-20T02:15] | Navigateur intégré : vrai comportement multi-onglets (webviews persistantes)
+
+- **Contexte :** le premier jet ouvrait bien plusieurs onglets mais ne se comportait
+  pas comme un VRAI navigateur : basculer d'onglet détruisait puis ré-embarquait la
+  webview (donc **rechargement** de la page à chaque aller-retour). Inacceptable.
+
+- **Modifications effectuées :**
+  - `src/lib/ai/previewTabs.ts` — l'état runtime par onglet (pile d'historique,
+    dimensions, `reloadKey`, `loading`, `error`, `canBack`) est désormais **possédé
+    par le store** (`runtimeFor`, `resetTabHistory`), plus par des `useRef` du
+    composant : il survit à tout re-rendu et à tout changement d'onglet.
+  - `src/components/editor/WebPreviewPane.tsx` — **une webview VIVANTE par onglet**.
+    Chaque onglet a son conteneur DOM ; la webview native y est ancrée une fois et
+    n'est plus détruite au changement d'onglet. La bascule d'onglet se fait par
+    **déplacement hors écran / restauration des bornes** (`resize_ide_panel`), donc
+    sans rechargement. Nettoyage : destruction des webviews des onglets fermés et
+    de **toutes** les webviews au démontage du panneau (plus de surface fantôme).
+  - `src-tauri/src/browser.rs` — nouvelle commande `browser_go(panel_id, direction)`
+    qui pilote l'historique NATIF de la webview (`history.go(±1)`), sans rechargement.
+    `browser_status` expose en plus `canBack` (`history.length > 1`).
+  - `src-tauri/src/lib.rs` — enregistrement de `browser_go`.
+
+- **Décisions techniques :**
+  - **N webviews natives vivantes** : c'est le seul moyen d'offrir le comportement
+    d'un vrai navigateur (état et scroll préservés). Coût : une webview par onglet
+    (mémoire). Compromis retenu car c'est exactement ce que fait un navigateur.
+  - **Masquer = déplacer hors écran**, pas `set_visible` : le backend n'expose pas
+    d'API de visibilité par label ; déplacer à `-100000` est portable et sans effet
+    de bord (la webview reste vivante, ne reçoit pas d'événements souris visibles).
+  - **Back/Forward via l'historique natif** : la pile JS de la webview est la seule
+    vérité (elle inclut les navigations internes à la page). On évite d'avoir deux
+    historiques divergents — le front ne suit que ses propres navigations.
+  - **Correction d'un bug de clé** : `mountedRef` indexe par `<id>:<url>:<reload>`
+    mais était comparé à des ids bruts → les webviews des onglets fermés n'étaient
+    jamais détruites. Extraction de l'id par `key.slice(0, key.indexOf(':'))`.
+
+- **Impacts & Dépendances :** `WebPreviewPane` reste monté à deux endroits
+  d'`AgentModeView`, mais les deux branches (`activeToolTab === "editor"` /
+  `"browser"`) sont **mutuellement exclusives** : une seule instance vit à la fois.
+  `browser_go` est réservé au FRONT (contrôle utilisateur) ; l'agent dispose de son
+  propre jeu d'outils `browser_*` inchangé.
+
+- **Prochaines étapes :** valider en `tauri dev` le non-rechargement à la bascule
+  d'onglet et le retour arrière natif ; surveiller la consommation mémoire avec
+  beaucoup d'onglets ouverts.
+
+### [2026-10-20T02:05] | Navigateur intégré : multi-onglets illimités (utilisateur + agent)
+
+- **Contexte :** impossible d'ouvrir plusieurs onglets dans le navigateur intégré,
+  y compris en mode IA. Diagnostic : le backend Rust supportait **déjà** N webviews
+  simultanées (`PanelUrlState : Mutex<HashMap<String,String>>`, commandes
+  `embed_ide_panel` / `resize_ide_panel` / `destroy_ide_panel` / `get_ide_panel_url`
+  toutes indexées par `panelId`). Le verrou était purement côté UI : `WebPreviewPane`
+  ne gérait qu'un **label fixe** (`origin-web-preview`), donc un seul onglet possible.
+
+- **Modifications effectuées :**
+  - `src/lib/ai/previewTabs.ts` — **créé**. Source de vérité des onglets, hors React
+    (lisible par `clineClient` au moment d'un `tool_invoke`). Expose : `PreviewTab`,
+    état `{ tabs, activeIndex }`, `subscribePreviewTabs`, `getPreviewTabsSnapshot`,
+    `openPreviewTab`, `activatePreviewTab`, `closePreviewTab`, `setPreviewTabUrl`,
+    `replacePreviewTabs`, `navigateActiveOrCreate`, `panelIdForTab`, et
+    `resolvePreviewPanel` (cible logique → label de l'onglet actif).
+  - `src/components/editor/WebPreviewPane.tsx` — **réécrit**. Barre d'onglets
+    (`PreviewTabStrip`) avec ouvertures/fermetures illimitées, bouton `+`, `×` par
+    onglet. État **par onglet** (pile d'historique, dimensions, preset) dans des
+    `Map` indexées par id, purgées à la fermeture. Persistance de la liste
+    (`localStorage`). **Seul l'onglet actif** embarque une webview native ; les
+    inactifs sont détruits et ré-embarqués à l'activation.
+  - `src/lib/agent/clineClient.ts` — `respondToInvoke` résout `args.panelId` via
+    `resolvePreviewPanel` **avant** l'`invoke`. Aucun onglet ouvert → erreur
+    explicite à l'agent (`no browser tab is open; call browser_navigate first`)
+    au lieu d'une action dans le vide.
+  - `src/components/ai/AiPanel.tsx` — la cible passée au sidecar devient
+    `PREVIEW_ACTIVE_TARGET` (cible logique) au lieu du label matériel.
+
+- **Décisions techniques :**
+  - **Cible logique vs label matériel :** l'agent ne connaît pas les onglets et vise
+    toujours « l'onglet actif » ; le remappage vers le label réel se fait dans le
+    front, seul endroit qui connaît l'état des onglets. Cela évite d'exposer la
+    notion d'onglet dans le prompt et ne casse pas le pilotage existant.
+  - **Une seule webview vivante (celle de l'onglet actif) :** N webviews natives
+    superposées produiraient des fantômes et des positions jamais synchronisées.
+    Coût assumé : rechargement de la page au changement d'onglet.
+  - **`ensurePreviewPanelFor` écarté :** ouvrir un onglet à la demande de l'agent
+    posait un problème de timing (la webview n'est pas encore embarquée quand
+    `browser_navigate` arrive) ; aurait été du code mort. Limite acceptée : l'agent
+    cible un onglet déjà ouvert.
+
+- **Impacts & Dépendances :** `WebPreviewPane` est monté à **deux endroits** de
+  `AgentModeView` (zone éditeur et onglet outil `browser`) — les deux instances
+  partagent le même store ; un seul onglet actif embarque la webview, donc pas de
+  double embarquement. `previewBus` (liens des messages) passe par
+  `navigateActiveOrCreate` : un lien cliqué charge l'onglet actif ou en crée un.
+
+- **Prochaines étapes :** vérifier en `tauri dev` l'ouverture/fermeture de plusieurs
+  onglets et le pilotage de l'onglet actif par l'agent ; surveiller le double montage.
+
+### [2026-10-20T01:50] | Skills : consigne ACTIVE dans le contrat d'outils (mode IA et IDE)
+
+- **Contexte :** le modèle « avait du mal avec les skills » en mode IA **comme**
+  en mode IDE (les deux lisent le même `toolPresentation.ts`). Diagnostic : la
+  découverte était correcte (sidecar `withMiraDirectories` → `.mira/skills` +
+  `~/.mira/skills`, `userInstructionConfigService.start()` obligatoire, et le SDK
+  appende lui-même `Available skills: <noms>` à la description de l'outil
+  `skills`). Le problème était **comportemental** : notre puce était passive
+  (« invoke a configured skill by name when it matches the task »), donc le
+  modèle répondait directement sans jamais vérifier la liste ni invoquer.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/toolPresentation.ts` — nouvelle constante exportée
+    [`SKILLS_CONTRACT_LINE`](file:///Users/user/code/orvyx-desktop/origin/src/lib/agent/toolPresentation.ts#L63)
+    (consigne active : vérifier `Available skills` d'abord, invoquer avec le nom
+    EXACT, `args` = chaîne, la skill prime sur l'improvisation, ne jamais
+    prétendre avoir utilisé une skill absente de la liste). Les **4** occurrences
+    de l'ancienne puce passive (`TOOL_CONTRACT_FULL`, `TOOL_CONTRACT_READ_ONLY`,
+    `buildFullToolContract`, `buildReadOnlyToolContract`) sont remplacées.
+  - `src/lib/agent/__tests__/prompts.test.ts` — test d'invariant : la constante
+    mentionne `Available skills` et est présente dans les deux modes ;
+    l'ancienne formulation passive ne doit plus apparaître.
+
+- **Décisions techniques :** agir **en amont (prompt)** plutôt qu'un filtrage a
+  posteriori (un appel de skill ne se détecte qu'au runtime). Consigne **concise
+  sur une seule ligne** : le test de budget (8000 car.) a d'abord échoué à 8020
+  avec une version multi-puces → condensée à 7812, marge rétablie sans perdre le
+  contenu prescriptif. La liste des skills n'est PAS citée dans le contrat : elle
+  est propre au workspace et injectée par le SDK.
+
+- **Impacts & Dépendances :** `toolPresentation.ts` est la source unique du
+  contrat lu par le modèle ; le changement profite aux modes IA et IDE
+  simultanément. Aucun impact sur la mécanique d'approbation (`skills` reste non
+  désactivable et toujours annoncé).
+
+- **Prochaines étapes :** vérifier en `tauri dev` que le modèle invoque bien un
+  skill sur une demande qui matche (ex. une skill de la liste `Available skills`).
+
+### [2026-10-20T02:35] | Commit IA : diff incluant les fichiers non suivis + prompt conforme Conventional Commits
+
+- **Contexte :** le bouton « Generate commit message with AI » (icône Sparkles)
+  répondait *« No changes to describe »* alors que des changements existaient.
+  Deux causes cumulées :
+  1. [git_diff (Rust)](file:///Users/user/code/orvyx-desktop/origin/src-tauri/src/git.rs#L593)
+     ne fait que `git diff --cached` + `git diff` → les fichiers **non suivis**
+     (nouveaux fichiers jamais `git add`) sont invisibles → diff vide ;
+  2. `SourceTreePanel` jugeait `files.length === 0` sur un état chargé au montage
+     (rafraîchi toutes les 5 s seulement si `autoRefresh`), donc périmé au clic.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/git.rs` — nouvelle commande `git_commit_diff` (+ helper
+    `diff_untracked_file`) : assemble `diff --cached` + `diff` +
+    `diff --no-index /dev/null` pour chaque fichier de `ls-files --others
+    --exclude-standard`, plafonné à `max_bytes`. `git_diff` de l'éditeur
+    **inchangé** (aucune régression sur le gutter inline).
+  - `src-tauri/src/lib.rs` — enregistrement de `git::git_commit_diff`.
+  - `src/lib/git.ts` — wrapper `gitCommitDiff`.
+  - `src/lib/gitCommitMessage.ts` — prompt système `COMMIT_SYSTEM_PROMPT`
+    réécrit selon **Conventional Commits** (type/scope, impératif, ≤ 50/72 chars,
+    `!` réservé aux ruptures, poids des lockfiles/générés ignoré, langue alignée
+    sur les commits existants) + nettoyage défensif de la sortie (1ʳᵉ ligne, sans
+    fences/guillemets/« commit message: »). Source du diff basculée sur
+    `gitCommitDiff`.
+  - `src/components/SourceTreePanel.tsx` — `aiGenerateMessage` **recharge l'état
+    git avant de juger** ; le message d'échec ne présuppose plus la cause
+    (provider manquant *ou* diff vide).
+
+- **Décisions techniques :**
+  - **Commande Rust dédiée** plutôt qu'élargir `git_diff` : le diff « commit »
+    a un besoin différent (exhaustivité, untracked) de celui de l'éditeur
+    (léger, suivi). Séparer évite de gonfler le gutter et de coupler deux usages.
+  - `git diff --no-index` sort en code 1 quand il y a des différences : ce n'est
+    **pas** une erreur → on lit `stdout` sans conditionner au `status.success()`.
+  - **Injection :** les chemins de fichiers proviennent de `git ls-files`
+    (sortie de git, pas d'entrée utilisateur brute) et sont passés après `--`,
+    donc traités comme chemins littéraux. La sortie est plafonnée (`max_bytes`)
+    pour borner le coût du prompt et éviter un DoS par diff géant.
+  - Le **prompt** reflète les bonnes pratiques demandées (Conventional Commits)
+    sans imposer de langue ni de provider.
+
+- **Impacts & Dépendances :** `git.rs`, `lib.rs`, `git.ts`, `gitCommitMessage.ts`,
+  `SourceTreePanel.tsx`. Nouveau contrat IPC `git_commit_diff` (front ↔ back) :
+  nécessite un rebuild Tauri (le sidecar n'est pas concerné).
+
+- **Prochaines étapes :** vérifier en `tauri dev` que le bouton remplit bien le
+  champ titre ; surveiller la troncature sur les dépôts à beaucoup de nouveaux
+  fichiers (le plafond est volontaire).
+
+- **Vérifications :** `cargo check` ✅ · `tsc --noEmit` ✅ · `vitest run src/lib`
+  → **685 tests ✅**.
+
+---
+
+### [2026-10-20T02:20] | Anti-404 : politique de liens neutre dans le prompt système
+
+- **Contexte :** retour utilisateur — *« les liens rendus sont soit morts, soit 404,
+  soit n'existent même pas »*. Demande explicite : corriger **sans mettre de
+  biais** (ne pas forcer une source, ne pas interdire de fournir des liens).
+
+- **Modifications effectuées :**
+  - `src/lib/agent/prompts.ts` — nouveau bloc `LINK_SOURCING_RULES` (« ## Links »),
+    injecté dans les TROIS modes (`agent`, `ask`, `plan`) via le tableau de
+    `buildSystemPrompt`. Règles : ne citer une URL que si elle a été **observée**
+    dans la session (résultat d'outil, code, message utilisateur), copiée
+    verbatim ; nommer la source en mots quand aucun lien vérifié n'existe ;
+    jamais de page d'accueil générique présentée comme la page précise.
+  - `src/lib/agent/__tests__/prompts.test.ts` — import de `LINK_SOURCING_RULES` +
+    test d'invariant « les trois modes portent la politique de liens ».
+
+- **Décisions techniques :**
+  - **Correctif au niveau le plus amont** (le prompt) plutôt qu'un filtrage a
+    posteriori des liens : un validateur de liens en sortie imposerait un aller-
+    retour réseau par lien, échouerait sur les pages qui bloquent les `HEAD`, et
+    pénaliserait la latence. Empêcher l'hallucination à la source est à la fois
+    plus robuste et sans coût d'exécution.
+  - **Neutralité volontaire** (exigence utilisateur) : le bloc ne privilégie
+    aucune source et n'interdit pas les liens ; il ne fixe qu'un critère
+    **vérifiable** — l'origine du lien. C'est la seule règle qui distingue un
+    lien réel d'un lien reconstruit de mémoire sans introduire de biais de
+    sélection.
+
+- **Impacts & Dépendances :** `prompts.ts` (source unique du prompt système, donc
+  effet sur les 3 modes et le mode IA). Budget de prompt préservé (bloc ~430
+  caractères, seuil de garde-fou à 8000 non franchi — test métriques vert).
+
+- **Prochaines étapes :** observer en conditions réelles si le modèle respecte la
+  contrainte ; si des liens inventés subsistent, envisager un **outil de
+  vérification** optionnel que le modèle peut appeler avant de citer une URL
+  (toujours sans biais de source).
+
+- **Vérifications :** `tsc --noEmit` ✅ · `vitest run src/lib` → **685 tests ✅**
+  (dont les tests métriques de prompt : aucune redite, budget respecté).
+
+---
+
+### [2026-10-20T02:05] | Corrections UX : copie, explorer, terminal, navigateur, historique input
+
+- **Contexte :** retour utilisateur groupant cinq frictions d'usage de l'IDE :
+  1. copier une conversation à la souris embarque le **style** (HTML rendu) ;
+  2. l'Explorer ne se rafraîchit pas quand l'agent crée un fichier/dossier ;
+  3. le terminal est **coupé sur l'axe Y** (plafond de hauteur fixe) ;
+  4. l'agent peine à piloter le navigateur, et un clic sur un lien Markdown
+     ouvre une fenêtre impossible à fermer ;
+  5. impossible de remonter l'historique des messages avec ↑/↓ dans l'input.
+
+- **Modifications effectuées :**
+  - **Copie (c1)**
+    - `src/lib/ai/copyConversation.ts` (nouveau) — normalisation de la sélection
+      en **texte brut** (`text/plain`), sans jamais lire `innerHTML` : les blocs
+      (P/DIV/LI/PRE/…) deviennent des sauts de ligne.
+    - `src/components/ai/AiPanel.tsx` — intercepte `onCopy` sur la zone messages
+      (`handleThreadCopy`, préserve tout sauf si la sélection est dans la zone) ;
+      ajoute un bouton « Copy conversation » (transcript complet préfixé
+      `You:`/`Agent:`). `MessageActionsBar` copiait déjà le markdown brut.
+  - **Explorer (c2)**
+    - `src/lib/explorer/refreshBus.ts` (nouveau) — bus minimal
+      (`subscribeExplorerRefresh` / `notifyExplorerDirsChanged`).
+    - `src/lib/explorer/useExplorer.ts` — abonnement avec **debounce 120 ms** et
+      rafraîchissement **ciblé** (`refreshDirs`) des dossiers signalés.
+    - `src/components/ai/AiPanel.tsx` — `touchTurn` publie `parentOf(path)` : un
+      unique point d'émission, dédupliqué par l'appelant.
+  - **Terminal (c3)**
+    - `src/components/terminal/TerminalPanel.tsx` — le plafond fixe
+      `MAX_HEIGHT = 600` est remplacé par un plafond **dynamique**
+      `window.innerHeight - RESERVED_ABOVE` (≈ 96 px). Le drag reste libre, le
+      minimum conservé.
+  - **Navigateur (c4)**
+    - `src/lib/ai/previewBus.ts` (nouveau) — `subscribePreviewNavigation`,
+      `requestPreviewUrl` (URL mémorisée si le pane n'est pas monté),
+      `takePendingPreviewUrl`, `subscribePreviewOpen`, `openPreviewAt`.
+    - `src/lib/ai/linkRouting.ts` (nouveau) — `routeMarkdownLink` : `#…` → none,
+      `http(s)` → preview, `mailto:`/`tel:` → external, **tout le reste**
+      (`javascript:`, `data:`, `file:`, `vbscript:`) → none (barrière sécurité).
+    - `src/components/ai/MarkdownMessage.tsx` — `handleLinkClick` route les clics
+      vers le panel intégré ou le navigateur système.
+    - `src/components/ai/AgentModeView.tsx` — `subscribePreviewOpen` ouvre
+      l'onglet `browser` au bon moment.
+    - `src/components/editor/WebPreviewPane.tsx` — pop-out réécrit en
+      `openUrl(url)` système (plus de `WebviewWindow` fantôme non suivie) ;
+      s'abonne à la navigation et consomme l'URL en attente au montage.
+  - **Historique input (c5)**
+    - `src/lib/inputCommands.ts` — `resolveHistoryNav` : logique **pure** de
+      navigation (`-1` = brouillon, `0` = plus récent), restaure le brouillon en
+      redescendant. + 4 tests dans `inputCommands.test.ts`.
+    - `src/components/ai/ChatBox.tsx` — prop `getUserHistory` ; refs
+      `historyIndexRef` / `historyDraftRef` ; `writeEditorText` + `navigateHistory`
+      branchés sur ↑/↓ (désactivés si menu slash/`#`/`@` ouvert ou texte
+      multiligne, pour laisser le caret natif). `handleInput` réinitialise la
+      navigation à la moindre frappe.
+    - `src/components/ai/AiPanel.tsx` — `getUserHistory` dérivé de `messagesRef`
+      (messages `user` non streaming, non vides), passé aux **deux** `<ChatBox>`.
+
+- **Décisions techniques :**
+  - **Copie** : agir sur `onCopy` (event natif) plutôt que sur un état React,
+    car seul le DOM connaît la sélection courante ; écrire `text/plain` neutralise
+    le style sans jamais sérialiser le HTML rendu.
+  - **Explorer** : préféré un **bus ciblé + debounce** à un `reloadAll()` global
+    (coût O(dossier) au lieu de O(workspace)) ; évite aussi de propager
+    `setFileTreeVersion` à travers toute la hiérarchie de props.
+  - **Terminal** : plafond **dérivé de la fenêtre** plutôt qu'une constante
+    arbitraire — le terminal s'étend jusqu'à l'espace réellement disponible.
+  - **Navigateur** : un **bus** (et non des props) découple les calques profonds
+    (`MarkdownMessage` → `AgentModeView` → pane), et la mémorisation d'URL gère
+    la course « lien cliqué avant montage du pane ». `routeMarkdownLink` refuse
+    par défaut tout schéma non explicitement autorisé (défense en profondeur
+    contre `javascript:`/`data:`).
+  - **Historique** : logique pure hors composant (testable en `node`), index
+    sémantique `-1`/`0..len-1` ; on ne vole ↑/↓ que si ça ne casse pas l'édition
+    multiligne.
+
+- **Impacts & Dépendances :** `AiPanel.tsx` (copie, explorer, `getUserHistory`),
+  `ChatBox.tsx`, `MarkdownMessage.tsx`, `AgentModeView.tsx`, `WebPreviewPane.tsx`,
+  `TerminalPanel.tsx`, `useExplorer.ts`, `inputCommands.ts`. Deux nouveaux bus
+  module-level (`previewBus`, `refreshBus`) : leur état est **transitoire** et
+  ne survit pas à un reload, ce qui est acceptable (aucune persistance attendue).
+
+- **Prochaines étapes :** fiabiliser la « readiness » de la webview native du
+  panel navigateur (course possible si l'agent appelle un outil *browser* avant
+  le montage du pane). Vérifier le comportement en `tauri dev`.
+
+- **Vérifications :** `npx tsc --noEmit` ✅ · `vitest run src/lib` → **679 tests
+  ✅** · build sidecar (`esbuild`) ✅ · diagnostics IDE vides ✅.
+
+---
+
 ### [2026-10-20T01:15] | Mode IA : escalade d'équipe pilotée par le modèle (remplace le classificateur lexical)
 
 - **Contexte :** la version précédente décidait l'activation des équipes Cline via

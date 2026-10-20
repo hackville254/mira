@@ -161,3 +161,54 @@ export function getSlashQuery(text: string): string | null {
   const match = text.match(/(?:^|\s)\/(\S*)$/);
   return match ? match[1] : null;
 }
+
+// ── Navigation dans l'historique de l'input (flèches ↑/↓, type Trae) ───────────
+
+export interface HistoryNavState {
+  /**
+   * Index courant dans l'historique. `-1` = brouillon (on est revenu « après »
+   * le message le plus récent, position par défaut).
+   */
+  index: number;
+  /** Texte à écrire dans l'éditeur après la navigation. */
+  text: string;
+}
+
+/**
+ * Calcule l'état de navigation historique après une flèche ↑/↓.
+ *
+ * Repère d'index : `-1` = brouillon (position par défaut), `0` = message le PLUS
+ * RÉCENT, `len - 1` = message le PLUS ANCIEN. On « remonte » donc le temps en
+ * augmentant l'index :
+ *   - ↑ : `index + 1` (vers le plus ancien) ;
+ *   - ↓ : `index - 1` (vers le plus récent, puis le brouillon).
+ *
+ * Quand on redescend sur le brouillon (↓ depuis `index === 0`), le texte saisi
+ * avant la navigation est restauré. Renvoie `null` si le mouvement est
+ * impossible (↓ déjà sur le brouillon, ou historique vide).
+ */
+export function resolveHistoryNav(params: {
+  direction: "up" | "down";
+  index: number;
+  history: readonly string[];
+  draft: string;
+}): HistoryNavState | null {
+  const { direction, index, history, draft } = params;
+  const len = history.length;
+  if (len === 0) return null;
+
+  // `history` est du plus ancien au plus récent : le plus récent est en dernier.
+  const textAt = (i: number) => history[len - 1 - i];
+
+  if (direction === "up") {
+    // Déjà sur le plus ancien message : on ne bouge pas.
+    if (index >= len - 1) return { index: len - 1, text: textAt(len - 1) };
+    const next = index + 1;
+    return { index: next, text: textAt(next) };
+  }
+
+  // direction === "down"
+  if (index <= -1) return null; // déjà sur le brouillon
+  const next = index - 1;
+  return { index: next, text: next === -1 ? draft : textAt(next) };
+}

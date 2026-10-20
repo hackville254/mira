@@ -3,6 +3,7 @@ import type { FsEntry } from "../fs";
 import { getStatusFiles, type StatusFile } from "../git";
 import { loadExpanded, saveExpanded } from "../explorerState";
 import * as ops from "./ops";
+import { subscribeExplorerRefresh } from "./refreshBus";
 import {
   flattenTree, nextSelection, parentOf, normalize, isAncestorOrSelf, baseName,
   type FlatRow, type SelectMods,
@@ -191,6 +192,29 @@ export function useExplorer(
   }, [root]);
   useEffect(() => {
     refreshRef.current = (dirs) => { void refreshDirs(dirs); };
+  }, [refreshDirs]);
+
+  // Rafraîchissement déclenché par un écrivain EXTERNE à l'explorateur (typ. une
+  // écriture de l'agent) : on recharge uniquement les dossiers concernés. On
+  // debounce les rafales — un run d'agent peut écrire plusieurs fichiers en
+  // quelques dizaines de ms et on ne veut pas un `read_dir` par fichier.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pending = new Set<string>();
+    const unsub = subscribeExplorerRefresh((dirs) => {
+      for (const d of dirs) pending.add(d);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const batch = [...pending];
+        pending.clear();
+        timer = null;
+        void refreshDirs(batch);
+      }, 120);
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
   }, [refreshDirs]);
 
   // Recharge le cache quand la racine change ou sur refresh externe.

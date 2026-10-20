@@ -13,6 +13,9 @@ import {
   previewRevertTurns, revertTurns,
   type TurnFileDelta, type RevertPlanEntry,
 } from "../../lib/turnCheckpoint";
+import { parentOf } from "../../lib/explorer/treeModel";
+import { notifyExplorerDirsChanged } from "../../lib/explorer/refreshBus";
+import { handleMessageAreaCopy } from "../../lib/ai/copyConversation";
 import {
   collectTurnIdsFrom as collectTurnIdsFromPure,
   keepFrom,
@@ -39,7 +42,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { resolveClineProvider } from "../../lib/agent/providers";
 import { type AgentEvent } from "../../lib/agent/run";
 import { startClineHarness } from "../../lib/agent/clineHarness";
-import { PREVIEW_PANEL_ID } from "../editor/WebPreviewPane";
+import { PREVIEW_ACTIVE_TARGET } from "../../lib/ai/previewTabs";
 import { listExtensions as listClineExtensions, EXTENSIONS_CHANGED_EVENT } from "../../lib/agent/clineClient";
 import type { ClineRunHandle, ClineSessionExtensions } from "../../lib/agent/clineClient";
 import { isWriteTool } from "../../lib/agent/clineBridge";
@@ -757,6 +760,13 @@ export default function AiPanel({
     const id = activeTurnIdRef.current;
     if (!id) return;
     void touchTurnFile(id, path, ws).catch(() => {});
+    // L'agent vient d'écrire (ou va écrire) ce fichier : on prévient
+    // l'explorateur pour qu'il recharge le dossier parent, sans recharger tout
+    // l'arbre. `path` est déjà confiné au workspace en amont ; le bus et
+    // `useExplorer` refiltrent de toute façon. On ne rafraîchit PAS quand le
+    // checkpoint est inactif (aucune écriture réelle n'a suivi) — l'appel est
+    // donc bien conditionné à une écriture effective.
+    notifyExplorerDirsChanged([parentOf(path)]);
   }, []);
 
   // ── Revue des fichiers « live » (pattern Trae) ───────────────────────────
@@ -802,6 +812,19 @@ export default function AiPanel({
   useEffect(() => { ensurePricing().catch(() => {}); }, []);
   useEffect(() => { folderPathRef.current = folderPath; }, [folderPath]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  /**
+   * Historique des messages utilisateur (du plus ancien au plus récent) pour la
+   * navigation ↑/↓ dans l'input. On lit la source de vérité `messagesRef` pour
+   * éviter de recréer la callback (et re-rendre ChatBox) à chaque message.
+   */
+  const getUserHistory = useCallback((): string[] => {
+    const out: string[] = [];
+    for (const m of messagesRef.current) {
+      if (m.role === "user" && !m.streaming && m.content.trim()) out.push(m.content);
+    }
+    return out;
+  }, []);
   useEffect(() => { getActiveFilePathRef.current = getActiveFilePath; }, [getActiveFilePath]);
   useEffect(() => { onApplyCodeRef.current = onApplyCode; }, [onApplyCode]);
   useEffect(() => { onOpenDiffTabRef.current = onOpenDiffTab; }, [onOpenDiffTab]);
@@ -891,6 +914,29 @@ export default function AiPanel({
     stickToBottomRef.current = true;
     setShowJumpToBottom(false);
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  // Copie propre : une sélection à la souris dans le fil ne doit PAS embarquer
+  // le HTML rendu du markdown (balises, styles inline). On réécrit le
+  // presse-papier en texte brut ; hors de la zone des messages, on laisse le
+  // comportement natif (l'éditeur, par ex., garde sa propre copie).
+  const handleThreadCopy = useCallback((e: React.ClipboardEvent) => {
+    handleMessageAreaCopy(e, scrollContainerRef.current);
+  }, []);
+
+  // Copie de TOUTE la conversation en texte brut (markdown source, sans balises
+  // ni style). Donne un transcript lisible et collable partout.
+  const [conversationCopied, setConversationCopied] = useState(false);
+  const handleCopyConversation = useCallback(async () => {
+    const parts = messagesRef.current
+      .filter(m => (m.content ?? "").trim() !== "")
+      .map(m => `${m.role === "user" ? "You" : "Agent"}:\n${m.content.trim()}`);
+    if (parts.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(parts.join("\n\n"));
+      setConversationCopied(true);
+      setTimeout(() => setConversationCopied(false), 1200);
+    } catch { /* presse-papier indisponible — on ignore */ }
   }, []);
 
   useEffect(() => {
@@ -2106,7 +2152,7 @@ export default function AiPanel({
       const extraTools = [
         ...(needsTodoTools ? [{ kind: "todo" as const, sessionId }] : []),
         ...(browserAllowed
-          ? [{ kind: "browser" as const, sessionId, panelId: PREVIEW_PANEL_ID }]
+          ? [{ kind: "browser" as const, sessionId, panelId: PREVIEW_ACTIVE_TARGET }]
           : []),
         ...(wantsCodeIndex ? [{ kind: "code_index" as const, sessionId }] : []),
         ...(wantsEscalate ? [{ kind: "team_escalate" as const, sessionId }] : []),
@@ -3068,6 +3114,13 @@ export default function AiPanel({
               }}
             ><Icon icon="lucide:history" width={14} /></HeaderBtn>
             <HeaderBtn label="New Chat" onClick={handleNewChat}><Icon icon="lucide:plus" width={14} /></HeaderBtn>
+            {chatView === "chat" && messages.length > 0 && (
+              <Tooltip content="Copy conversation as plain text" side="left">
+                <HeaderBtn label="Copy conversation" onClick={handleCopyConversation}>
+                  {conversationCopied ? <Icon icon="lucide:check" width={14} /> : <Icon icon="lucide:copy" width={14} />}
+                </HeaderBtn>
+              </Tooltip>
+            )}
             <Tooltip content="Toggle Pinboard" side="left">
               <HeaderBtn label="Toggle Pinboard" active={contextOpen} onClick={() => setContextOpen(v => !v)}>
                 <Icon icon="lucide:pin" width={14} />
@@ -3109,7 +3162,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} />
           </div>
         )}
 
@@ -3117,7 +3170,7 @@ export default function AiPanel({
         {chatView === "chat" && (
           <>
             <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              <div ref={scrollContainerRef} onScroll={handleThreadScroll} style={{ flex: 1, overflowY: "auto", padding: "16px 14px 8px", display: "flex", flexDirection: "column" }}>
+              <div ref={scrollContainerRef} onScroll={handleThreadScroll} onCopy={handleThreadCopy} style={{ flex: 1, overflowY: "auto", padding: "16px 14px 8px", display: "flex", flexDirection: "column" }}>
                 {messages.map((msg, i) => (
                   <div key={i} ref={el => { if (el) messageRefsMap.current.set(i, el); else messageRefsMap.current.delete(i); }}>
                     <MessageBubble
@@ -3208,7 +3261,7 @@ export default function AiPanel({
                 />
               </div>
             )}
-            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} />
+            <ChatBox onSend={handleSend} getEditorContext={getEditorContext} forcedContext={forcedContext} onForcedContextConsumed={onForcedContextConsumed} isStreaming={isStreaming} onStop={handleStop} handleRef={chatBoxRef} queued={queuedMessage} onQueue={handleQueue} onRemoveQueued={handleRemoveQueued} onEditQueued={handleEditQueued} skills={sessionExtensions?.skills} commands={sessionExtensions?.commands} onSelectFolder={onOpenFolder} getUserHistory={getUserHistory} />
           </>
         )}
 

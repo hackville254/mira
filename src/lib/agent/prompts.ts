@@ -59,6 +59,27 @@ export const ASK_ANSWER_RULES = [
   "- Explain the why, not just the what. Keep it tight; the user can open the files you point to.",
 ].join("\n");
 
+/**
+ * Politique de liens dans les réponses.
+ *
+ * BUT : l'agent ne doit pas inventer d'URL (docs, issues, PR, pages) qui
+ * n'existent pas ou renvoient un 404. Ce bloc est volontairement NEUTRE : il ne
+ * privilégie AUCUNE source et n'interdit pas de fournir des liens. Il ne demande
+ * qu'une chose vérifiable — ne citer une URL que si elle vient d'être observée
+ * (résultat d'outil, contenu lu, code) plutôt que reconstruite de mémoire.
+ *
+ * POURQUOI ce cadrage : un modèle « recopie » très souvent une URL plausible en
+ * assemblant des motifs connus (org/repo, /blob/main/…, slugs de doc). Ces liens
+ * paraissent justes mais pointent dans le vide. La seule règle robuste est
+ * l'ORIGINE : un lien est fiable s'il a été RÉELLEMENT vu, pas s'il a été deviné.
+ */
+export const LINK_SOURCING_RULES = [
+  "## Links",
+  "- Only include a URL you have actually observed in this session: a result from a web search or fetch, a line of code, or the user's own message. Copy it verbatim; never reconstruct one from memory or from a pattern that looks plausible.",
+  "- When you don't have a verified link, name the source in words (the file, the tool, the site) instead of inventing a URL. A plain reference is better than a broken link.",
+  "- Never present a guessed or generic home-page URL as if it were the specific page you mean. If you are unsure it resolves, don't include it.",
+].join("\n");
+
 /** Rappel de concision — placé tôt car il colore tout le reste de la réponse. */
 export const CONCISION = [
   "## Conciseness",
@@ -298,7 +319,7 @@ export function buildSystemPrompt(
   // désactivés sont retirés du prompt, donc jamais appelés par le modèle.
   const fullContract = disabledTools.size > 0 ? buildFullToolContract(disabledTools) : TOOL_CONTRACT_FULL;
   const readOnlyContract = disabledTools.size > 0 ? buildReadOnlyToolContract(disabledTools) : TOOL_CONTRACT_READ_ONLY;
-  const blocks: string[] = [identity(mode), CONCISION, OBJECTIVE_PURSUIT];
+  const blocks: string[] = [identity(mode), CONCISION, OBJECTIVE_PURSUIT, LINK_SOURCING_RULES];
 
   if (mode === "agent") {
     // Principes d'abord…

@@ -26,6 +26,7 @@ import {
   filterSlashCommands,
   getSlashQuery,
   mergeSlashCommands,
+  resolveHistoryNav,
 } from "../inputCommands";
 
 describe("inputCommands — modes d'agent", () => {
@@ -204,5 +205,35 @@ describe("inputCommands — fusion avec les commandes runtime Cline", () => {
       { id: "rev", name: "rev", description: "Revue de code", kind: "skill" },
     ]);
     expect(merged.find(c => c.name === "rev")!.description).toBe("Revue de code");
+  });
+});
+
+describe("inputCommands — navigation dans l'historique", () => {
+  const history = ["premier", "deuxième", "dernier"];
+
+  it("remonte du brouillon vers le message le plus récent", () => {
+    expect(resolveHistoryNav({ direction: "up", index: -1, history, draft: "brouillon" }))
+      .toEqual({ index: 0, text: "dernier" });
+  });
+
+  it("remonte vers le plus ancien puis s'arrête", () => {
+    const a = resolveHistoryNav({ direction: "up", index: 0, history, draft: "" })!;
+    expect(a).toEqual({ index: 1, text: "deuxième" });
+    const b = resolveHistoryNav({ direction: "up", index: a.index, history, draft: "" })!;
+    expect(b).toEqual({ index: 2, text: "premier" });
+    const c = resolveHistoryNav({ direction: "up", index: b.index, history, draft: "" })!;
+    expect(c).toEqual({ index: 2, text: "premier" });
+  });
+
+  it("redescend puis restaure le brouillon", () => {
+    const down = resolveHistoryNav({ direction: "down", index: 1, history, draft: "brouillon" })!;
+    expect(down).toEqual({ index: 0, text: "dernier" });
+    const restored = resolveHistoryNav({ direction: "down", index: 0, history, draft: "brouillon" })!;
+    expect(restored).toEqual({ index: -1, text: "brouillon" });
+  });
+
+  it("ne fait rien sur un brouillon avec ↓ ou sur un historique vide", () => {
+    expect(resolveHistoryNav({ direction: "down", index: -1, history, draft: "x" })).toBeNull();
+    expect(resolveHistoryNav({ direction: "up", index: -1, history: [], draft: "x" })).toBeNull();
   });
 });

@@ -4,6 +4,36 @@ import { useState } from "react";
 import { Check, Copy, Wand2 } from "lucide-react";
 import type { Components } from "react-markdown";
 import { sanitizeProse } from "../../lib/textStyle";
+import { routeMarkdownLink } from "../../lib/ai/linkRouting";
+import { openPreviewAt } from "../../lib/ai/previewBus";
+import { openUrl } from "@tauri-apps/plugin-opener";
+
+/**
+ * Handler de clic sur un lien d'un message de l'agent.
+ *
+ * Sans cela, un `<a href>` nu laissait la webview Tauri principale naviguer vers
+ * le site : l'application entière se retrouvait noyée dans la page, sans retour.
+ * On route désormais vers le panneau intégré (http/https) ou le navigateur
+ * système (mailto/tel) ; tout autre schéma est ignoré (cf. `routeMarkdownLink`,
+ * barrière contre `javascript:`/`data:`).
+ */
+function handleLinkClick(href: string | undefined) {
+  return (e: React.MouseEvent) => {
+    const routing = routeMarkdownLink(href);
+    if (routing.action === "none") {
+      // Ancre interne ou schéma refusé : on empêche la navigation par défaut
+      // (qui noierait l'app) sans rien ouvrir.
+      e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    if (routing.action === "preview") {
+      openPreviewAt(routing.url);
+    } else {
+      void openUrl(routing.url).catch(() => { /* ouverture externe indisponible */ });
+    }
+  };
+}
 
 interface Props {
   content: string;
@@ -243,7 +273,11 @@ export default function MarkdownMessage({ content, isStreaming, onApplyCode }: P
     ),
 
     a: ({ href, children }) => (
-      <a href={href} style={{ color: "var(--origin-accent-blue)", textDecoration: "underline" }}>
+      <a
+        href={href}
+        onClick={handleLinkClick(href)}
+        style={{ color: "var(--origin-accent-blue)", textDecoration: "underline", cursor: "pointer" }}
+      >
         {children}
       </a>
     ),
