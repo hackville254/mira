@@ -582,6 +582,21 @@ export default function AgentModeView(props: AgentModeViewProps) {
               rootPath={folderPath}
               onOpenFile={(path, line, col) => openTabAtLine(path, line, col)}
               agentSessionId={activeSessionId}
+              fill
+              onAddSelectionToAi={(text) => {
+                // Réutilise le canal EXISTANT « contexte épinglé » de l'éditeur :
+                // le chat le consomme de la même façon (badge de contexte). On
+                // marque `type: 'terminal'` pour qu'il soit présenté comme une
+                // sélection de terminal, sans lignes de fichier.
+                setPinnedContext({
+                  filename: "Terminal",
+                  language: "shell",
+                  code: text,
+                  type: "terminal",
+                  startLine: 0,
+                  endLine: 0,
+                });
+              }}
             />
           )}
 

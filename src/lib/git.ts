@@ -98,11 +98,31 @@ export async function gitDiff(path: string, maxBytes?: number): Promise<string> 
 }
 
 /**
- * Diff enrichi pour la génération d'un message de commit : inclut les fichiers
- * non suivis (que `git_diff` ignore). Voir la commande Rust `git_commit_diff`.
+ * Résultat typé de `gitCommitDiff`. On distingue « pas un dépôt » / « dépôt
+ * propre » / « diff disponible » : l'ancien contrat renvoyait une chaîne vide
+ * dans les deux premiers cas, ce qui affichait « no changes » même quand le
+ * dossier n'était pas un dépôt git. Voir la commande Rust `git_commit_diff`.
  */
-export async function gitCommitDiff(path: string, maxBytes?: number): Promise<string> {
-  return invoke<string>('git_commit_diff', { path, maxBytes }).catch(() => '');
+export type CommitDiffResult =
+  | { kind: 'diff'; value: string }
+  | { kind: 'no-changes' }
+  | { kind: 'not-a-repo' };
+
+/**
+ * Diff enrichi pour la génération d'un message de commit : inclut les fichiers
+ * non suivis (que `git_diff` ignore).
+ *
+ * Un échec de communication (IPC indisponible) est remonté comme `not-a-repo`
+ * plutôt qu'avalé : sans cette distinction, l'UI afficherait « no changes » alors
+ * que la véritable cause est une erreur d'appel.
+ */
+export async function gitCommitDiff(path: string, maxBytes?: number): Promise<CommitDiffResult> {
+  const raw = await invoke<{ kind: string; value?: string }>('git_commit_diff', { path, maxBytes })
+    .catch(() => null);
+  if (!raw) return { kind: 'not-a-repo' };
+  if (raw.kind === 'diff') return { kind: 'diff', value: raw.value ?? '' };
+  if (raw.kind === 'no-changes') return { kind: 'no-changes' };
+  return { kind: 'not-a-repo' };
 }
 
 // ── Contenu à HEAD (base de comparaison du gutter de l'éditeur) ───────────────

@@ -634,6 +634,21 @@ fn diff_untracked_file(repo: &str, file: &str) -> String {
     }
 }
 
+/// Résultat de [`git_commit_diff`]. Typé pour que l'UI distingue précisément
+/// « pas un dépôt » / « dépôt propre » / « diff disponible » — l'ancien contrat
+/// renvoyait une chaîne vide dans les deux premiers cas, ce qui affichait
+/// « no changes » même quand le dossier n'était pas un dépôt.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CommitDiffResult {
+    /// Un diff existe (éventuellement tronqué).
+    Diff(String),
+    /// Dépôt git valide mais aucun changement par rapport à HEAD.
+    NoChanges,
+    /// Le dossier fourni n'est pas un dépôt git.
+    NotARepo,
+}
+
 /// Diff destiné à la génération d'un message de commit : contrairement à
 /// [`git_diff`] (utilisé par l'éditeur, focalisé sur le suivi), il inclut AUSSI
 /// les fichiers non suivis. On assemble :
@@ -642,8 +657,21 @@ fn diff_untracked_file(repo: &str, file: &str) -> String {
 ///   3. `git diff --no-index /dev/null` pour chaque fichier non suivi.
 /// Le tout est plafonné à `max_bytes` pour borner le coût du prompt.
 #[tauri::command]
-pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> String {
+pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResult {
     let cap = max_bytes.unwrap_or(12_000);
+
+    // On distingue explicitement « pas un dépôt » de « dépôt propre » : sinon
+    // l'appelant affiche « no changes » alors que la véritable cause est un
+    // dossier qui n'est pas (encore) un dépôt git. C'est la source de vérité,
+    // donc c'est ici qu'on tranche — pas en devinant côté UI.
+    let inside = git_cmd()
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&path)
+        .output();
+    match inside {
+        Ok(o) if o.status.success() => {} // dépôt valide, on continue
+        _ => return CommitDiffResult::NotARepo,
+    }
 
     let run = |args: &[&str]| -> String {
         git_cmd()
@@ -671,11 +699,14 @@ pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> String {
     }
 
     let mut combined = format!("{staged}{unstaged}{untracked}");
+    if combined.trim().is_empty() {
+        return CommitDiffResult::NoChanges;
+    }
     if combined.len() > cap {
         combined.truncate(cap);
         combined.push_str("\n… [diff truncated]");
     }
-    combined
+    CommitDiffResult::Diff(combined)
 }
 
 // ── Contenu d'un fichier à HEAD (base du gutter « inline diff » de l'éditeur) ─

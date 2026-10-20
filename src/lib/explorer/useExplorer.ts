@@ -4,6 +4,7 @@ import { getStatusFiles, type StatusFile } from "../git";
 import { loadExpanded, saveExpanded } from "../explorerState";
 import * as ops from "./ops";
 import { subscribeExplorerRefresh } from "./refreshBus";
+import { beginPathDrag, endPathDrag } from "../ai/dragBus";
 import {
   flattenTree, nextSelection, parentOf, normalize, isAncestorOrSelf, baseName,
   type FlatRow, type SelectMods,
@@ -307,8 +308,19 @@ export function useExplorer(
 
   // ── Drag & drop interne ─────────────────────────────────────────────────────
 
-  const beginDrag = useCallback((paths: string[]) => { dragPathsRef.current = paths; setDragPaths(paths); }, []);
-  const endDrag = useCallback(() => { dragPathsRef.current = []; setDragPaths([]); setDropTarget(null); }, []);
+  const beginDrag = useCallback((paths: string[]) => {
+    dragPathsRef.current = paths;
+    setDragPaths(paths);
+    // Publie le drag sur le bus : l'input du chat s'en sert pour proposer
+    // d'attacher ces chemins comme contexte (drag explorateur → chat).
+    beginPathDrag(paths);
+  }, []);
+  const endDrag = useCallback(() => {
+    dragPathsRef.current = [];
+    setDragPaths([]);
+    setDropTarget(null);
+    endPathDrag();
+  }, []);
 
   /**
    * Après un déplacement (drag interne ou couper/coller), la sélection suit les

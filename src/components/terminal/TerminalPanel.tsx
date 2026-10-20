@@ -63,6 +63,21 @@ interface Props {
    * peut rien y taper — c'est un miroir, pas un shell.
    */
   agentSessionId?: string | null;
+  /**
+   * Quand `true`, le panneau REMPLIT toute la hauteur de son conteneur (hauteur
+   * 100%) au lieu d'utiliser la hauteur persistée redimensionnable.
+   *
+   * Cas d'usage : le terminal affiché comme ONGLET plein écran (mode IA) — il n'a
+   * pas de sens de lui garder une hauteur figée qui laisse un vide sous lui. Le
+   * panneau bas classique de l'éditeur laisse `fill` à `false` (hauteur
+   * redimensionnable conservée).
+   */
+  fill?: boolean;
+  /**
+   * Envoi de la sélection du terminal vers l'input du chat (« Add to AI »).
+   * Relayé à chaque instance de terminal ; le panneau ne fait que transmettre.
+   */
+  onAddSelectionToAi?: (text: string) => void;
 }
 
 type BottomView = 'terminal' | 'problems' | 'output';
@@ -206,7 +221,7 @@ function ShellDot({ info }: { info: TabShellInfo | undefined }) {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile, agentSessionId = null }, ref) {
+const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile, agentSessionId = null, fill = false, onAddSelectionToAi }, ref) {
   const [view, setView] = useState<BottomView>('terminal');
   const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd, "bash"));
   const [activeId, setActiveId] = useState<number>(() => {
@@ -320,6 +335,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   }, []);
 
   const renderHeight = Math.max(MIN_HEIGHT, Math.min(height, maxAvailable));
+  // En mode « fill » (onglet plein écran), on occupe TOUT l'espace du conteneur :
+  // `flex: 1` + hauteur minimale nulle, plutôt qu'une hauteur figée qui laissait
+  // un vide sous le terminal. Le redimensionnement vertical n'a alors pas de sens.
+  const filling = fill;
+  const rootHeight: number | string = filling ? "100%" : renderHeight;
 
   // ── Resize drag ──────────────────────────────────────────────────────────
   const handleDragStart = useCallback(
@@ -422,14 +442,17 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     <div
       ref={rootRef}
       style={{
-        height: renderHeight,
+        height: rootHeight,
+        flex: filling ? 1 : undefined,
+        minHeight: filling ? 0 : undefined,
         flexShrink: 0,
         display: hidden ? "none" : "flex",
         flexDirection: "column",
         backgroundColor: "var(--origin-bg-panel)",
       }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — masquée en mode « fill » : la hauteur n'est pas réglable. */}
+      {!filling && (
       <div
         onMouseDown={handleDragStart}
         style={{ height: 4, flexShrink: 0, cursor: "row-resize" }}
@@ -440,6 +463,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
         }}
       />
+      )}
 
       {/* Header */}
       <div
@@ -539,6 +563,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
                 task={taskSpawns[tab.id]}
                 onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
                 onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}
+                onAddSelectionToAi={onAddSelectionToAi}
               />
             </div>
           ))}

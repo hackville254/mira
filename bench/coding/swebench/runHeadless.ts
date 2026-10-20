@@ -45,7 +45,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 
-import { ClineSidecarClient, type HeadlessRunMetrics } from "../headless/clineSidecar";
+import { ClineSidecarClient, isInconclusive, type HeadlessRunMetrics, type TerminationClass } from "../headless/clineSidecar";
 import { searchIndex } from "../headless/codeSearch";
 import { validateInstance, testFilesFor, type SweBenchInstance } from "./instance";
 import { ensureArmed, officialImageName } from "./prepare";
@@ -186,6 +186,18 @@ interface SweAttempt extends AttemptResult {
   metrics?: HeadlessRunMetrics;
   /** Motif de fin du moteur (`completed`/`max_iterations`/`error`/…). */
   stopReason?: string;
+  /**
+   * Classe de terminaison explicite (Étape 4). `provider-error`/`truncated`
+   * signalent un run NON CONCLUANT (incident d'infrastructure) : sa tentative
+   * ne mesure PAS le modèle et doit être rejouée, pas comptée comme un échec.
+   */
+  termination?: TerminationClass;
+  /**
+   * Vrai si le run n'est pas concluant (erreur fournisseur/transitoire ou
+   * réponse tronquée). Ces tentatives sont écartées du taux de résolution
+   * effectif plutôt que comptées comme des échecs de programmation.
+   */
+  inconclusive?: boolean;
 }
 
 /**
@@ -265,6 +277,12 @@ async function runOne(
   // échec (« l'agent a épuisé son budget de tours ») au lieu de le confondre
   // avec une erreur du fournisseur. Aucune invention : valeur du moteur.
   base.stopReason = run.metrics.stopReason;
+  // Classe de terminaison (Étape 4) : un run `provider-error`/`truncated` est
+  // un incident d'INFRASTRUCTURE, pas un échec de programmation. On le marque
+  // `inconclusive` pour l'écarter du taux effectif (règle : ne jamais
+  // confondre une erreur du fournisseur avec une erreur du modèle).
+  base.termination = run.metrics.termination;
+  base.inconclusive = run.metrics.termination ? isInconclusive(run.metrics.termination) : false;
 
   // ── Capture du patch produit (format officiel) ────────────────────────────
   try {
@@ -311,8 +329,18 @@ async function runOne(
   // Un échec d'agent n'efface PAS les tests déjà valides (le protocole ne note
   // QUE les tests) ; il est conservé à part, pour l'analyse.
   if (base.outcome !== "resolved" && run.metrics.error) {
-    base.outcome = base.turns === 0 ? "agent-error" : base.outcome;
+    // Un run NON CONCLUANT (erreur fournisseur/transitoire, réponse tronquée,
+    // ou aucun tour produit) n'est jamais un échec de PROGRAMMATION : on le
+    // classe `agent-error` — distinct d'`unresolved` — pour qu'il soit écarté
+    // du taux effectif au lieu de fausser le score (Étape 4).
+    base.outcome = base.inconclusive || base.turns === 0 ? "agent-error" : base.outcome;
     base.error = `${base.error ?? ""} agent: ${run.metrics.error}`.trim();
+  }
+  // Même sans `error`, une terminaison non concluante (ex. troncature détectée
+  // via `notice`) reste classée `agent-error` : la mesure ne vaut rien.
+  if (base.outcome === "unresolved" && base.inconclusive) {
+    base.outcome = "agent-error";
+    base.error = `${base.error ?? ""} terminaison: ${base.termination}`.trim();
   }
   return base;
 }
@@ -398,7 +426,9 @@ async function main(): Promise<void> {
           `   → ${a.outcome} | tours=${a.turns ?? 0} outils=${a.toolCalls ?? 0} ` +
           `in=${a.inputTokens ?? 0} out=${a.outputTokens ?? 0} ` +
           `agent=${Math.round(a.agentMs / 1000)}s test=${Math.round(a.testMs / 1000)}s total=${Math.round((Date.now() - t0) / 1000)}s` +
+          (a.termination ? ` | terminaison=${a.termination}` : "") +
           (a.stopReason ? ` | fin=${a.stopReason}` : "") +
+          (a.inconclusive ? " | NON CONCLUANT" : "") +
           (a.metrics?.convergence?.loopDetected
             ? ` | boucle_outil=${a.metrics.maxConsecutiveSameTool}`
             : "") +
@@ -417,7 +447,17 @@ async function main(): Promise<void> {
 
   await persist(attempts, predictions, modelLabel);
   const resolved = attempts.filter(a => a.outcome === "resolved").length;
+  const inconclusive = attempts.filter(a => a.inconclusive).length;
+  const measurable = attempts.length - inconclusive;
   console.log(`\n# terminé : ${resolved}/${attempts.length} résolue(s)`);
+  if (inconclusive > 0) {
+    // Séparation EXPLICITE : ces tentatives ne mesurent pas le modèle (incident
+    // fournisseur/transitoire, réponse tronquée). Le taux effectif les exclut.
+    console.log(
+      `# non concluants (fournisseur/troncature) : ${inconclusive} → ` +
+      `taux effectif ${resolved}/${measurable} = ${measurable > 0 ? ((resolved / measurable) * 100).toFixed(1) : "0.0"}%`,
+    );
+  }
 }
 
 /** Écrit les livrables (résultats bruts, prédictions, rapport, résumé). */

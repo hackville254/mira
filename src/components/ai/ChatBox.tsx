@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, Waypoints, Square, Clock, Pencil, Trash2 } from "lucide-react";
+import { Plus, ArrowUp, ChevronDown, ChevronRight, Bot, MessageCircle, MessageSquare, Map, FileCode, X, Sparkles, Hand, Mic, Hash, SquareSlash, Image as ImageIcon, Wand2, BookOpen, Waypoints, Square, Clock, Pencil, Trash2, SquareTerminal } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import PreferencesDropdown from "./PreferencesDropdown";
 import logoCode from "../../assets/logo-code.svg";
@@ -10,7 +10,7 @@ import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { resolveDefaultModel, resolveDefaultProvider } from "../../lib/secrets";
 import { optimizePrompt } from "../../lib/promptOptimizer";
-import { copyPath, createDirCmd, pathExists } from "../../lib/fs";
+import { copyPath, createDirCmd, pathExists, readDir } from "../../lib/fs";
 import { loadPermissionMode, savePermissionMode, type PermissionMode } from "../../lib/agent/permissions";
 import {
   AGENTS as AGENT_DESCRIPTORS,
@@ -42,6 +42,7 @@ import {
   type ContextKind,
 } from "../../lib/contextMentions";
 import { ContextTypeMenu, RulePicker, FolderPicker } from "./ContextMenu";
+import { subscribePathDrag, type PathDragPayload } from "../../lib/ai/dragBus";
 
 // ── Agent selector ────────────────────────────────────────────────────────────
 
@@ -562,6 +563,9 @@ function readContextBadges(el: HTMLDivElement): ContextRef[] {
 }
 
 function contextLabel(ctx: EditorContext): string {
+  // Une sélection de terminal n'a pas de lignes de fichier : on l'étiquette
+  // explicitement pour ne pas afficher « L0 ».
+  if (ctx.type === 'terminal') return 'Terminal';
   if (ctx.startLine === ctx.endLine) return `L${ctx.startLine}`;
   return `L${ctx.startLine}–${ctx.endLine}`;
 }
@@ -640,6 +644,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const { folderPath } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
+  /** Zone qui accepte le dépôt d'un fichier/dossier (délimite le hit-test OS). */
+  const dropZoneRef = useRef<HTMLDivElement>(null);
   const modeAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
   const plusBtnRef = useRef<HTMLButtonElement>(null);
@@ -938,14 +944,25 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     const el = editableRef.current;
     const draft = (el?.textContent ?? "").trim();
     if (!draft) return;
+    // Contexte projet minimal et HONNÊTE : uniquement la racine réellement
+    // ouverte. On n'injecte pas d'arborescence devinée (aucune lecture disque) :
+    // le modèle ne doit pas supposer des fichiers qui n'existent pas.
+    const projectContext = folderPath ? `Workspace root: ${folderPath}` : undefined;
     setOptimizing(true);
     try {
-      const improved = await optimizePrompt(draft, selectedProviderId, selectedModelId);
-      if (!improved) {
-        onOptimizeError?.("Could not optimize. Check that an AI provider is configured in Settings.");
+      const result = await optimizePrompt(draft, selectedProviderId, selectedModelId, projectContext);
+      if (!result.ok) {
+        // Message PRÉCIS par cause, au lieu d'un « vérifie tes Settings » opaque.
+        if (result.reason === 'no-provider') {
+          onOptimizeError?.("No AI provider configured. Add an API key in Settings → Connect AI, or pick a local model.");
+        } else if (result.reason === 'empty-input') {
+          onOptimizeError?.("Write something in the input before optimizing.");
+        } else {
+          onOptimizeError?.(result.detail ? `Optimization failed: ${result.detail}` : "Optimization failed.");
+        }
         return;
       }
-      writeEditorText(improved);
+      writeEditorText(result.text);
       // Le texte réinjecté ne doit pas rouvrir les menus d'autocomplétion.
       setSlashActive(false);
       setHashActive(false);
@@ -960,7 +977,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     } finally {
       setOptimizing(false);
     }
-  }, [optimizing, selectedProviderId, selectedModelId, writeEditorText, onOptimizeError]);
+  }, [optimizing, selectedProviderId, selectedModelId, folderPath, writeEditorText, onOptimizeError]);
 
   /** Navigation ↑/↓ dans l'historique des messages envoyés (type Trae). */
   const navigateHistory = useCallback((direction: "up" | "down") => {
@@ -1127,6 +1144,100 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     hashRangeRef.current = null;
   };
 
+  /**
+   * Attache des chemins déposés (drag depuis l'explorateur ou depuis le Finder)
+   * comme contexte du message : un DOSSIER devient `#Folder`, un FICHIER devient
+   * `#File`. On réutilise le mécanisme des badges `#`, donc le chemin est résolu
+   * exactement comme via le menu `#` — aucune voie parallèle, aucun biais.
+   *
+   * La nature du chemin est déterminée par le FS (`readDir` n'aboutit que sur un
+   * dossier) : on ne devine pas sur l'extension, ce qui serait faux pour un
+   * dossier nommé `v2.0` ou un fichier sans extension.
+   */
+  const handleDropPaths = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    const scope = { workspaceRoot: folderPath || null };
+    void (async () => {
+      for (const p of paths) {
+        if (!p) continue;
+        let kind: ContextKind;
+        if (/[\\/]$/.test(p)) {
+          kind = "folder";
+        } else {
+          try {
+            await readDir(p, scope);
+            kind = "folder";
+          } catch {
+            try {
+              await readDir(p);
+              kind = "folder";
+            } catch {
+              kind = "file";
+            }
+          }
+        }
+        const label = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+        attachContextRef({ kind, path: p, label });
+      }
+    })();
+  }, [folderPath]); // eslint-disable-line react-hooks/exhaustive-deps -- attachContextRef est stable (refs)
+
+  // État « survol de drop » : vrai tant qu'un drag de chemins (interne à l'app)
+  // est actif. Sert uniquement à afficher la surbrillance de la zone d'input.
+  const [pathDragActive, setPathDragActive] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribePathDrag((payload: PathDragPayload | null) => {
+      setPathDragActive(payload !== null);
+    });
+    return unsub;
+  }, []);
+
+  // Dépôt depuis l'explorateur Mira : le pointer-up a lieu hors de l'arbre et
+  // l'arbre émet `origin-chat-drop` sur la zone marquée `data-chat-drop`.
+  useEffect(() => {
+    const el = dropZoneRef.current;
+    if (!el) return;
+    const onDrop = (e: Event) => {
+      const detail = (e as CustomEvent<{ paths?: string[] }>).detail;
+      const paths = detail?.paths ?? [];
+      if (paths.length > 0) handleDropPaths(paths);
+    };
+    el.addEventListener("origin-chat-drop", onDrop);
+    return () => el.removeEventListener("origin-chat-drop", onDrop);
+  }, [handleDropPaths]);
+
+  // Dépôt depuis le Finder/OS : Tauri expose les chemins absolus via
+  // `onDragDropEvent` (le `dataTransfer` HTML ne donne PAS de chemin local dans
+  // la webview). On n'attache que si le relâchement a lieu SUR la zone d'input
+  // (hit-test par position) — sinon un fichier déposé ailleurs dans l'app ne
+  // doit pas devenir un contexte malgré l'utilisateur.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const un = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const zone = dropZoneRef.current;
+          if (!zone) return;
+          const scale = window.devicePixelRatio || 1;
+          const r = zone.getBoundingClientRect();
+          const x = event.payload.position.x / scale;
+          const y = event.payload.position.y / scale;
+          if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+          handleDropPaths(event.payload.paths);
+        });
+        if (cancelled) un();
+        else unlisten = un;
+      } catch {
+        // API indisponible (tests, environnement non-Tauri) : pas de drop OS.
+      }
+    })();
+    return () => { cancelled = true; unlisten?.(); };
+  }, [handleDropPaths]);
+
   const handleMentionSelect = (filepath: string, filename: string) => {
     const el = editableRef.current;
     const savedRange = mentionRangeRef.current;
@@ -1283,18 +1394,26 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
   return (
     <div
-      ref={containerRef}
+      ref={(node) => {
+        containerRef.current = node;
+        dropZoneRef.current = node;
+      }}
+      data-chat-drop="1"
       onFocus={refreshContext}
       style={{
         margin: "10px",
         borderRadius: "8px",
-        border: "1px solid var(--origin-border-default)",
-        backgroundColor: "var(--origin-bg-base)",
+        border: pathDragActive
+          ? "1px dashed var(--origin-accent-blue)"
+          : "1px solid var(--origin-border-default)",
+        backgroundColor: pathDragActive
+          ? "color-mix(in srgb, var(--origin-accent-blue) 8%, var(--origin-bg-base))"
+          : "var(--origin-bg-base)",
         outline: focused
           ? "1px solid color-mix(in srgb, var(--origin-fg-muted) 50%, transparent)"
           : "1px solid transparent",
         outlineOffset: "2px",
-        transition: "outline-color 0.15s ease",
+        transition: "outline-color 0.15s ease, border-color 0.12s ease, background-color 0.12s ease",
         position: "relative",
       }}
     >
@@ -1474,7 +1593,9 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             color: "var(--origin-fg-default)",
             maxWidth: "100%",
           }}>
-            <FileCode size={11} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
+            {contextSnap!.type === 'terminal'
+              ? <SquareTerminal size={11} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />
+              : <FileCode size={11} style={{ flexShrink: 0, color: "var(--origin-fg-muted)" }} />}
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {contextSnap!.filename}
             </span>

@@ -427,7 +427,7 @@ export interface EditorContext {
   filename: string;
   language: string;
   code: string;
-  type: 'selection' | 'viewport';
+  type: 'selection' | 'viewport' | 'terminal';
   startLine: number;
   endLine: number;
 }

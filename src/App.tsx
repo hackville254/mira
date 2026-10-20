@@ -946,6 +946,20 @@ function App() {
                     hidden={!terminalOpen}
                     rootPath={folderPath}
                     onOpenFile={(path, line, col) => openTabAtLine(path, line, col)}
+                    onAddSelectionToAi={(text) => {
+                      // Même canal « contexte épinglé » que l'éditeur : le chat
+                      // (AiPanel) le consomme identiquement. `type: 'terminal'`
+                      // indique une sélection de terminal (sans lignes de fichier).
+                      setPinnedContext({
+                        filename: "Terminal",
+                        language: "shell",
+                        code: text,
+                        type: "terminal",
+                        startLine: 0,
+                        endLine: 0,
+                      });
+                      setAiPanelOpen(true);
+                    }}
                   />
                 )}
               </div>

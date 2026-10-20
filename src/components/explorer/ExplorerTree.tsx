@@ -182,6 +182,22 @@ export default function ExplorerTree(props: Props) {
       cleanupDragStyles();
       setDragGhost(null);
       if (s.active) {
+        // Dépôt dans l'input du chat ? On teste l'élément SOUS le curseur plutôt
+        // que l'ordre des listeners `window` (non garanti) : si le relâchement a
+        // lieu au-dessus d'une zone marquée `data-chat-drop`, on délègue à
+        // l'input (qui attachera les chemins comme contexte) et on NE fait PAS
+        // le déplacement interne — sinon le dossier serait à la fois attaché au
+        // chat et déplacé dans l'arbre.
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        const chatDrop = el?.closest?.("[data-chat-drop]");
+        if (chatDrop) {
+          chatDrop.dispatchEvent(new CustomEvent("origin-chat-drop", {
+            bubbles: true,
+            detail: { paths: s.paths },
+          }));
+          onEndDrag();
+          return;
+        }
         const dir = internalTargetAt(e.clientX, e.clientY);
         // La racine et les lignes peuvent être des cibles ; on ignore seulement
         // quand la cible est l'un des éléments glissés (ou son sous-arbre).

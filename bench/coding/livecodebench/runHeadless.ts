@@ -34,9 +34,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
-import { ClineSidecarClient } from "../headless/clineSidecar";
+import { ClineSidecarClient, isInconclusive } from "../headless/clineSidecar";
 import { searchIndex } from "../headless/codeSearch";
 import type { ConvergenceReport } from "../headless/convergence";
+import type { TerminationClass } from "../headless/termination";
 import { resolveClineProvider } from "../../../src/lib/agent/providers";
 import { summarize, writeReport, formatTable, type BenchReport } from "../report";
 import type { AttemptResult } from "../types";
@@ -112,6 +113,14 @@ interface LcbAttempt extends AttemptResult {
   skipped?: boolean;
   /** Motif de fin du moteur (`completed`/`max_iterations`/`error`/…). */
   stopReason?: string;
+  /** Classe de terminaison explicite (Étape 4). */
+  termination?: TerminationClass;
+  /**
+   * Vrai si le run n'est pas concluant (erreur fournisseur/transitoire, réponse
+   * tronquée) : la solution produite peut être INCOMPLÈTE, la notation ne
+   * mesure donc pas le modèle. Ces tentatives sont rejouées, pas comptées.
+   */
+  inconclusive?: boolean;
   /** Signal de non-convergence (boucle d'outil / exploration stérile). */
   convergence?: ConvergenceReport;
 }
@@ -246,6 +255,8 @@ async function runOne(
   attempt.inputTokens = run.metrics.inputTokens;
   attempt.outputTokens = run.metrics.outputTokens;
   attempt.stopReason = run.metrics.stopReason;
+  attempt.termination = run.metrics.termination;
+  attempt.inconclusive = run.metrics.termination ? isInconclusive(run.metrics.termination) : false;
   attempt.convergence = run.metrics.convergence;
   if (run.metrics.error) attempt.error = `agent : ${run.metrics.error}`;
 
@@ -271,6 +282,14 @@ async function runOne(
   attempt.total = evalResult.total;
   attempt.skipped = evalResult.skipped === true;
   attempt.outcome = isResolved(evalResult) ? "resolved" : "unresolved";
+  // Un run NON CONCLUANT (fournisseur/transitoire, réponse tronquée) ne mesure
+  // pas le modèle : si la solution n'est pas résolue, on classe `agent-error`
+  // (écartée du taux) au lieu de la compter comme un échec de programmation.
+  // Une solution résolue MALGRÉ une terminaison douteuse reste comptée.
+  if (attempt.outcome === "unresolved" && attempt.inconclusive) {
+    attempt.outcome = "agent-error";
+    attempt.error = `${attempt.error ?? ""} terminaison: ${attempt.termination}`.trim();
+  }
   if (evalResult.error && !attempt.error) attempt.error = evalResult.error;
   console.log(
     `   [eval] contrat=${attempt.contract} passed=${evalResult.passed}/${evalResult.total} ` +
@@ -356,9 +375,12 @@ async function main(): Promise<void> {
         console.log(
           `   → ${a.outcome} | cas=${a.passed}/${a.total} tours=${a.turns ?? 0} outils=${a.toolCalls ?? 0} ` +
           `in=${a.inputTokens ?? 0} out=${a.outputTokens ?? 0} agent=${Math.round(a.agentMs / 1000)}s eval=${Math.round(a.testMs / 1000)}s` +
+          (a.termination ? ` | terminaison=${a.termination}` : "") +
           (a.stopReason ? ` | fin=${a.stopReason}` : "") +
+          (a.inconclusive ? " | NON CONCLUANT" : "") +
           (a.convergence?.loopDetected ? ` | boucle_outil=${a.convergence.maxConsecutiveSameTool}` : "") +
-          (a.convergence?.stalled ? " | exploration_stérile" : ""),
+          (a.convergence?.stalled ? " | exploration_stérile" : "") +
+          (a.error ? ` | err=${a.error.slice(0, 160)}` : ""),
         );
         await persist();
       }
@@ -369,7 +391,16 @@ async function main(): Promise<void> {
   }
 
   const resolved = attempts.filter(a => a.outcome === "resolved").length;
+  const scored = attempts.filter(a => !a.skipped).length;
+  const inconclusive = attempts.filter(a => a.inconclusive && !a.skipped).length;
+  const measurable = scored - inconclusive;
   console.log(`\n# terminé : ${resolved}/${attempts.length} résolue(s)`);
+  if (inconclusive > 0) {
+    console.log(
+      `# non concluants (fournisseur/troncature) : ${inconclusive} → ` +
+      `taux effectif ${resolved}/${measurable} = ${measurable > 0 ? ((resolved / measurable) * 100).toFixed(1) : "0.0"}%`,
+    );
+  }
 }
 
 void main().catch(e => {

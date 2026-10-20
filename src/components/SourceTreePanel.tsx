@@ -147,13 +147,22 @@ export default function SourceTreePanel() {
       // le diff (calculé côté Rust sur le depôt réel) contenait bien des
       // modifications. L'autorité sur « y a-t-il des changements » est le diff.
       await load();
-      const msg = await generateCommitMessage(folderPath);
-      if (!msg) {
-        // Null signifie soit « diff vide », soit « aucun provider configuré ».
-        showToast('No changes to describe, or no AI provider is configured in Settings.', 'info');
+      const result = await generateCommitMessage(folderPath);
+      if (!result.ok) {
+        // Message PRÉCIS par cause : l'utilisateur sait s'il doit committer des
+        // changements ou configurer une clé API, au lieu d'un message ambigu.
+        if (result.reason === 'no-provider') {
+          showToast('No AI provider configured. Add an API key in Settings → Connect AI, or pick a local model.', 'error');
+        } else if (result.reason === 'not-a-repo') {
+          showToast('This folder is not a git repository. Initialize git first (git init) to describe changes.', 'error');
+        } else if (result.reason === 'empty-input') {
+          showToast('No changes to describe.', 'info');
+        } else {
+          showToast(result.detail ? `AI call failed: ${result.detail}` : 'AI call failed.', 'error');
+        }
         return;
       }
-      setTitle(msg);
+      setTitle(result.text);
       showToast('Commit message generated.', 'success');
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : 'Failed to generate message.', 'error');

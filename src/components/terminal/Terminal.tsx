@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { Sparkles } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import {
   terminalCreate,
@@ -24,6 +25,12 @@ interface Props {
   task?: { program: string; args: string[] } | null;
   onCwdChange?: (cwd: string) => void;
   onShellState?: (state: 'idle' | 'running', exitCode?: number) => void;
+  /**
+   * Envoi de la SÉLECTION du terminal vers l'input du chat (« Add to AI »).
+   * Fourni par le parent : le terminal ne connaît pas le chat, il se contente de
+   * remonter le texte sélectionné. Absent → pas de bouton flottant.
+   */
+  onAddSelectionToAi?: (text: string) => void;
 }
 
 function cssVar(name: string): string {
@@ -56,7 +63,7 @@ function buildTheme() {
   };
 }
 
-export default function Terminal({ cwd, active, clearKey, pendingInput, task, onCwdChange, onShellState }: Props) {
+export default function Terminal({ cwd, active, clearKey, pendingInput, task, onCwdChange, onShellState, onAddSelectionToAi }: Props) {
   const { theme } = useTheme();
   const containerRef    = useRef<HTMLDivElement>(null);
   const xtermRef        = useRef<XTerm | null>(null);
@@ -65,10 +72,17 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
   const fitAddonRef     = useRef<FitAddon | null>(null);
   const onCwdChangeRef  = useRef(onCwdChange);
   const onShellStateRef = useRef(onShellState);
+  const onAddSelectionRef = useRef(onAddSelectionToAi);
   // eslint-disable-next-line react-hooks/refs
   onCwdChangeRef.current  = onCwdChange;
   // eslint-disable-next-line react-hooks/refs
   onShellStateRef.current = onShellState;
+  // eslint-disable-next-line react-hooks/refs
+  onAddSelectionRef.current = onAddSelectionToAi;
+
+  // Bouton flottant « Add to AI » : positionné en pixels (relatifs au conteneur)
+  // au-dessus du début de la sélection. `null` = aucune sélection → bouton masqué.
+  const [addBtn, setAddBtn] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!clearKey) return;
@@ -215,6 +229,33 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
       }
     });
 
+    // Suivi de la sélection : on positionne le bouton « Add to AI » au-dessus du
+    // début de la sélection. xterm ne fournit que des coordonnées de CELLULE
+    // (colonne, ligne) ; on les convertit en pixels avec la taille de cellule
+    // réelle du renderer pour aligner le bouton, quel que soit le zoom/taille.
+    const selectionDisposable = xterm.onSelectionChange(() => {
+      if (!onAddSelectionRef.current) return;
+      const sel = xterm.getSelection();
+      if (!sel || !sel.trim()) {
+        setAddBtn(null);
+        return;
+      }
+      const pos = xterm.getSelectionPosition();
+      if (!pos) {
+        setAddBtn(null);
+        return;
+      }
+      // Taille d'une cellule (px) d'après le conteneur du screen xterm.
+      const screen = containerRef.current?.querySelector('.xterm-screen') as HTMLElement | null;
+      const cellW = screen && xterm.cols ? screen.clientWidth / xterm.cols : 8;
+      const cellH = screen && xterm.rows ? screen.clientHeight / xterm.rows : 16;
+      setAddBtn({
+        x: pos.start.x * cellW,
+        // On place le bouton juste au-dessus du début de la sélection, borné à 0.
+        y: Math.max(0, pos.start.y * cellH - 26),
+      });
+    });
+
     const observer = new ResizeObserver(() => {
       // Skip when hidden (display:none collapses dimensions to 0 — fitting at 0 truncates the scrollback buffer)
       if (!containerRef.current || containerRef.current.offsetWidth === 0 || containerRef.current.offsetHeight === 0) return;
@@ -232,6 +273,7 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
       cleanupOutput?.();
       cleanupExit?.();
       dataDisposable.dispose();
+      selectionDisposable.dispose();
       observer.disconnect();
       if (termIdRef.current !== null) {
         terminalClose(termIdRef.current).catch(() => {});
@@ -270,6 +312,7 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
   return (
     <div
       style={{
+        position: "relative",
         width: "100%",
         height: "100%",
         padding: "8px 12px",
@@ -278,6 +321,43 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, task, on
       }}
     >
       <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />
+      {/* Bouton « Add to AI » — visible uniquement quand une sélection existe.
+          `onMouseDown` + `preventDefault` : on agit AVANT que le clic ne vide la
+          sélection du terminal (sinon `getSelection()` serait déjà vide). */}
+      {addBtn && (
+        <button
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const sel = xtermRef.current?.getSelection();
+            if (sel && sel.trim()) onAddSelectionRef.current?.(sel);
+            setAddBtn(null);
+            xtermRef.current?.clearSelection();
+          }}
+          title="Add terminal selection to AI"
+          style={{
+            position: "absolute",
+            left: addBtn.x + 12,
+            top: addBtn.y + 8,
+            zIndex: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            height: 22,
+            padding: "0 8px",
+            borderRadius: 5,
+            border: "1px solid var(--origin-border-default)",
+            background: "var(--origin-bg-active)",
+            color: "var(--origin-fg-default)",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            cursor: "pointer",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+          }}
+        >
+          <Sparkles size={11} style={{ color: "var(--origin-accent-blue, #4a9eff)" }} />
+          Add to AI
+        </button>
+      )}
     </div>
   );
 }

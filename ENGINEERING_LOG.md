@@ -5,6 +5,281 @@
 
 ---
 
+### [2026-10-20T16:05] | Terminal : bouton « Add to AI » sur la sélection
+
+- **Contexte :** sélectionner une ligne dans le terminal ne proposait aucune action
+  pour l'envoyer au chat, contrairement à l'éditeur (qui a « Add to AI context »
+  via menu contextuel). L'utilisateur voulait le même geste que Trae : sélection →
+  bouton flottant → la sélection alimente l'input du chat avec un prompt.
+
+- **Modifications effectuées :**
+  - `src/components/editor/Editor.tsx` — `EditorContext.type` accepte désormais
+    `'terminal'` en plus de `'selection' | 'viewport'`.
+  - `src/components/terminal/Terminal.tsx` — nouvelle prop `onAddSelectionToAi`.
+    Écoute `xterm.onSelectionChange` ; si une sélection non vide existe, convertit
+    la position de cellule (`getSelectionPosition`) en pixels via la taille de
+    cellule réelle (`.xterm-screen`) et affiche un bouton flottant « Add to AI »
+    au-dessus de la sélection. `onMouseDown` + `preventDefault` : on lit la
+    sélection AVANT que le clic ne la vide. Cleanup du disposable.
+  - `src/components/terminal/TerminalPanel.tsx` — prop `onAddSelectionToAi`
+    relayée à chaque instance de terminal.
+  - `src/components/ai/AgentModeView.tsx` et `src/App.tsx` — branchent le terminal
+    sur le canal EXISTANT « contexte épinglé » (`setPinnedContext`) déjà utilisé par
+    l'éditeur ; construction d'un `EditorContext` `{ filename: "Terminal",
+    language: "shell", type: "terminal" }`.
+  - `src/components/ai/AiPanel.tsx` — `buildContextPrefix` gère `type === "terminal"` :
+    bloc `[Terminal selection]` + fence `shell` (sinon le modèle croirait à un
+    fichier nommé « Terminal »).
+  - `src/components/ai/ChatBox.tsx` — `contextLabel` renvoie « Terminal » (au lieu
+    de « L0 ») et l'icône du badge devient `SquareTerminal` pour ce type.
+
+- **Décisions Techniques :** AUCUNE voie parallèle. On réutilise le canal unique
+  `onAddToAiContext` → `setPinnedContext` → `forcedContext` → `contextSnap`, déjà
+  emprunté par l'éditeur : le terminal ne connaît pas le chat, il remonte juste son
+  texte. Cela garantit que la sélection terminal bénéficie du MÊME traitement
+  (badge, injection dans l'API, envoi) que le contexte éditeur, sans duplication.
+  Le `type: 'terminal'` évite les faux libellés de lignes (L0) et un fence erroné.
+
+- **Impacts & Dépendances :** `EditorContext` (type élargi, rétrocompatible),
+  `Terminal`, `TerminalPanel`, `AgentModeView`, `App`, `AiPanel`, `ChatBox`.
+
+- **Prochaines étapes :** surveiller le placement du bouton en cas de zoom
+  important ou de sélection multi-lignes très haute.
+
+---
+
+### [2026-10-20T15:55] | Terminal en onglet (mode IA) : occupe enfin toute la hauteur
+
+- **Contexte :** en mode IA, le terminal est affiché comme un ONGLET plein écran
+  (pas comme le panneau bas de l'éditeur). Il rendait pourtant une hauteur figée
+  (`height` persistée) avec `flexShrink: 0`, laissant une grande zone vide sous
+  lui alors que le conteneur disposait de toute la hauteur.
+
+- **Modifications effectuées :**
+  - `src/components/terminal/TerminalPanel.tsx` — nouvelle prop `fill` (défaut
+    `false`). Quand `true`, le panneau rend `height: 100%` + `flex: 1` +
+    `minHeight: 0` au lieu de la hauteur persistée ; la poignée de
+    redimensionnement vertical est masquée (une hauteur qui remplit l'espace n'est
+    pas réglable). Le `ResizeObserver` interne du xterm (`FitAddon`) adapte
+    automatiquement le nombre de lignes/colonnes.
+  - `src/components/ai/AgentModeView.tsx` — passe `fill` au terminal rendu en
+    onglet.
+  - `src/App.tsx` — inchangé : le panneau bas de l'éditeur reste `fill={false}`
+    (hauteur redimensionnable conservée, comportement attendu pour un panneau
+    ancré).
+
+- **Décisions Techniques :** on distingue explicitement « panneau bas ancré »
+  (hauteur libre, redimensionnable) de « onglet plein écran » (remplit l'espace).
+  Forcer `100%` partout aurait cassé le resize du panneau bas ; forcer la hauteur
+  figée partout créait le vide observé. La prop `fill` traduit cette distinction
+  sans détour.
+
+- **Impacts & Dépendances :** `TerminalPanel` (nouvelle prop optionnelle,
+  rétrocompatible), `AgentModeView`. Aucun impact sur le layout du panneau bas.
+
+- **Prochaines étapes :** surveiller l'usage de `fill` si d'autres contextes
+  affichent le terminal plein cadre.
+
+---
+
+### [2026-10-20T15:50] | « No changes to describe » mensonger : diff typé + diagnostic exact
+
+- **Contexte :** l'utilisateur obtenait « No changes to describe » alors que le
+  panneau Source Control ne listait aucun fichier. Cause : le diff ET le statut
+  git étaient calculés de façon à confondre plusieurs situations distinctes —
+  « pas un dépôt git », « dépôt propre », et « échec d'appel IPC ». L'utilisateur
+  demandait aussi que le message de commit suive les bonnes pratiques.
+  Il proposait de « créer un plugin Cline » pour surcharger ce message.
+
+- **Décisions Techniques (refus du détour) :** un « plugin Cline » n'est PAS la
+  bonne approche. Cline est un agent conversationnel ; surcharger un message
+  d'erreur via un plugin serait un détour lourd, fragile et hors périmètre. La
+  cause réelle est un manque de DIAGNOSTIC côté source (Rust/TS), pas un défaut de
+  Cline. Corrigé à la source, sans biais architectural.
+
+- **Modifications effectuées :**
+  - `src-tauri/src/git.rs` — `git_commit_diff` renvoie désormais un
+    `CommitDiffResult` typé et sérialisé (`diff` / `no-changes` / `not-a-repo`) au
+    lieu d'une `String`. Vérification explicite `rev-parse --is-inside-work-tree`
+    pour distinguer « pas un dépôt » de « dépôt propre ». Le type agit comme
+    source de vérité côté backend (là où l'information est réellement connue).
+  - `src/lib/git.ts` — `gitCommitDiff` renvoie `CommitDiffResult` (union TS) ;
+    un échec d'invoke est remonté comme `not-a-repo` au lieu d'être avalé par
+    `.catch(() => '')` (qui mentait en affichant « no changes »).
+  - `src/lib/agent/activeModel.ts` — `LlmActionFailure` gagne la raison
+    `not-a-repo`.
+  - `src/lib/gitCommitMessage.ts` — traduit `CommitDiffResult` en
+    `LlmActionFailure` (`not-a-repo` → `not-a-repo`, `no-changes` → `empty-input`).
+    Le prompt système reste conforme « Conventional Commits » (déjà en place :
+    type/scope/impératif, `!` en cas de rupture, ≤ 50/72 caractères, langue
+    alignée sur l'historique).
+  - `src/components/SourceTreePanel.tsx` — toast dédié pour `not-a-repo`
+    (« This folder is not a git repository… ») distinct de « No changes ».
+
+- **Impacts & Dépendances :** changement de contrat IPC (`git_commit_diff`) et du
+  type de retour `gitCommitDiff`. Un seul appelant TS (`generateCommitMessage`),
+  mis à jour. Rétro-compatibilité non nécessaire (app interne, déployé ensemble).
+
+- **Sécurité :** aucune nouvelle surface — les args restent passés via
+  `Command::args` (pas de shell) ; la distinction `not-a-repo` évite d'envoyer un
+  diff vide au réseau ; `no-provider` continue de bloquer tout envoi sans clé.
+
+- **Prochaines étapes :** si l'utilisateur est bien dans un dépôt propre, le
+  message désormais affiché sera « No changes to describe. » (correct) ; sinon
+  « not a git repository » (actionnable : `git init`).
+
+---
+
+### [2026-10-20T15:40] | Échecs IA explicites + optimisation de prompt réellement améliorante
+
+- **Contexte :** deux retours d'usage :
+  1. Le message « No changes to describe, or no AI provider is configured in
+     Settings. » est ambigu : impossible de savoir si le problème vient du dépôt
+     (diff vide) ou de la configuration IA.
+  2. L'optimisation de prompt « n'améliore pas vraiment » : le prompt système
+     interdisait tout ajout, donc le modèle se contentait de reformuler à peine.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/activeModel.ts` — ajout des types `LlmActionFailure`
+    (`no-provider` | `empty-input` | `call-failed`) et `LlmActionResult`
+    (`{ ok: true, text }` | `{ ok: false, reason, detail? }`).
+  - `src/lib/gitCommitMessage.ts` — `generateCommitMessage` renvoie
+    `LlmActionResult` au lieu de `string | null` : diff vide → `empty-input`,
+    provider sans clé → `no-provider`, exception provider → `call-failed` (avec
+    `detail`). Sortie modèle vide → `call-failed`.
+  - `src/components/SourceTreePanel.tsx` — toasts PRÉCIS par cause au lieu du
+    message unique ambigu.
+  - `src/lib/promptOptimizer.ts` — retour typé + **prompt système réécrit** :
+    il AUTORISE désormais la structuration (objectif, livrable, critères
+    d'acceptation, étapes) — ce qui rend le prompt exploitable — tout en
+    INTERDISANT l'invention de technos/chemins/exigences non exprimés. Ajout d'un
+    `projectContext` facultatif (racine du workspace) pour ancrer les références
+    sans supposer l'existence de fichiers.
+  - `src/components/ai/ChatBox.tsx` — `handleOptimizePrompt` consomme le résultat
+    typé (message précis par cause) et transmet `projectContext` (racine du
+    workspace uniquement, aucune lecture disque).
+
+- **Décisions Techniques :**
+  - Résultat TYPÉ plutôt qu'un `null` muet : le diagnostic devient possible côté
+    utilisateur sans deviner, et interdit de confondre deux causes distinctes.
+  - Prompt d'optimisation : ligne rouge explicite entre « structurer/reformuler »
+    (autorisé, c'est le but) et « décider à la place de l'utilisateur » (interdit).
+    Corrige directement le « pas vraiment amélioré » sans introduire de biais.
+  - `projectContext` minimal et honnête (racine seule) : un vrai contexte projet
+    complet demanderait une lecture disque ; on ne veut pas que le modèle invente
+    des fichiers. Évolution possible : arborescence réelle bornée.
+
+- **Impacts & Dépendances :** `gitCommitMessage` et `promptOptimizer` changent de
+  signature de retour (rupture de contrat interne) ; les DEUX appelants ont été
+  mis à jour (aucun autre usage). `optimizePrompt` gagne un 4ᵉ paramètre optionnel.
+
+- **Prochaines étapes :** envisager d'enrichir `projectContext` avec une
+  arborescence bornée (profondeur limitée) si l'ancrage s'avère insuffisant.
+
+---
+
+### [2026-10-20T15:30] | Actions IA « Améliorer le prompt » et « Générer le message de commit » : alignement sur le modèle du chat
+
+- **Contexte :** les deux icônes IA ne fonctionnaient pas. Cause racine : elles
+  construisaient leur modèle LLM différemment du chat, donc appelaient une cible
+  invalide ou un défaut figé, indépendamment du provider/modèle réellement choisi
+  par l'utilisateur dans la barre de saisie.
+
+- **Modifications effectuées :**
+  - `src/lib/agent/activeModel.ts` (nouveau) — `resolveActiveModelTarget(providerId?,
+    modelId?)` + `LOCAL_PROVIDER_IDS`. Résolution unique, mêmes priorités que le
+    chat : sélection UI > `localStorage` (`origin-ai-*`) > `.env` > défaut app ;
+    lit la clé API du provider RÉSOLU et expose `usable`.
+  - `src/lib/promptOptimizer.ts` — utilise le helper. Suppression du fallback
+    erroné `const mid = modelId ?? pid` (passait un **providerId** comme id de
+    modèle) et de la lecture de clé sur un provider deviné.
+  - `src/lib/gitCommitMessage.ts` — `generateCommitMessage(repoPath, providerId?,
+    modelId?)` ; remplace les défauts figés (`resolveDefaultProvider('anthropic')`,
+    `resolveDefaultModel('claude-haiku-4-5-20251001')`) par le helper. Le
+    commentaire redevient conforme au comportement.
+  - `src/components/ai/ChatBox.tsx` — inchangé sur ce point : il écrit déjà la
+    sélection dans `localStorage` (`origin-ai-model`/`origin-ai-provider`), source
+    partagée par les deux actions.
+
+- **Décisions Techniques :**
+  - Centraliser la résolution dans UN helper plutôt que dupliquer la logique :
+    garantit que chat, optimisation et commit utilisent réellement le même modèle
+    (exigence « même modèle et même truc que le chat »), et supprime les
+    divergences futures.
+  - Source de vérité = `localStorage` : c'est déjà ce qu'écrit la barre de modèle,
+    et `SourceTreePanel` (commit) est monté indépendamment du panneau AI — il ne
+    peut donc pas recevoir la sélection par props sans couplage artificiel.
+  - `usable` = provider local OU clé présente : un provider distant sans clé
+    renvoie `null` (pas d'envoi réseau), un provider local passe sans clé.
+  - Aucune biais introduit : pas de modèle « spécial commit » figé, pas de
+    provider imposé.
+
+- **Impacts & Dépendances :** `promptOptimizer`, `gitCommitMessage` et (en
+  lecture) `secrets`/`providers`. `gitCommitMessage` gagne deux paramètres
+  optionnels : les appels existants restent valides (rétrocompatible par défaut de
+  paramètre, sans shim).
+
+- **Prochaines étapes :** surveiller le cas où l'optimisation est demandée alors
+  que l'input ne contient QUE des chips de contexte (texte vide → aucune action) :
+  comportement volontaire pour l'instant.
+
+---
+
+### [2026-10-20T15:05] | Glisser-déposer un dossier/fichier vers l'input du chat (chip `#Folder` / `#File`)
+
+- **Contexte :** impossible de reproduire le geste Trae « je prends un dossier et je
+  le lâche dans l'input, avec un prompt qui l'accompagne ». Deux sources de drag à
+  supporter : l'explorateur Mira **et** le Finder/OS.
+
+- **Modifications effectuées :**
+  - `src/lib/ai/dragBus.ts` (nouveau) — bus singleton minimal
+    (`getPathDrag` / `subscribePathDrag` / `beginPathDrag` / `endPathDrag`), calqué
+    sur `refreshBus`. Motif : l'explorateur implémente son drag en **PointerEvents**
+    (pas de HTML5 DnD) → aucun `dataTransfer`, donc rien à recevoir via `onDrop`.
+  - `src/lib/ai/__tests__/dragBus.test.ts` (nouveau) — 7 tests (transitions,
+    abonné monté en plein drag, désabonnement, idempotence).
+  - `src/lib/explorer/useExplorer.ts` — `beginDrag` publie `beginPathDrag(paths)`,
+    `endDrag` publie `endPathDrag()`.
+  - `src/components/explorer/ExplorerTree.tsx` — dans `onUp`, hit-test DOM
+    `document.elementFromPoint(x, y)?.closest("[data-chat-drop]")` : si la cible est
+    la zone de drop du chat, on émet un `CustomEvent("origin-chat-drop")` (bulles)
+    au lieu d'effectuer le drop interne. Évite de dépendre de l'ordre des listeners
+    `window` (non garanti).
+  - `src/components/ai/ChatBox.tsx` — `dropZoneRef` + `data-chat-drop="1"` ;
+    surbrillance `pathDragActive` (bordure pointillée accent) pilotée par
+    `subscribePathDrag` ; `handleDropPaths(paths)` classifie chaque chemin
+    (dossier vs fichier via `readDir`, jamais l'extension) puis appelle
+    `attachContextRef` (chip `#Folder`/`#File`) ; écoute de l'événement interne
+    `origin-chat-drop` ; écoute Tauri `getCurrentWebviewWindow().onDragDropEvent()`
+    pour le drop Finder, avec hit-test position (px physiques ÷ `devicePixelRatio`).
+  - `src/components/ai/AiPanel.tsx` — aucun changement : `resolveContextRefs` gère
+    déjà `kind === "folder"` → `invoke("expand_context_folder", …)`, donc une chip
+    déposée alimente réellement le contenu du dossier pour l'agent.
+
+- **Décisions Techniques :**
+  - Réutiliser `attachContextRef` (le canal `#` existant) plutôt que d'insérer du
+    texte brut : une seule voie, pas de doublon de logique, cohérent avec le geste
+    Trae demandé (« chip #Folder + prompt »).
+  - Bus de drag plutôt qu'un `dataTransfer` : l'arbre et l'input sont des arbres
+    React distincts, et le drag interne n'est pas du HTML5 DnD.
+  - Délégation par hit-test DOM (et non par ordre de listeners) : déterministe quel
+    que soit le moment où la zone de drop s'enregistre.
+  - Discrimination fichier/dossier par `readDir` (source de vérité disque) et non
+    par devinette sur le suffixe.
+  - Drop OS via `onDragDropEvent` (fournit les **chemins absolus**), contrairement à
+    `dataTransfer.files` qui ne les expose pas sous Tauri v2.
+
+- **Impacts & Dépendances :** `useExplorer` (drag), `ExplorerTree` (drop interne),
+  `ChatBox` (zone de drop + ingestion). Aucune API publique modifiée. Le drop OS
+  dépend de `dragDropEnabled` dans `tauri.conf.json` (actif par défaut) : à confirmer
+  si un drop Finder reste sans effet.
+
+- **Prochaines étapes :** surveiller le comportement du drop Finder selon la config
+  Tauri ; envisager un indicateur de survol identique depuis le Finder (position
+  fournie par l'événement, déjà hit-testée au drop).
+
+---
+
 ### [2026-10-20T14:15] | Correctifs mode IA/IDE : modal de suppression, hauteur terminal, ordre des messages, chemins cliquables
 
 - **Contexte :** quatre défauts distincts signalés en usage réel :

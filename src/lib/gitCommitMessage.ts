@@ -1,9 +1,7 @@
 import { generateText } from 'ai';
 import { buildLanguageModel } from './agent/providers';
-import { loadApiKey, resolveDefaultModel, resolveDefaultProvider } from './secrets';
+import { resolveActiveModelTarget, type LlmActionResult } from './agent/activeModel';
 import { gitCommitDiff } from './git';
-
-const LOCAL_IDS = ['ollama', 'lmstudio', 'vllm'];
 
 /** Types Conventional Commits acceptés (ordre = fréquence indicative). */
 const COMMIT_TYPES = 'feat|fix|refactor|perf|docs|test|build|ci|style|chore|revert';
@@ -44,33 +42,52 @@ const COMMIT_SYSTEM_PROMPT = [
 
 /**
  * Génère un message de commit à partir du diff réel du dépôt en appelant le
- * modèle configuré par l'utilisateur. Retourne `null` si aucun provider n'est
- * configuré (pas de clé API pour un provider distant) afin que l'appelant
- * puisse prévenir l'utilisateur plutôt que d'envoyer un diff au réseau.
+ * modèle configuré par l'utilisateur.
+ *
+ * Le retour est TYPÉ (`LlmActionResult`) pour distinguer les causes d'échec :
+ *   - `not-a-repo` → le dossier n'est pas un dépôt git (source : `gitCommitDiff`) ;
+ *   - `empty-input` → dépôt valide mais aucun changement à décrire ;
+ *   - `no-provider` → provider distant sans clé API (rien n'est envoyé au réseau) ;
+ *   - `call-failed` → l'appel au provider a échoué (message dans `detail`).
+ * L'ancien contrat renvoyait un `null` muet : impossible pour l'utilisateur de
+ * savoir si le problème venait du dépôt ou de la configuration IA.
  *
  * Le diff provient de `gitCommitDiff` (et non `gitDiff`) car il doit inclure les
  * fichiers NON SUIVIS : un dossier rempli de nouveaux fichiers produit sinon un
  * diff vide → « No changes to describe ».
+ *
+ * `providerId`/`modelId` sont le modèle SÉLECTIONNÉ dans la barre de saisie du
+ * chat, pour générer avec le même modèle que celui qui traite la conversation.
+ * Sans eux, on retombe sur les mêmes priorités que le chat (`.env` puis défaut).
  */
-export async function generateCommitMessage(repoPath: string): Promise<string | null> {
-  // Le modèle utilisé est celui SÉLECTIONNÉ par l'utilisateur dans l'app
-  // (localStorage `origin-ai-*`, mêmes clés que la barre de saisie), et non un
-  // modèle figé : sinon un utilisateur configuré sur OpenAI/Orvyx/etc. voyait
-  // l'appel échouer car il partait toujours vers Anthropic.
-  const providerId = await resolveDefaultProvider('anthropic');
-  const modelId    = await resolveDefaultModel('claude-haiku-4-5-20251001');
-  const apiKey = await loadApiKey(providerId);
-  if (!apiKey && !LOCAL_IDS.includes(providerId)) return null;
+export async function generateCommitMessage(
+  repoPath: string,
+  providerId?: string,
+  modelId?: string,
+): Promise<LlmActionResult> {
+  const target = await resolveActiveModelTarget(providerId, modelId);
+  // Aucun provider exploitable : l'appelant prévient plutôt que d'envoyer un
+  // diff au réseau.
+  if (!target.usable) return { ok: false, reason: "no-provider" };
 
-  const diff = await gitCommitDiff(repoPath, 12_000);
-  if (!diff.trim()) return null;
+  // Le diff est typé : « pas un dépôt » et « dépôt propre » sont deux causes
+  // distinctes, et ne doivent PAS être confondues avec un échec de génération.
+  const diffResult = await gitCommitDiff(repoPath, 12_000);
+  if (diffResult.kind === 'not-a-repo') return { ok: false, reason: "not-a-repo" };
+  if (diffResult.kind === 'no-changes') return { ok: false, reason: "empty-input" };
+  const diff = diffResult.value;
 
-  const model = buildLanguageModel(providerId, modelId, apiKey ?? '');
-  const { text } = await generateText({
-    model,
-    system: COMMIT_SYSTEM_PROMPT,
-    prompt: `Here is the unified diff of the changes to describe:\n\n${diff}\n\nWrite the commit subject line.`,
-  });
+  const model = buildLanguageModel(target.providerId, target.modelId, target.apiKey ?? '');
+  let text: string;
+  try {
+    ({ text } = await generateText({
+      model,
+      system: COMMIT_SYSTEM_PROMPT,
+      prompt: `Here is the unified diff of the changes to describe:\n\n${diff}\n\nWrite the commit subject line.`,
+    }));
+  } catch (e: unknown) {
+    return { ok: false, reason: "call-failed", detail: e instanceof Error ? e.message : String(e) };
+  }
 
   // Nettoyage défensif : on ne garde que la première ligne, sans balises de code
   // ni guillemets parasites qu'un modèle pourrait ajouter malgré la consigne.
@@ -81,5 +98,7 @@ export async function generateCommitMessage(repoPath: string): Promise<string | 
     .replace(/^(?:commit message:|message:)\s*/i, '')
     .replace(/^["'`]+|["'`]+$/g, '')
     .trim();
-  return subject || null;
+  // Un modèle qui ne produit rien d'exploitable est un échec d'appel, pas un
+  // « rien à décrire » : la cause est côté génération.
+  return subject ? { ok: true, text: subject } : { ok: false, reason: "call-failed", detail: "empty model output" };
 }

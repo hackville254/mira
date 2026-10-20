@@ -277,6 +277,12 @@ const FENCE_MAP: Record<string, string> = {
 };
 
 function buildContextPrefix(ctx: EditorContext, displayPath?: string): string {
+  // Une sélection de terminal n'a pas d'extension de fichier : on force le fence
+  // `shell` et un libellé explicite, pour que le modèle sache qu'il s'agit de
+  // sortie/commandes de terminal et non de code d'un fichier.
+  if (ctx.type === "terminal") {
+    return `[Terminal selection]\n\`\`\`shell\n${ctx.code}\n\`\`\`\n\n`;
+  }
   const ext = ctx.filename.split(".").pop()?.toLowerCase() ?? "";
   const fence = FENCE_MAP[ext] ?? ext;
   const label = ctx.type === "selection" ? "Selected code" : "Visible code";

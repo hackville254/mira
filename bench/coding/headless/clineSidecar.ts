@@ -48,6 +48,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
 import { CONVERGENCE, ConvergenceTracker, type ConvergenceReport } from "./convergence";
+import { classifyTermination, isInconclusive, type TerminationClass } from "./termination";
 
 /** Événement normalisé du flux d'agent (sous-ensemble utilisé par le bench). */
 export interface HeadlessEvent {
@@ -80,7 +81,6 @@ interface RawAgentEvent {
   error?: { message?: string; code?: string } | string;
   usage?: { inputTokens?: number; outputTokens?: number };
 }
-
 /** Enveloppe `CoreSessionEvent` émise sur stdout (`{kind:"event"}`). */
 interface SessionEnvelope {
   type?: string;
@@ -184,6 +184,20 @@ export interface HeadlessRunMetrics {
   maxConsecutiveSameTool?: number;
   /** Rapport de convergence complet (boucle, stérilité), figé en fin de run. */
   convergence?: ConvergenceReport;
+  /**
+   * Classe de terminaison EXPLICITE (Étape 4), dérivée des seuls faits du
+   * moteur : distingue une fin normale (`completed`), un budget épuisé
+   * (`max_iterations`), une réponse TRONQUÉE (`truncated`) et une erreur
+   * TRANSITOIRE du fournisseur (`provider-error`). Permet de NE PAS compter un
+   * incident d'infrastructure comme un échec de programmation du modèle.
+   */
+  termination?: TerminationClass;
+  /** Dernier motif de `notice` (`stop`/`recovery`) fourni par le SDK, si émis. */
+  noticeReason?: string;
+  /** Message du dernier `notice` de type `stop`/`recovery`, si émis. */
+  noticeMessage?: string;
+  /** Drapeau `recoverable` du dernier événement `error` (transitoire si vrai). */
+  recoverable?: boolean;
   /** Message d'erreur terminal, si le run a échoué. */
   error?: string;
 }
@@ -194,6 +208,8 @@ export interface HeadlessRunMetrics {
  */
 export { CONVERGENCE, ConvergenceTracker, resumeInstruction } from "./convergence";
 export type { ConvergenceReport } from "./convergence";
+export { classifyTermination, isInconclusive, isHarnessCapped, looksTransient } from "./termination";
+export type { TerminationClass, TerminationFacts } from "./termination";
 
 /** Handle d'un run headless : session + métriques + attente de fin. */
 export interface HeadlessRun {
@@ -487,16 +503,26 @@ export class ClineSidecarClient {
           // `usage` = vérité du run), au lieu d'additionner des deltas.
           metrics.inputTokens = raw.totalInputTokens ?? raw.inputTokens ?? metrics.inputTokens;
           metrics.outputTokens = raw.totalOutputTokens ?? raw.outputTokens ?? metrics.outputTokens;
+        } else if (t === "notice") {
+          // Avis du moteur (`stop`/`recovery`/`status`). Les notices `stop` et
+          // `recovery` portent le MOTIF d'une coupure (limite de sortie, fin de
+          // streaming anormale, récupération). C'est le signal le plus fiable
+          // pour détecter une réponse TRONQUÉE (Étape 4) : on le conserve.
+          if (raw.noticeType === "stop" || raw.noticeType === "recovery") {
+            if (raw.reason) metrics.noticeReason = raw.reason;
+            if (raw.message) metrics.noticeMessage = raw.message;
+          }
         } else if (t === "error") {
-          // On conserve TOUT ce qui est exploitable : message + code, afin de
-          // pouvoir DISTINGUER une erreur du fournisseur (quota, réseau) d'une
-          // erreur d'agent (Étape 4). On journalise le brut une fois (jamais de
-          // secret : le sidecar neutralise déjà la marque interne et ne ré-émet
-          // jamais la clé).
+          // On conserve TOUT ce qui est exploitable : message + code + drapeau
+          // `recoverable`, afin de DISTINGUER une erreur du fournisseur (quota,
+          // réseau, troncature) d'une erreur d'agent (Étape 4). On journalise le
+          // brut une fois (jamais de secret : le sidecar neutralise déjà la
+          // marque interne et ne ré-émet jamais la clé).
           const em = typeof raw.error === "string" ? raw.error : raw.error?.message;
           const ec = typeof raw.error === "object" && raw.error ? raw.error.code : raw.code;
           const base = em ?? raw.message ?? "erreur agent";
           metrics.error = ec ? `${ec}: ${base}` : base;
+          if (typeof raw.recoverable === "boolean") metrics.recoverable = raw.recoverable;
           this.log(`[agent error] ${JSON.stringify(e.raw).slice(0, 400)}`);
           settle();
         } else if (t === "done") {
@@ -522,10 +548,14 @@ export class ClineSidecarClient {
     };
 
     void this.command("send", { sessionId, prompt }).catch((e) => {
-      metrics.error = metrics.error ?? `send: ${e instanceof Error ? e.message : String(e)}`;
       // Un rejet de `send` (souvent un timeout d'acquittement côté canal) n'est
-      // PAS une fin de run : on laisse `finished` se résoudre sur `done`/`error`
-      // ou sur l'abort appelé par le timeout du runner.
+      // PAS forcément une fin de run : on le journalise sans écraser une erreur
+      // précise déjà capturée par un événement `error`.
+      const msg = e instanceof Error ? e.message : String(e);
+      this.log(`[send rejeté] ${msg}`);
+      metrics.error = metrics.error ?? `send: ${msg}`;
+      // On laisse `finished` se résoudre sur `done`/`error` ou sur l'abort
+      // appelé par le timeout du runner.
     });
 
     const run: HeadlessRun = {
@@ -549,6 +579,26 @@ export class ClineSidecarClient {
       metrics.toolNameCounts = rep.toolNameCounts;
       metrics.maxConsecutiveSameTool = rep.maxConsecutiveSameTool;
       metrics.convergence = rep;
+      // Classe de terminaison EXPLICITE (Étape 4) : à partir des seuls faits
+      // observés, on distingue une fin normale d'une erreur transitoire du
+      // fournisseur ou d'une réponse tronquée. Le runner s'en sert pour NE PAS
+      // compter un incident d'infrastructure comme un échec du modèle.
+      metrics.termination = classifyTermination({
+        stopReason: metrics.stopReason,
+        error: metrics.error,
+        noticeReason: metrics.noticeReason,
+        noticeMessage: metrics.noticeMessage,
+        recoverable: metrics.recoverable,
+        turns: metrics.turns,
+      });
+      // Un run non concluant ne doit pas laisser croire à un échec de
+      // programmation : on le journalise explicitement (observabilité).
+      if (isInconclusive(metrics.termination)) {
+        this.log(
+          `[run non concluant] terminaison=${metrics.termination} tours=${metrics.turns} ` +
+          `err=${metrics.error ?? metrics.noticeMessage ?? "-"}`,
+        );
+      }
     });
     return run;
   }
