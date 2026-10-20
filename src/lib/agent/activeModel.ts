@@ -38,6 +38,8 @@ export type LlmActionFailure =
   | "not-a-repo"
   /** Le binaire `git` n'a pas pu être lancé (absent du PATH, permissions…). */
   | "git-unavailable"
+  /** L'appel IPC vers le backend a échoué (backend en erreur / non enregistré). */
+  | "ipc-error"
   /** L'entrée est vide (ex. diff git vide → dépôt propre, brouillon vide). */
   | "empty-input"
   /** L'appel a échoué côté réseau/provider (message dans `detail`). */

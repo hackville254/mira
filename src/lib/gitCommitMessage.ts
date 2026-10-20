@@ -76,6 +76,9 @@ export async function generateCommitMessage(
   if (diffResult.kind === 'git-unavailable') return { ok: false, reason: "git-unavailable" };
   if (diffResult.kind === 'not-a-repo') return { ok: false, reason: "not-a-repo" };
   if (diffResult.kind === 'no-changes') return { ok: false, reason: "empty-input" };
+  // Échec de l'appel IPC : distinct de « git introuvable », sinon l'utilisateur
+  // croirait à tort que git manque sur sa machine.
+  if (diffResult.kind === 'ipc-error') return { ok: false, reason: "ipc-error", detail: diffResult.message };
   const diff = diffResult.value;
 
   const model = (() => {

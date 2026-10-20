@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Sparkles, GitBranch, GitCommitHorizontal, Check, RefreshCw, MoreHorizontal,
-  ChevronDown, ChevronRight, Plus, Minus, Undo2, CloudDownload, CloudUpload,
-  Download, Archive, X,
+  ChevronDown, ChevronRight, Plus, Minus, Undo2, CloudDownload,
+  Archive, X,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from './ui/Toast';
@@ -91,6 +91,11 @@ const ROW_PL = 10;
 const DOT_W  = 8;
 const RAIL_L = ROW_PL + DOT_W / 2;
 
+/** Bornes de hauteur de la zone de message de commit (px) : elle grandit avec
+ *  le texte jusqu'à `COMMIT_MAX_H`, puis devient défilante. */
+const COMMIT_MIN_H = 46;
+const COMMIT_MAX_H = 200;
+
 export default function SourceTreePanel() {
   const { folderPath } = useWorkspace();
   const { showToast } = useToast();
@@ -130,8 +135,19 @@ export default function SourceTreePanel() {
   const [inputValue, setInputValue] = useState('');
 
   const historyScrollRef = useRef<HTMLDivElement>(null);
+  const commitInputRef = useRef<HTMLTextAreaElement>(null);
   const [fadeTop, setFadeTop] = useState(false);
   const [fadeBot, setFadeBot] = useState(false);
+
+  // L'input de commit grandit avec son contenu (pas de hauteur figée) : on
+  // recalcule la hauteur au montage et à chaque frappe, dans la limite de
+  // MIN/MAX, puis on laisse le défilement prendre le relais au-delà de MAX.
+  useEffect(() => {
+    const el = commitInputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, COMMIT_MIN_H), COMMIT_MAX_H)}px`;
+  }, [title]);
 
   function updateFades() {
     const el = historyScrollRef.current;
@@ -213,6 +229,8 @@ export default function SourceTreePanel() {
           );
         } else if (result.reason === 'git-unavailable') {
           showToast('Git could not be found. Install Git (or add it to your shell PATH), then restart Mira.', 'error');
+        } else if (result.reason === 'ipc-error') {
+          showToast(result.detail ? `Backend error: ${result.detail}` : 'Backend error while reading the diff.', 'error');
         } else if (result.reason === 'not-a-repo') {
           showToast('This folder is not a git repository. Initialize git first (git init) to describe changes.', 'error');
         } else if (result.reason === 'empty-input') {
@@ -315,7 +333,9 @@ export default function SourceTreePanel() {
   }
 
   // ── Branches ───────────────────────────────────────────────────────────────
-  async function openBranches() {
+  async function openBranches(anchor: HTMLElement) {
+    if (branchAnchor) { setBranchAnchor(null); return; }
+    setBranchAnchor(anchor);
     if (!folderPath) return;
     try { setBranches(await gitListBranches(folderPath)); }
     catch (e: unknown) { showToast(errMsg(e, 'Could not list branches.'), 'error'); setBranches([]); }
@@ -437,14 +457,11 @@ export default function SourceTreePanel() {
             <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--origin-fg-subtle)' }}>{files.length}</span>
           )}
         </span>
-        <button onClick={aiGenerateMessage} disabled={aiBusy} title="Generate commit message with AI" style={iconBtn}>
-          <Sparkles size={14} style={{ color: aiBusy ? 'var(--origin-fg-subtle)' : 'var(--origin-accent-green)', animation: aiBusy ? 'spin 0.7s linear infinite' : 'none' }} />
-        </button>
         <button onClick={() => void runRemote('fetch')} disabled={!!remoteBusy} title="Fetch" style={iconBtn}>
           <CloudDownload size={14} style={{ animation: remoteBusy === 'fetch' ? 'spin 0.7s linear infinite' : 'none' }} />
         </button>
         <button
-          onClick={e => setBranchAnchor(branchAnchor ? null : e.currentTarget)}
+          onClick={e => void openBranches(e.currentTarget)}
           title={currentBranch ? `Branch: ${currentBranch}` : 'Branches'}
           style={iconBtn}
         >
@@ -469,6 +486,7 @@ export default function SourceTreePanel() {
           <div style={{ padding: '8px 8px 6px' }}>
             <div style={{ position: 'relative' }}>
               <textarea
+                ref={commitInputRef}
                 value={title}
                 onChange={e => setTitle(e.target.value)}
                 onKeyDown={e => {
@@ -480,8 +498,9 @@ export default function SourceTreePanel() {
                 rows={2}
                 placeholder={`Message (${formatShortcut('ctrl+enter')} to commit)`}
                 style={{
-                  width: '100%', boxSizing: 'border-box', resize: 'vertical',
-                  minHeight: 46, maxHeight: 140,
+                  width: '100%', boxSizing: 'border-box',
+                  resize: 'none', overflowY: 'auto',
+                  minHeight: COMMIT_MIN_H, maxHeight: COMMIT_MAX_H, height: COMMIT_MIN_H,
                   background: 'var(--origin-bg-input)',
                   border: '1px solid var(--origin-border-default)',
                   borderRadius: 6, padding: '7px 30px 7px 10px',

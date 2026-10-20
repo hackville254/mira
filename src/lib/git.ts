@@ -107,26 +107,26 @@ export type CommitDiffResult =
   | { kind: 'diff'; value: string }
   | { kind: 'no-changes' }
   | { kind: 'not-a-repo' }
-  | { kind: 'git-unavailable' };
+  | { kind: 'git-unavailable' }
+  | { kind: 'ipc-error'; message: string };
 
 /**
  * Diff enrichi pour la génération d'un message de commit : inclut les fichiers
  * non suivis (que `git_diff` ignore).
  *
- * Un échec de communication (IPC indisponible) est remonté comme `git-unavailable`
- * plutôt qu'avalé : sans cette distinction, l'UI afficherait « no changes » alors
- * que la véritable cause est une erreur d'appel.
+ * Un échec de communication (IPC indisponible) est remonté comme `ipc-error`
+ * plutôt qu'avalé : sans cette distinction, l'UI afficherait « no changes » (ou
+ * « git introuvable ») alors que la véritable cause est une erreur d'appel.
  */
 export async function gitCommitDiff(path: string, maxBytes?: number): Promise<CommitDiffResult> {
-  let raw: { kind: string; value?: string } | null = null;
+  let raw: { kind: string; content?: string };
   try {
-    raw = await invoke<{ kind: string; value?: string }>('git_commit_diff', { path, maxBytes });
+    raw = await invoke<{ kind: string; content?: string }>('git_commit_diff', { path, maxBytes });
   } catch (e) {
-    console.error('[git] git_commit_diff IPC failure:', e);
-    throw e;
+    return { kind: 'ipc-error', message: e instanceof Error ? e.message : String(e) };
   }
-  if (!raw) return { kind: 'git-unavailable' };
-  if (raw.kind === 'diff') return { kind: 'diff', value: raw.value ?? '' };
+  if (!raw) return { kind: 'ipc-error', message: 'Empty response from git_commit_diff.' };
+  if (raw.kind === 'diff') return { kind: 'diff', value: raw.content ?? '' };
   if (raw.kind === 'no-changes') return { kind: 'no-changes' };
   if (raw.kind === 'git-unavailable') return { kind: 'git-unavailable' };
   return { kind: 'not-a-repo' };

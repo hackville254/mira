@@ -613,11 +613,26 @@ pub fn git_diff(path: String, max_bytes: Option<usize>) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
     let mut combined = format!("{staged}{unstaged}");
-    if combined.len() > cap {
-        combined.truncate(cap);
-        combined.push_str("\n… [diff truncated]");
-    }
+    truncate_on_char_boundary(&mut combined, cap);
     combined
+}
+
+/// Tronque `s` à au plus `cap` octets **sans couper un caractère UTF-8**.
+///
+/// `String::truncate` panique si l'index n'est pas sur une frontière de
+/// caractère : un diff contenant un accent ou un emoji au niveau de la coupe
+/// faisait planter la commande. On recule jusqu'à la frontière valide précédente,
+/// puis on signale la troncature.
+fn truncate_on_char_boundary(s: &mut String, cap: usize) {
+    if s.len() <= cap {
+        return;
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("\n… [diff truncated]");
 }
 
 // ── Diff d'un fichier non suivi, façon `git diff` ─────────────────────────────
@@ -644,8 +659,14 @@ fn diff_untracked_file(repo: &str, file: &str) -> String {
 /// « pas un dépôt » / « dépôt propre » / « diff disponible » — l'ancien contrat
 /// renvoyait une chaîne vide dans les deux premiers cas, ce qui affichait
 /// « no changes » même quand le dossier n'était pas un dépôt.
+///
+/// Représentation **adjacente** (`tag` + `content`) : une représentation interne
+/// (`tag` seul) ne peut pas sérialiser un variant newtype (`Diff(String)`) — serde
+/// échoue avec « cannot serialize tagged newtype variant ». On obtient donc
+/// `{ "kind": "diff", "content": "..." }` pour `Diff` et `{ "kind": "no-changes" }`
+/// pour les variants unitaires.
 #[derive(serde::Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", content = "content", rename_all = "kebab-case")]
 pub enum CommitDiffResult {
     /// Un diff existe (éventuellement tronqué).
     Diff(String),
@@ -669,7 +690,6 @@ pub enum CommitDiffResult {
 #[tauri::command]
 pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResult {
     let cap = max_bytes.unwrap_or(12_000);
-    eprintln!("[git_commit_diff] called path={path:?} max_bytes={max_bytes:?}");
 
     // On distingue explicitement « pas un dépôt » de « dépôt propre » : sinon
     // l'appelant affiche « no changes » alors que la véritable cause est un
@@ -683,12 +703,10 @@ pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResu
         Ok(o) if o.status.success() => {} // dépôt valide, on continue
         // `Err` = le binaire git lui-même n'a pas pu être lancé (introuvable dans
         // le PATH, permissions…) : ce n'est PAS la faute du dossier, on le dit.
-        Err(e) => {
-            eprintln!("[git_commit_diff] git unavailable: path={path:?} err={e}");
+        Err(_) => {
             return CommitDiffResult::GitUnavailable;
         }
         Ok(_) => {
-            eprintln!("[git_commit_diff] not a repo: path={path:?}");
             return CommitDiffResult::NotARepo;
         }
     }
@@ -722,10 +740,7 @@ pub fn git_commit_diff(path: String, max_bytes: Option<usize>) -> CommitDiffResu
     if combined.trim().is_empty() {
         return CommitDiffResult::NoChanges;
     }
-    if combined.len() > cap {
-        combined.truncate(cap);
-        combined.push_str("\n… [diff truncated]");
-    }
+    truncate_on_char_boundary(&mut combined, cap);
     CommitDiffResult::Diff(combined)
 }
 

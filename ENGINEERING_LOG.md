@@ -5,6 +5,77 @@
 
 ---
 
+### [2026-10-20T23:58] | Source Control — refonte complète du panneau + fin du faux « Git could not be found »
+
+- **Contexte :** deux problèmes liés. (1) L'utilisateur voyait en boucle
+  « Git could not be found. Install Git (or add it to your shell PATH), then restart
+  Mira. » alors que git **fonctionnait** (les commandes git de l'explorateur, du
+  diff et du log répondaient normalement). (2) Le panneau Source Control était un
+  monolithe de 851 lignes avec `window.prompt`/`window.confirm`, des dropdowns
+  inline, un graph plat sans métadonnées et aucun regroupement Staged/Changes —
+  loin du ressenti Trae.
+
+- **Cause racine du faux « git could not be found » :** ce n'était **pas** git. Le
+  provider IA persisté en `localStorage` était corrompu (`origin-ai-provider = "o"`,
+  `origin-ai-model = "d"`). `buildLanguageModel("o", …)` lève `Unknown provider: o`
+  **hors du try/catch** de `gitCommitMessage.ts` ; l'exception remontait jusqu'à
+  l'UI et était affichée comme un échec git. En parallèle,
+  `gitCommitDiff(...).catch(() => null)` **avalait** tout échec IPC et le
+  réétiquetait `git-unavailable` — un défaut de diagnostic qui masquait la vraie
+  cause.
+
+- **Modifications effectuées :**
+  - `src/components/SourceTreePanel.tsx` — **réécriture complète** :
+    - helper `errMsg(e, fallback)` qui normalise `string` | `Error` | objet
+      sérialisé : les commandes Rust renvoient `Result<_, String>`, donc un
+      `invoke` rejeté porte une **chaîne**, pas une `Error` ; l'ancien motif
+      `e instanceof Error ? e.message : fallback` masquait le message réel.
+    - découpage en sous-composants `SectionHeader`, `FileGroup`, `FileRow` ;
+    - groupes **Staged / Changes** séparés avec compteurs (parité Trae) ;
+    - `DropdownMenu` (portal, clamp viewport) pour les menus More / Commit /
+      Branches, à la place des dropdowns inline ;
+    - **dialogue de saisie inline** (branche / stash) avec Enter/Escape, à la
+      place de `window.prompt` ;
+    - zone de commit en `textarea` multi-lignes + bouton Sparkles en surimpression ;
+    - graph enrichi (hash en mono + auteur + date, `title` au survol) ;
+    - import inutilisé `CloudUpload`/`Download` retiré, `openBranches` rebranché.
+  - `src/lib/git.ts` — `CommitDiffResult` gagne `{ kind: 'ipc-error'; message }` ;
+    `gitCommitDiff` **ne relance plus** l'exception et ne confond plus un échec IPC
+    avec « git introuvable ».
+  - `src/lib/agent/activeModel.ts` — `LlmActionFailure` gagne `ipc-error`.
+  - `src/lib/gitCommitMessage.ts` — `buildLanguageModel` enveloppé dans un IIFE
+    try/catch retournant `Error` ; un provider inconnu devient `no-provider` avec
+    `detail: "Unknown provider: o"` (au lieu d'une exception qui remonte) ; le cas
+    `ipc-error` du diff est traduit en `reason: 'ipc-error'`.
+  - `src-tauri/src/git.rs` — bug latent corrigé :
+    `combined.truncate(cap)` (dans `git_diff` et `git_commit_diff`) **panique** si
+    la coupe tombe au milieu d'un caractère UTF-8 (accent/emoji dans un diff). Nouveau
+    helper `truncate_on_char_boundary` qui recule jusqu'à une frontière valide. Les
+    `eprintln!` de diagnostic temporaires sont retirés.
+
+- **Décisions techniques :**
+  - **Typage explicite des causes plutôt que messages génériques.** On distingue
+    désormais `git-unavailable` (binaire absent), `not-a-repo`, `no-changes`,
+    `no-provider` (config IA) et `ipc-error` (échec d'appel backend). L'utilisateur
+    sait quoi corriger sans deviner.
+  - **Périmètre UI uniquement** : aucun contrat de commande git changé, les 24
+    appels existants sont réutilisés tels quels. Le backend n'est touché que pour le
+    bug de troncature UTF-8 (correctif minimal et nécessaire).
+  - **Réutilisation de `DropdownMenu`** (portal + clamp viewport) plutôt qu'un
+    dropdown maison : un seul composant à maintenir, comportement clavier/outside-click
+    cohérent dans toute l'app.
+
+- **Impacts & dépendances :** `SourceTreePanel.tsx`, `git.ts`, `agent/activeModel.ts`,
+  `gitCommitMessage.ts`, `git.rs`. Aucun autre appelant de `generateCommitMessage`
+  n'utilise les nouvelles raisons — extension rétro-compatible de l'union.
+
+- **Prochaines étapes :** valider visuellement dans l'app (Staged/Changes, menus,
+  dialogue inline, graph). Reste à surveiller : un repli automatique si le provider
+  persisté est invalide (`origin-ai-provider` corrompu) — actuellement l'UI prévient
+  explicitement, mais ne corrige pas la valeur stockée.
+
+---
+
 ### [2026-10-20T23:40] | Token `border.strong` — bordures de séparation lisibles entre panneaux
 
 - **Contexte :** retour utilisateur : *« quand on ouvre par exemple explorer il faut
