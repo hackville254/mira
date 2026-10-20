@@ -835,7 +835,7 @@ function App() {
   return (
     <CommandContext.Provider value={commands}>
     <div
-      className="h-full w-full flex flex-col gap-1"
+      className="h-full w-full flex flex-col"
       style={{ backgroundColor: "var(--origin-bg-base)", color: "var(--origin-fg-default)" }}
     >
       {onboardingDone && <TitleBar />}
@@ -878,10 +878,10 @@ function App() {
           setTerminalOpen={setTerminalOpen}
         />
       ) : (
-        <div className="flex flex-1 overflow-hidden gap-1">
+        <div className="flex flex-1 overflow-hidden">
             {sidebarOpen && <Sidebar onFileOpen={openTab} onFileOpenAtLine={openTabAtLine} onMarkdownPreview={openMarkdownPreviewTab} fileTreeKey={fileTreeVersion} onFilesChanged={reloadFilesFromDisk} onExternalFileChanges={applyExternalFileChanges} activePath={activeTab ?? undefined} activeContent={activeTab ? fileContents[activeTab] : undefined} rootPath={folderPath ?? undefined} />}
-            <div className="flex flex-1 overflow-hidden gap-1">
-              <div className="flex-1 flex flex-col overflow-hidden gap-1">
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 flex flex-col overflow-hidden">
                 <TabBar
                   tabs={tabs}
                   activeTab={activeTab}
@@ -970,7 +970,7 @@ function App() {
                 )}
               </div>
               {splitTab !== null && (
-                <div className="flex-1 flex flex-col overflow-hidden gap-1 min-w-0" style={{ borderLeft: "1px solid var(--origin-border-default)" }}>
+                <div className="flex-1 flex flex-col overflow-hidden min-w-0" style={{ borderLeft: "1px solid var(--origin-border-default)" }}>
                   <TabBar
                     tabs={tabs}
                     activeTab={splitTab}

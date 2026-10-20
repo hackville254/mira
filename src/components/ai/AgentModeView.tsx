@@ -232,7 +232,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
   }, []);
 
   return (
-    <div className="flex flex-1 overflow-hidden gap-1">
+    <div className="flex flex-1 overflow-hidden">
       {/* Task rail */}
       <TaskRail
         activeSessionId={activeSessionId}
@@ -263,7 +263,7 @@ export default function AgentModeView(props: AgentModeViewProps) {
       />
 
       {/* Tool panels (center) — always open */}
-      <div className="flex flex-1 flex-col overflow-hidden gap-1">
+      <div className="flex flex-1 flex-col overflow-hidden">
         {/* Multitasking : bandeau des tâches actives (no-op en mono-tâche) */}
         <TaskProgressBar activeSessionId={activeSessionId} onSelect={handleSelectTask} />
 

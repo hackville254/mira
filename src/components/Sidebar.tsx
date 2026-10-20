@@ -83,7 +83,13 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPrevie
   }, []);
 
   return (
-    <div className="relative flex shrink-0 gap-1" style={{ width: collapsed ? 44 : width + 44 + 4 }}>
+    <div
+      className="relative flex shrink-0"
+      style={{
+        width: collapsed ? 44 : width + 44,
+        borderRight: "1px solid var(--origin-border-default)",
+      }}
+    >
       <ActivityBar active={collapsed ? "" : active} onSelect={handleSelect} />
       <div
         className="relative flex flex-col shrink-0 overflow-hidden"

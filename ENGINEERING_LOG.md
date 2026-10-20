@@ -5,6 +5,57 @@
 
 ---
 
+### [2026-10-20T23:15] | Panneaux — séparation franche au lieu des interstices `gap-1`
+
+- **Contexte :** retour utilisateur : *« les panneaux que ce soit à gauche ou à droite,
+  les shadow sont [des] éléments en fait, pas bon »*. Ce qui était perçu comme des
+  ombres/éléments parasites était en réalité des **interstices de 4 px** (`gap-1`)
+  entre panneaux, laissant voir le fond racine (`--origin-bg-base`).
+
+- **Cause racine :** le layout empilait les surfaces avec Tailwind `gap-1`. Chaque
+  panneau portait déjà son propre fond, mais l'espace entre eux affichait le fond de
+  base — un liseré sombre irrégulier selon la couleur des voisins. Trae, lui, colle
+  les panneaux et marque la séparation par une **bordure** d'un demi-pixel.
+
+- **Modifications effectuées :**
+  - `App.tsx` (layout classique) : retrait des 5 `gap-1` de structure
+    (racine `h-full w-full flex-col`, conteneur `flex-1 overflow-hidden` ×2,
+    colonne centrale, volet de split).
+  - `AgentModeView.tsx` (mode IA) : retrait des 2 `gap-1` (racine, panneau central).
+  - `Sidebar.tsx` : retrait du `gap-1` interne (ActivityBar ↔ fichiers) et
+    correction de la largeur (`width + 44 + 4` → `width + 44`, le `+4` compensait
+    le gap disparu) ; ajout d'un `borderRight` sur le conteneur.
+  - `ActivityBar.tsx` : ajout d'un `borderRight` (l'ActivityBar et le panneau de
+    fichiers partagent le MÊME fond `--origin-bg-sidebar` : sans bordure, ils
+    fusionnent).
+  - `AiPanel.tsx` : retrait du `gap-1` chat ↔ Pinboard ; `borderLeft` sur le
+    Pinboard ; bordure conditionnelle sur la section chat — `borderRight` en mode
+    agent (chat à gauche), `borderLeft` en mode classique (chat à droite).
+
+- **Décisions techniques :**
+  - **Bordure plutôt qu'interstice.** Un `gap` expose le fond parent : le rendu
+    dépend du contexte et laisse des liserés irréguliers. Une bordure est
+    auto-suffisante, constante, et survit au redimensionnement des panneaux.
+  - **Corriger la largeur compensée.** Le `+4` de `Sidebar` était intriqué au
+    `gap-1` ; le laisser aurait produit 4 px de vide permanent.
+  - **Bordures conditionnelles côté chat.** Le même composant `AiPanel` est rendu à
+    gauche (agent) ou à droite (classique) : on choisit le côté de la bordure via
+    `isAgent` plutôt que dupliquer le conteneur.
+  - **Pas de touche au comportement.** Modification purement visuelle ; aucun
+    état, aucune prop, aucun contrat agent modifié.
+
+- **Impacts & dépendances :** `App.tsx`, `AgentModeView.tsx`, `Sidebar.tsx`,
+  `ActivityBar.tsx`, `AiPanel.tsx`. Les resize handles restent fonctionnels
+  (éléments absolus, indépendants du gap supprimé).
+
+- **Vérifications :** `npx tsc --noEmit` → seule l'erreur **préexistante** du bench
+  (`clineSidecar.ts` — `CONVERGENCE` non lu) subsiste ; diagnostics IDE vides.
+
+- **Prochaines étapes :** **Lot E** (index sémantique embeddings) toujours en
+  attente de discussion.
+
+---
+
 ### [2026-10-20T22:45] | Build — cache Cargo corrompu après déplacement dans `mira/`
 
 - **Contexte :** `pnpm run dev` échouait au build de `mira` :

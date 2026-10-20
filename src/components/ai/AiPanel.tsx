@@ -3385,12 +3385,20 @@ export default function AiPanel({
 
   return (
     <>
-    <div className="flex shrink-0 h-full gap-1">
+    <div className="flex shrink-0 h-full">
 
       {/* ── Chat section ── */}
       <div
         className="relative flex flex-col shrink-0 overflow-hidden"
-        style={{ width, backgroundColor: "var(--origin-bg-sidebar)" }}
+        style={{
+          width,
+          backgroundColor: "var(--origin-bg-sidebar)",
+          // Le chat est à GAUCHE en mode agent (bordure à droite) et à DROITE
+          // en mode classique (bordure à gauche) : dans les deux cas il se
+          // détache franchement de la surface voisine.
+          borderRight: isAgent ? "1px solid var(--origin-border-default)" : undefined,
+          borderLeft: isAgent ? undefined : "1px solid var(--origin-border-default)",
+        }}
       >
         {renderMode !== "agent" && (
           <div
@@ -3648,7 +3656,7 @@ export default function AiPanel({
       {contextOpen && (
         <div
           className="relative flex flex-col shrink-0 overflow-hidden"
-          style={{ width: contextWidth, backgroundColor: "var(--origin-bg-sidebar)" }}
+          style={{ width: contextWidth, backgroundColor: "var(--origin-bg-sidebar)", borderLeft: "1px solid var(--origin-border-default)" }}
         >
           <div
             onMouseDown={onCtxMouseDown}
