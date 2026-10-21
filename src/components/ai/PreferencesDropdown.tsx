@@ -1,20 +1,18 @@
 import { useState, useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
 import { Info, Check } from "lucide-react";
 import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
 import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
 import { accentForModel } from "./providers";
 
 interface Props {
-  anchorEl: HTMLElement | null;
   /** Clé du modèle actif (clé Mira ou clé custom) */
   selectedModelId: string;
   onSelect: (modelKey: string, modelId: string) => void;
   onClose: () => void;
 }
 
-const MENU_WIDTH = 260;
-const MENU_MAX_HEIGHT = 440;
+const MENU_WIDTH = 280;
+const MENU_MAX_HEIGHT = 340;
 
 /** Entrée unifiée du sélecteur : un modèle Mira ou un modèle du client. */
 interface Row {
@@ -27,9 +25,8 @@ interface Row {
 
 // ── Main dropdown (model list) ────────────────────────────────────────────────
 
-export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelect, onClose }: Props) {
+export default function PreferencesDropdown({ selectedModelId, onSelect, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
   const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
   /** Modèles fournis par Mira (catalogue de l'éditeur), chargés une fois. */
   const [miraModels, setMiraModels] = useState<MiraModel[]>([]);
@@ -59,16 +56,6 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
   ];
 
   useEffect(() => {
-    if (!anchorEl) return;
-    const r = anchorEl.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - r.bottom;
-    let top = spaceBelow < MENU_MAX_HEIGHT + 10 ? r.top - MENU_MAX_HEIGHT - 6 : r.bottom + 6;
-    top = Math.max(8, Math.min(top, window.innerHeight - MENU_MAX_HEIGHT - 8));
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- position portal from measured anchor rect
-    setPos({ top, left: Math.max(8, r.right - MENU_WIDTH) });
-  }, [anchorEl]);
-
-  useEffect(() => {
     function onDown(e: MouseEvent) {
       if (!menuRef.current?.contains(e.target as Node)) onClose();
     }
@@ -78,21 +65,28 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
   }, [onClose]);
 
-  if (!anchorEl) return null;
-
   const hoverOn = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; };
   const hoverOff = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "transparent"; };
 
-  return createPortal(
+  // Menu ancré au-dessus du bouton, en position absolue par rapport au conteneur
+  // du chat (qui est `position: relative`). Aucune mesure d'écran n'est faite :
+  // le menu suit le bouton, comme un select natif — c'était l'origine du bug
+  // « la modal s'ouvre loin du select ».
+  return (
     <div
       ref={menuRef}
       style={{
-        position: "fixed", top: pos.top, left: pos.left, width: MENU_WIDTH, maxHeight: MENU_MAX_HEIGHT,
+        position: "absolute",
+        bottom: "calc(100% + 6px)",
+        left: 0,
+        width: MENU_WIDTH,
+        maxWidth: "calc(100vw - 24px)",
+        maxHeight: MENU_MAX_HEIGHT,
         display: "flex", flexDirection: "column",
-        background: "color-mix(in srgb, var(--origin-bg-base) 90%, transparent)",
+        background: "color-mix(in srgb, var(--origin-bg-base) 92%, transparent)",
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: "1px solid var(--origin-border-default)", borderRadius: 10,
-        boxShadow: "0 8px 32px rgba(0,0,0,0.35)", overflow: "hidden", zIndex: 9999,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.35)", overflow: "hidden", zIndex: 50,
       }}
     >
       {/* Header */}
@@ -169,7 +163,6 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
           </button>
         </div>
       </div>
-    </div>,
-    document.body
+    </div>
   );
 }

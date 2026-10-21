@@ -5,6 +5,264 @@
 
 ---
 
+### [2026-10-21T21:25] | Sélecteur de modèles de l'input : ancré au bouton (vrai select)
+
+- **Contexte :** le menu du sélecteur de modèles s'ouvrait « loin du select » et
+  ne laissait pas voir les modèles. Cause : il était rendu dans un **portal
+  `position: fixed`** dont la position était calculée par mesure
+  (`getBoundingClientRect`) dans un effet dépendant de l'ancre. Une ancre
+  capturée avant attachement, ou une logique de repli qui remontait de 440 px,
+  envoyait le menu n'importe où à l'écran.
+- **Modifications effectuées :**
+  - **`src/components/ai/PreferencesDropdown.tsx`** :
+    - Suppression du `createPortal` et de la mesure d'écran. Le menu est
+      désormais `position: absolute`, ancré au-dessus du bouton
+      (`bottom: calc(100% + 6px)`), largeur 280 px, hauteur max 340 px.
+    - Suppression de la prop `anchorEl` (devenue inutile : plus aucune mesure).
+  - **`src/components/ai/ChatBox.tsx`** :
+    - Le bouton modèle et son menu sont enveloppés dans un `<div
+      style={{ position: "relative" }}>` : le menu s'ancre exactement au bouton,
+      comme un select natif.
+    - Suppression de `modelAnchorRef` (plus utilisé).
+    - Retour visuel du bouton à l'ouverture (bordure/accent + chevron inversé),
+      cohérent avec le bouton Agent.
+- **Décisions Techniques :**
+  - **Ancrage CSS plutôt que calcul JS.** Un menu ancré par CSS au parent relatif
+    suit toujours son déclencheur — pas de mesure à maintenir, pas de dérive au
+    redimensionnement, pas de dépendance à un ref lu pendant le rendu. C'est le
+    comportement d'un vrai `<select>`, ce qui était demandé.
+  - **Suppression du code mort.** `anchorEl`, `pos`, `modelAnchorRef` et le
+    `createPortal` deviennent inutiles : les retirer évite de laisser un chemin
+    fragile qui pourrait être réactivé par erreur.
+- **Impacts & Dépendances :**
+  - `PreferencesDropdown` ne dépend plus d'aucune mesure : son API est réduite à
+    `selectedModelId` / `onSelect` / `onClose`.
+  - Le menu s'ouvre au-dessus du bouton ; s'il manque de place en haut, il
+    faudra un repli (à surveiller si le panneau devient très court).
+- **Prochaines étapes :**
+  - Vérifier visuellement l'ouverture au-dessus du bouton dans le panneau AI, et
+    l'ajout éventuel d'un repli bas si la place manque au-dessus.
+
+### [2026-10-21T21:00] | Le bouton « Log in » lance le device flow directement (modale dédiée)
+
+- **Contexte :** le bouton « Log in » de la barre de titre ouvrait la page
+  Réglages > Compte et demandait un second clic sur « Sign in to Mira ». Pour une
+  action d'accueil, ce détour était inutile : l'utilisateur doit pouvoir se
+  connecter en un clic là où il voit le bouton.
+- **Modifications effectuées :**
+  - **`src/lib/agent/account.ts`** : nouvelle fonction `runDeviceSignIn()` qui
+    orchestre tout le flow (start → attente d'approbation → provision de la clé
+    → synchronisation du catalogue). C'est désormais la **seule** implémentation.
+  - **`src/components/SignInDialog.tsx`** (nouveau) : modale de connexion
+    autonome. Lance le flow au montage, affiche le code utilisateur pendant
+    l'attente, gère refus / expiration / erreur, propose « Open browser again ».
+  - **`src/components/TitleBar.tsx`** : le `LoginButton` ouvre cette modale
+    (`setSignInOpen(true)`) au lieu de renvoyer vers les réglages.
+  - **`src/components/settings/AccountSection.tsx`** : consomme
+    `runDeviceSignIn()` ; suppression de la logique dupliquée (`finishSignIn`).
+- **Décisions Techniques :**
+  - **Une seule implémentation du flow.** Deux points d'entrée (Réglages et
+    TitleBar) qui réimplémentent chacun le flow finiraient par diverger — un
+    correctif de sécurité sur l'un ne profiterait pas à l'autre. La logique vit
+    dans `account.ts`, les composants ne font que l'affichage.
+  - **Garde anti-double-exécution.** La modale protège son effet d'un
+    `useRef(started)` : le double-montage du mode strict de React ne doit pas
+    lancer deux device flows (deux codes, deux navigations).
+  - **Aucun secret dans la modale.** Comme `AccountSection`, elle ne voit jamais
+    le token ni la clé : tout reste côté Rust.
+- **Impacts & Dépendances :**
+  - La modale et la page Réglages partagent maintenant le même code de
+    connexion : toute évolution du flow est à faire dans `account.ts` uniquement.
+  - La fermeture de la modale annule le polling (AbortController) : pas de
+    boucle orpheline.
+- **Prochaines étapes :**
+  - Envisager un affichage du budget/plan dans la modale une fois une route
+    `GET /me` disponible (aujourd'hui la réponse de provision ne porte ni
+    `email` ni `plan`).
+
+### [2026-10-21T20:30] | URL du plan de contrôle : le `.env` devient la source de vérité
+
+- **Contexte :** la première version distinguait deux chemins (variable `.env`
+  en dev, constante compilée en prod). C'est incohérent avec le reste de la
+  config Mira, où le `.env` pilote tout. Demande utilisateur : ne pas hardcoder
+  l'URL de prod, la porter depuis le `.env` comme les autres variables.
+- **Modifications effectuées :**
+  - **`src-tauri/src/cloud.rs`** : `dashboard_url()` lit désormais
+    `ai_env::default_dashboard_url()` (donc `MIRA_DASHBOARD_URL` du `.env`) en
+    priorité. La constante est renommée `FALLBACK_DASHBOARD_URL` et n'est plus
+    qu'un filet de sécurité pour la release (`.env` absent). Suppression du
+    `#[cfg(debug_assertions)]` local : la lecture passe par `ai_env`, qui garde
+    déjà sa propre frontière debug-only.
+  - **`src-tauri/src/ai_env.rs`** : commentaires alignés (le `.env` est la
+    source de vérité, pas un simple override de dev).
+  - **`mira/.env`** et **`mira/.env.example`** : bloc « Plan de contrôle »
+    unifié, documentant les deux valeurs (local / en ligne).
+- **Décisions Techniques :**
+  - **Un seul point de lecture.** `cloud.rs` ne lit plus `std::env::var`
+    directement : il passe par `ai_env`, ce qui garde la frontière debug-only
+    centralisée en un seul endroit et évite deux comportements divergents.
+  - **Constante conservée, mais déclassée.** En release il n'y a aucun `.env` :
+    sans repli, l'application n'aurait aucune URL. Le repli garantit un binaire
+    fonctionnel ; il reste surchargeable en dev via la variable.
+- **Impacts & Dépendances :**
+  - Le comportement observable ne change pas en dev (toujours
+    `http://localhost:8747`). En release, la valeur vient du repli.
+  - Changer d'environnement = éditer `MIRA_DASHBOARD_URL` dans le `.env`, comme
+    n'importe quel autre réglage Mira.
+- **Prochaines étapes :**
+  - Si l'on veut aussi surcharger l'URL en release (ex. build CI vers un
+    staging), il faudra lire la variable d'environnement du process au lieu du
+    `.env` — à décider explicitement, car cela rouvre le vecteur de
+    détournement local.
+
+### [2026-10-21T20:05] | URLs du plan de contrôle externalisées dans le `.env` (dev) vs constante compilée (prod)
+
+- **Contexte :** l'URL du plan de contrôle était codée en dur dans `cloud.rs`,
+  sans distinction dev/prod. Il fallait pouvoir tester en local
+  (`http://localhost:8747`) tout en embarquant en release le domaine de
+  production `https://api.miracoder.com` — sans qu'un `.env` traîne dans le
+  binaire distribué.
+- **Modifications effectuées :**
+  - **`src-tauri/src/cloud.rs`** : `PRODUCTION_DASHBOARD_URL =
+    "https://api.miracoder.com"` (contrat produit, compilé) ;
+    `dashboard_url()` ne surcharge via `MIRA_DASHBOARD_URL` **qu'en
+    `#[cfg(debug_assertions)]`**.
+  - **`src-tauri/src/ai_env.rs`** : `KEY_DASHBOARD_URL`, `default_dashboard_url()`,
+    champ `dashboard_url` dans `DevAiConfig`.
+  - **`mira/.env`** et **`mira/.env.example`** : réécrits — `MIRA_DASHBOARD_URL`
+    documenté (dev local / prod compilée), plus de références obsolètes
+    (anthropic/gemini/ollama).
+- **Décisions Techniques :**
+  - **La surcharge d'URL est debug-only.** En release, accepter une URL venue de
+    l'environnement permettrait à un attaquant local de rediriger le device flow
+    et la provision de clé vers un serveur tiers (interception du secret Orvyx).
+    Le `cfg(debug_assertions)` ferme ce vecteur : le binaire release ne se
+    détourne pas.
+  - **L'URL de prod reste une constante, pas une variable.** Il n'y a pas de
+    `.env` en release ; une constante garantit une source unique non modifiable
+    après compilation.
+  - **Pas de `MIRA_DASHBOARD_URL` côté dashboard** : `PUBLIC_BASE_URL` (déjà
+    présent) est l'autorité des `verification_uri` — c'est le seul point à
+    basculer vers le sous-domaine en production.
+- **Impacts & Dépendances :**
+  - `cloud.rs` est la seule source de l'URL côté desktop ; tout nouvel appel au
+    plan de contrôle doit passer par `dashboard_url()`.
+  - En production, la bascule se fait en changeant `PRODUCTION_DASHBOARD_URL`
+    **et** `PUBLIC_BASE_URL` côté dashboard (cohérence des redirections).
+- **Prochaines étapes :**
+  - Vérifier le sous-domaine exact (`api.miracoder.com`) retenu pour la prod
+    (DNS + certificat + `PUBLIC_BASE_URL`).
+  - Aucun `.env` obsolète côté desktop : `mira/.env(.example)` sont les seuls et
+    sont à jour.
+
+### [2026-10-21T19:40] | Account — état de connexion réel dans l'UI (sidebar, TitleBar)
+
+- **Contexte :** trois défauts liés à l'absence de compte :
+  1. l'URL du plan de contrôle pointait sur un domaine fictif ;
+  2. la sidebar des réglages affichait une identité et un plan **hardcodés**
+     (« franklin DZUKAM », « Pro+ ») même déconnecté ;
+  3. le sélecteur IDE/AI mode restait affiché sans compte, alors que les deux
+     modes dépendent de modèles.
+- **Modifications effectuées :**
+  - **`src-tauri/src/cloud.rs`** : `DEFAULT_DASHBOARD_URL` → `https://miracoder.com`.
+  - **`src/lib/agent/account.ts`** : ajout de l'événement `CLOUD_ACCOUNT_EVENT`
+    (émis à la connexion, au rafraîchissement et à la déconnexion) et du hook
+    `useAccount()` qui expose `{ signedIn, account, loading }`. `signedIn` est
+    dérivé de `cloud_status` (jeton réellement présent côté Rust), jamais du
+    cache local.
+  - **`SettingsPanel.tsx`** : l'en-tête de la sidebar est rendu **uniquement**
+    si `signedIn && account` ; l'avatar est l'initiale de l'email, le nom et le
+    plan viennent des métadonnées. Plus aucune donnée inventée.
+  - **`TitleBar.tsx`** : nouveau composant `LoginButton` ; le `ModeSwitch`
+    n'apparaît que si connecté, sinon un bouton « Log in » ouvre les réglages
+    sur la page Account.
+- **Décisions Techniques :**
+  - **`signedIn` = source de vérité Rust, pas localStorage.** Le cache local
+    (`mira-cloud-account`) ne sert qu'à l'affichage ; il peut survivre à une
+    déconnexion ou à l'expiration d'un jeton. Faire dépendre l'UI du cache
+    laisserait croire à une session valide alors qu'aucune inférence n'est
+    possible — et afficherait un plan payant non effectif.
+  - **Un événement plutôt qu'un contexte React global** : `SettingsPanel` et
+    `TitleBar` sont dans des sous-arbres distincts et le magasin de compte n'est
+    pas un état d'application. Un `CustomEvent` reste découplé et évite
+    d'introduire un provider supplémentaire pour deux consommateurs.
+  - **Masquer IDE/AI mode plutôt que le désactiver** : un mode inactif grisé
+    sans explication est plus confus qu'un appel à l'action. Le bouton « Log in »
+    indique directement quoi faire.
+- **Impacts & Dépendances :**
+  - `SettingsPanel` et `TitleBar` consomment désormais `useAccount()`.
+  - Le bouton « Log in » déclenche `origin-open-settings` avec
+    `{ section: "account" }` — mécanisme déjà en place.
+  - Aucun impact sur l'agent ni sur la chaîne d'inférence.
+- **Prochaines étapes :**
+  - Alimenter `account.email` et `account.plan` : `POST /keys` ne renvoie
+    aujourd'hui que l'empreinte, le hint et le budget. Une route `GET /me` (ou
+    un enrichissement de la réponse de connexion) est nécessaire pour afficher
+    l'email et le plan réels.
+
+---
+
+### [2026-10-21T19:00] | Account — connexion au compte Mira + modèles embarqués en release
+
+- **Contexte :** Mira est un produit payant avec SES PROPRES modèles (comme
+  Trae), en plus de ceux que le client apporte via « Custom Model ». Or la clé
+  Orvyx et le catalogue ne venaient que du `.env` **de debug**
+  (`ai_env.rs`, no-op en release) : en production, aucun modèle Mira n'était
+  utilisable. Le plan de contrôle `mira-web-dashboard` sait déjà émettre une clé
+  par utilisateur (device flow + `POST /keys`), mais le desktop ne s'y connectait
+  pas.
+- **Modifications effectuées :**
+  - **Rust — `src-tauri/src/cloud.rs` (nouveau)** : client du plan de contrôle.
+    `cloud_device_start` / `cloud_device_poll` (device flow OAuth 2.0),
+    `cloud_provision_key` (range le secret Orvyx dans le keychain OS, compte
+    `provider:orvyx`), `cloud_fetch_models`, `cloud_status`, `cloud_sign_out`.
+    Les jetons et le secret vivent dans `CloudState` (Tauri managed state) et ne
+    sortent JAMAIS vers le front.
+  - **`src-tauri/src/lib.rs`** : `mod cloud`, `.manage(cloud::CloudState::default())`,
+    6 commandes enregistrées.
+  - **Front — `src/lib/agent/account.ts` (nouveau)** : orchestration device flow
+    (`startDeviceFlow` / `waitForApproval` avec `AbortSignal`), `provisionKey`,
+    `syncModels`, `signOut`, `isSignedIn`, plus un cache local non sensible
+    (`mira-cloud-models`, `mira-cloud-account`).
+  - **`src/lib/agent/miraModels.ts`** : `loadMiraModels()` a désormais DEUX
+    sources — `.env` de dev d'abord (confort), puis le catalogue synchronisé du
+    plan de contrôle (production), via un helper `buildModels()` partagé. Ajout
+    de `MIRA_BASE_URL` (constante produit, jamais fournie par l'utilisateur).
+  - **`src/components/settings/AccountSection.tsx` (nouveau)** : page
+    « Account » — bouton *Sign in to Mira*, affichage du code utilisateur +
+    ouverture navigateur, état connecté (email/plan/empreinte de clé, budget),
+    *Refresh models*, *Sign out*. Câblée dans `SettingsPanel` (retirée de
+    `ComingSoonSection`).
+- **Décisions Techniques :**
+  - **Device flow plutôt que callback local** : pas de navigateur embarqué
+    fiable, pas de port d'écoute à ouvrir → RFC 8628 est le standard desktop.
+  - **Jetons et secret strictement côté Rust.** Le front ne reçoit que le
+    `user_code` et des métadonnées (empreinte, budget, plan). Un XSS dans la
+    WebView ne peut donc pas exfiltrer la clé Orvyx depuis le JS.
+  - **URL du dashboard non fournie par l'utilisateur** (`MIRA_DASHBOARD_URL`
+    sinon défaut) : pas de surface SSRF, contrairement aux endpoints custom.
+  - **Réponses bornées** (`MAX_RESPONSE_BYTES`, timeout 20 s) : un plan de
+    contrôle compromis ne peut pas faire exploser la mémoire du poste.
+  - **Pas de suppression de la clé au sign-out** : la clé reste valide pour
+    l'inférence tant que le compte la détient ; sa révocation est une action
+    serveur distincte (`DELETE /keys`).
+  - **L'ordre du catalogue est porteur de sens** : il définit la cascade de repli
+    en cas d'indisponibilité. Le `.env` prime en dev pour ne pas dépendre du
+    réseau pendant le développement.
+- **Impacts & Dépendances :**
+  - Nouvelle variable d'env `MIRA_DASHBOARD_URL` (optionnelle).
+  - Le sélecteur de modèles se rafraîchit à la connexion via
+    `emitCustomModelsChanged()` — pas de rechargement requis.
+  - Dépend de la route `GET /api/v1/models` du dashboard (ajoutée dans le même
+    lot) et des routes `device`/`keys` existantes.
+- **Prochaines étapes :**
+  - Remplacer `DEFAULT_DASHBOARD_URL` par l'URL de production réelle avant la
+    première release.
+  - Prévoir la rotation transparente du jeton d'accès (le refresh token est
+    stocké mais pas encore utilisé).
+
+---
+
 ### [2026-10-20T23:59] | Settings → Models — fin du catalogue hardcodé, tout est déclaré par le client
 
 - **Contexte :** le panneau Settings → Models exposait un catalogue figé de 12

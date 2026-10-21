@@ -5,6 +5,7 @@ mod ai_env;
 mod bench;
 mod browser;
 mod checkpoint;
+mod cloud;
 mod context;
 mod dap;
 mod default_skills;
@@ -227,6 +228,7 @@ pub fn run() {
         .manage(PanelUrlState::default())
         .manage(browser::BrowserState::default())
         .manage(fs_watch::WatchState::default())
+        .manage(cloud::CloudState::default())
         .setup(|app| {
             // Migration de marque : `~/.origin` → `~/.mira` (idempotent, best-effort).
             // AVANT toute lecture d'état, pour que le reste de l'app voie déjà le
@@ -376,6 +378,13 @@ pub fn run() {
             checkpoint::checkpoint_revert_preview,
             checkpoint::checkpoint_undo_many,
             ai_env::dev_ai_config,
+            // Plan de contrôle Mira (device flow + provision clé + catalogue).
+            cloud::cloud_device_start,
+            cloud::cloud_device_poll,
+            cloud::cloud_status,
+            cloud::cloud_provision_key,
+            cloud::cloud_fetch_models,
+            cloud::cloud_sign_out,
             log::origin_log,
             lsp::lsp_start,
             lsp::lsp_request,

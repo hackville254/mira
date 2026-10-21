@@ -23,6 +23,11 @@ const KEY_MODEL: &str = "ORVYX_AI_MODEL";
 const KEY_API_KEY: &str = "ORVYX_AI_API_KEY";
 const KEY_BASE_URL: &str = "ORVYX_AI_BASE_URL";
 const KEY_ALLOWED_MODELS: &str = "ORVYX_ALLOWED_MODELS";
+/// URL du plan de contrôle Mira (locale pour tester, ou en ligne
+/// `https://api.miracoder.com`). C'est la SOURCE de vérité : `cloud.rs` la lit
+/// en priorité et ne retombe sur sa constante qu'en release, où le `.env`
+/// n'est pas lu (build debug uniquement).
+const KEY_DASHBOARD_URL: &str = "MIRA_DASHBOARD_URL";
 
 /// Configuration AI de dev, telle que lue depuis l'environnement.
 #[derive(serde::Serialize)]
@@ -35,6 +40,10 @@ pub struct DevAiConfig {
     /// Chaîne brute séparée par des virgules ; le front la découpe et la
     /// déduplique. `None` si non définie.
     pub allowed_models: Option<String>,
+    /// URL du plan de contrôle Mira, définie par `MIRA_DASHBOARD_URL`. `None`
+    /// si la variable est absente (release) : `cloud.rs` applique alors son
+    /// URL de repli.
+    pub dashboard_url: Option<String>,
     /// Vrai si au moins une des clés reconnues est présente.
     pub configured: bool,
 }
@@ -171,6 +180,11 @@ pub fn default_allowed_models() -> Option<String> {
     get(KEY_ALLOWED_MODELS)
 }
 
+/// URL du plan de contrôle Mira définie dans le `.env` de dev, s'il y en a une.
+pub fn default_dashboard_url() -> Option<String> {
+    get(KEY_DASHBOARD_URL)
+}
+
 /// Renvoie la config AI de dev complète. Exposée au front pour préremplir les
 /// champs quand ni le keychain ni le localStorage n'ont de valeur.
 #[tauri::command]
@@ -179,6 +193,7 @@ pub fn dev_ai_config() -> DevAiConfig {
     let model = default_model();
     let base_url = default_base_url();
     let allowed_models = default_allowed_models();
+    let dashboard_url = default_dashboard_url();
     // La clé n'est renvoyée que si elle correspond au provider configuré.
     let api_key = provider.as_deref().and_then(api_key_for);
     DevAiConfig {
@@ -188,6 +203,7 @@ pub fn dev_ai_config() -> DevAiConfig {
         api_key,
         base_url,
         allowed_models,
+        dashboard_url,
     }
 }
 

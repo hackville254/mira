@@ -9,6 +9,8 @@ import McpSection from "./McpSection";
 import HooksSection from "./HooksSection";
 import IndexingSection from "./IndexingSection";
 import AboutSection from "./AboutSection";
+import AccountSection from "./AccountSection";
+import { useAccount } from "../../lib/agent/account";
 import { CueSection } from "./CueSection";
 import { BrowserSection } from "./BrowserSection";
 import { AgentSection } from "./AgentSection";
@@ -2005,6 +2007,10 @@ interface SettingsPanelProps {
 export default function SettingsPanel({ onClose, initialSection }: SettingsPanelProps) {
   const [section, setSection] = useState<Section>((initialSection as Section) ?? "dev-env");
   const [query, setQuery] = useState("");
+  // Métadonnées de compte Mira (non sensibles), pour l'en-tête de la sidebar.
+  // `signedIn` vient d'une source fiable (jeton côté Rust), pas du cache local :
+  // un `localStorage` résiduel ne doit pas afficher une identité ni un plan.
+  const { signedIn, account } = useAccount();
   // Dossier de projet courant, nécessaire aux pages Skills/Commands/Hooks pour
   // proposer la portée « projet » (`.mira` du workspace). Chargé au montage.
   const [workspace, setWorkspace] = useState<string | undefined>(undefined);
@@ -2084,30 +2090,36 @@ export default function SettingsPanel({ onClose, initialSection }: SettingsPanel
           padding: "16px 12px",
           overflowY: "auto",
         }}>
-          {/* Account header */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "6px 8px 16px" }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: "10px",
-              backgroundColor: "var(--origin-accent-blue)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              color: "#fff", fontSize: "17px", fontWeight: 700, flexShrink: 0,
-            }}>
-              f
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-              <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                franklin DZUKAM
-              </span>
-              <span style={{
-                fontSize: "10px", fontWeight: 600, color: "#10b981",
-                backgroundColor: "rgba(16,185,129,0.12)",
-                padding: "1px 6px", borderRadius: "4px", alignSelf: "flex-start",
-                marginTop: 3,
+          {/* Account header — reflète l'état de connexion réel. Masqué tant que
+              l'utilisateur n'est pas connecté : on n'affiche pas d'identité ni
+              de plan inventés. */}
+          {signedIn && account && (
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "6px 8px 16px" }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: "10px",
+                backgroundColor: "var(--origin-accent-blue)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                color: "#fff", fontSize: "17px", fontWeight: 700, flexShrink: 0,
               }}>
-                Pro+
-              </span>
+                {(account.email?.trim()?.[0] ?? "?").toUpperCase()}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {account.email ?? "Mira account"}
+                </span>
+                {account.plan && (
+                  <span style={{
+                    fontSize: "10px", fontWeight: 600, color: "#10b981",
+                    backgroundColor: "rgba(16,185,129,0.12)",
+                    padding: "1px 6px", borderRadius: "4px", alignSelf: "flex-start",
+                    marginTop: 3,
+                  }}>
+                    {account.plan}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Search */}
           <div style={{ position: "relative", padding: "0 6px 12px" }}>
@@ -2171,6 +2183,7 @@ export default function SettingsPanel({ onClose, initialSection }: SettingsPanel
         {/* Content */}
         <div style={{ flex: 1, overflowY: "auto", padding: "28px 40px" }}>
           <div style={{ maxWidth: 860, margin: "0 auto" }}>
+            {section === "account"     && <AccountSection />}
             {section === "dev-env"     && <DevEnvironmentSection />}
             {section === "permission"  && <PermissionSection />}
             {section === "models"      && <AIProvidersSection />}
@@ -2191,7 +2204,7 @@ export default function SettingsPanel({ onClose, initialSection }: SettingsPanel
             {section === "about"       && <AboutSection />}
             {section === "shortcuts"   && <KeybindingsSection />}
             {section === "languages"   && <LspSection />}
-            {!["dev-env", "permission", "models", "appearance", "general", "conversation", "notifications", "skills", "commands", "rules", "mcp", "hooks", "indexing", "cue", "browser", "agent", "agents", "about", "shortcuts", "languages"].includes(section) && (
+            {!["account", "dev-env", "permission", "models", "appearance", "general", "conversation", "notifications", "skills", "commands", "rules", "mcp", "hooks", "indexing", "cue", "browser", "agent", "agents", "about", "shortcuts", "languages"].includes(section) && (
               <ComingSoonSection label={NAV_ITEMS.find(s => s.id === section)?.label ?? ""} />
             )}
           </div>

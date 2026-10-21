@@ -1,4 +1,5 @@
 import { loadDevAiConfig } from "../secrets";
+import { loadCachedCatalog } from "./account";
 
 /**
  * Modèles fournis par Mira (catalogue de l'éditeur).
@@ -20,6 +21,14 @@ export const MIRA_PROVIDER_ID = "orvyx";
 
 /** Clé de modèle Mira : sert d'identifiant de provider ET de modèle. */
 export const MIRA_MODEL_PREFIX = "mira-";
+
+/**
+ * Endpoint d'inférence du provider Mira, utilisé par le catalogue de
+ * production. C'est une constante produit (fixée par Mira), pas une saisie
+ * utilisateur : un poste ne peut pas détourner les modèles Mira vers une autre
+ * destination. En dev, le `.env` fournit son propre endpoint, prioritaire.
+ */
+const MIRA_BASE_URL = "https://api.orvyx-ai.com/v1";
 
 /** Modèle Mira, tel que consommé par le sélecteur. */
 export interface MiraModel {
@@ -87,16 +96,47 @@ function parseIds(raw: string | null): string[] {
 
 /**
  * Catalogue Mira courant, ou `[]` si Mira n'a aucun endpoint configuré
- * (build release sans backend, ou `.env` absent).
+ * (build release sans connexion, ou `.env` absent).
+ *
+ * Deux sources, dans cet ordre :
+ *   1. le `.env` de dev (`ORVYX_AI_*`) — confort de développement, jamais
+ *      présent en release ;
+ *   2. le catalogue synchronisé depuis le plan de contrôle (`account.ts`),
+ *      mis en cache local — c'est la source en production.
+ * La première qui fournit un endpoint ET des ids gagne.
  */
 export async function loadMiraModels(): Promise<MiraModel[]> {
   const dev = await loadDevAiConfig();
   const baseUrl = dev.baseUrl?.trim();
   const ids = parseIds(dev.allowedModels);
-  if (!baseUrl || ids.length === 0) return [];
+  if (baseUrl && ids.length > 0) {
+    return buildModels(ids, dev.model?.trim() ?? null, baseUrl);
+  }
 
-  // Le modèle « principal » (celui du .env) reste en tête de liste.
-  const primary = dev.model?.trim();
+  // Repli production : catalogue issu du plan de contrôle. L'endpoint d'un
+  // modèle Mira est celui du provider Mira (fixé par le produit), pas une URL
+  // fournie par l'utilisateur.
+  const cached = loadCachedCatalog();
+  if (cached && cached.length > 0) {
+    const cloudIds = cached.map(m => m.id);
+    return buildModels(cloudIds, cloudIds[0] ?? null, MIRA_BASE_URL, cached);
+  }
+  return [];
+}
+
+/**
+ * Construit les modèles à partir d'une liste d'ids et d'une base URL.
+ *
+ * `labels` permet au catalogue cloud d'imposer ses libellés ; sinon on retombe
+ * sur la table locale puis sur une dérivation depuis l'id.
+ */
+function buildModels(
+  ids: string[],
+  primary: string | null,
+  baseUrl: string,
+  labels?: { id: string; display_name: string }[],
+): MiraModel[] {
+  // Le modèle « principal » reste en tête de liste.
   const ordered = primary && ids.includes(primary)
     ? [primary, ...ids.filter(id => id !== primary)]
     : [...ids].sort((a, b) => {
@@ -105,10 +145,11 @@ export async function loadMiraModels(): Promise<MiraModel[]> {
         return (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) - (ib === -1 ? Number.MAX_SAFE_INTEGER : ib);
       });
 
+  const cloudLabel = new Map((labels ?? []).map(m => [m.id, m.display_name]));
   return ordered.map((id): MiraModel => ({
     key: `${MIRA_MODEL_PREFIX}${id}`,
     modelId: id,
-    displayName: MIRA_MODEL_LABELS[id] ?? labelFromId(id),
+    displayName: cloudLabel.get(id) ?? MIRA_MODEL_LABELS[id] ?? labelFromId(id),
     baseUrl,
     providerId: MIRA_PROVIDER_ID,
   }));

@@ -8,6 +8,8 @@ import { useCommands } from "../context/CommandContext";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { useToast } from "./ui/Toast";
 import { formatShortcut } from "../lib/platform";
+import { useAccount } from "../lib/agent/account";
+import SignInDialog from "./SignInDialog";
 import logoSrc from "../assets/logo-code.svg";
 
 const win = getCurrentWindow();
@@ -131,6 +133,28 @@ function ModeSwitch({
   );
 }
 
+/**
+ * Affiché à la place du sélecteur IDE/AI mode tant que l'utilisateur n'est pas
+ * connecté à Mira. Les deux modes reposent sur des modèles : sans compte, il
+ * n'y a rien à basculer. Le bouton ouvre les réglages sur la page Compte.
+ */
+function LoginButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip content="Sign in to Mira" side="bottom">
+      <button
+        onClick={onClick}
+        className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+        style={{ backgroundColor: "var(--origin-accent-blue)", color: "#fff" }}
+        onMouseEnter={e => { e.currentTarget.style.opacity = "0.9"; }}
+        onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
+      >
+        <Icon icon="lucide:log-in" width={13} />
+        Log in
+      </button>
+    </Tooltip>
+  );
+}
+
 export default function TitleBar() {
   const { folderPath } = useWorkspace();
   const { showToast } = useToast();
@@ -152,6 +176,12 @@ export default function TitleBar() {
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const projectBtnRef = useRef<HTMLButtonElement>(null);
+  // Sans compte Mira, le sélecteur IDE/AI mode laisse place à un bouton de
+  // connexion : les deux modes dépendent de modèles, donc d'une session.
+  const { signedIn } = useAccount();
+  // Modale de connexion : le bouton « Log in » lance le device flow
+  // directement, sans détour par les réglages.
+  const [signInOpen, setSignInOpen] = useState(false);
 
   const close = () => { setMenuOpen(false); setMenuAnchor(null); };
   const toggleMenu = () => {
@@ -248,7 +278,11 @@ export default function TitleBar() {
     >
       {/* Left — IDE logo + mode toggle + project name */}
       <div className="flex items-center gap-1 px-2 z-10 shrink-0">
-        <ModeSwitch aiMode={appMode === 'ai'} onSetMode={(on) => onSetAppMode(on ? 'ai' : 'ide')} />
+        {signedIn ? (
+          <ModeSwitch aiMode={appMode === 'ai'} onSetMode={(on) => onSetAppMode(on ? 'ai' : 'ide')} />
+        ) : (
+          <LoginButton onClick={() => setSignInOpen(true)} />
+        )}
 
         {/* Divider */}
         <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
@@ -387,6 +421,9 @@ export default function TitleBar() {
           <Icon icon="lucide:x" width={15} />
         </button>
       </div>
+
+      {/* Modale de connexion Mira (device flow lancé directement). */}
+      {signInOpen && <SignInDialog onClose={() => setSignInOpen(false)} />}
     </div>
   );
 }
