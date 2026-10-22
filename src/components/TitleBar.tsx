@@ -9,6 +9,7 @@ import { useWorkspace } from "../context/WorkspaceContext";
 import { useToast } from "./ui/Toast";
 import { formatShortcut } from "../lib/platform";
 import { useAccount } from "../lib/agent/account";
+import { onSignInRequest } from "../lib/agent/signInBus";
 import SignInDialog from "./SignInDialog";
 import logoSrc from "../assets/logo-code.svg";
 
@@ -180,8 +181,10 @@ export default function TitleBar() {
   // connexion : les deux modes dépendent de modèles, donc d'une session.
   const { signedIn } = useAccount();
   // Modale de connexion : le bouton « Log in » lance le device flow
-  // directement, sans détour par les réglages.
+  // directement, sans détour par les réglages. Le chat peut aussi demander son
+  // ouverture via le canal `origin-open-signin` (message bloqué sans session).
   const [signInOpen, setSignInOpen] = useState(false);
+  useEffect(() => onSignInRequest(() => setSignInOpen(true)), []);
 
   const close = () => { setMenuOpen(false); setMenuAnchor(null); };
   const toggleMenu = () => {

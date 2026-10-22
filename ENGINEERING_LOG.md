@@ -5,6 +5,41 @@
 
 ---
 
+### [2026-10-21T23:10] | Connexion desktop : suppression totale du code (100 % par lien)
+
+- **Contexte :** malgré le mode « launch » (lien d'appairage), l'utilisateur
+  voyait encore le gros code dans la modale de connexion **et** dans la carte
+  Account des réglages. Cause racine : le bloc de repli était rendu
+  **inconditionnellement** dès que `flow` existait (c'est-à-dire dès la réponse
+  de `device/start`), avant même que `openUrl` ait réussi. Le code s'affichait
+  donc toujours, même quand le navigateur s'ouvrait parfaitement — ce qui
+  trahissait le parcours « par lien » voulu (façon Trae).
+- **Modifications effectuées :**
+  - **`src/components/SignInDialog.tsx`** : suppression du bloc « Or enter this
+    code manually » et de l'affichage du code. En attente : spinner +
+    « Waiting for you to confirm in your browser… » + bouton « Open browser
+    again » (message dédié si le navigateur ne s'est pas ouvert).
+  - **`src/components/settings/AccountSection.tsx`** : même traitement dans la
+    carte d'attente des réglages (plus de code, message + bouton seulement).
+  - **`src/lib/agent/account.ts`** : `DeviceStart.userCode` retiré du contrat
+    front (et `startDeviceFlow` ne lit plus `user_code`) — plus aucune surface
+    morte pour un code que plus personne n'affiche.
+- **Décisions Techniques :** on supprime le **repli par code** plutôt que de le
+  conditionner à l'échec du navigateur. Justification : (1) fidélité au parcours
+  Trae (un lien, un clic, rien à recopier) ; (2) le bouton « Open browser again »
+  couvre déjà le cas « navigateur fermé » en relançant la même page ; (3) moins
+  de surface affichée = moins de risque qu'un tiers lise un code à l'écran. Le
+  backend continue d'exposer `user_code` (compat) mais le desktop ne le remonte
+  plus au front.
+- **Impacts & Dépendances :** `cloud.rs` conserve `user_code` dans `DeviceStart`
+  (métadonnée non sensible, inoffensive) ; seul le contrat **front** a été
+  resserré. `cargo build` OK, `tsc` 0 erreur (hors `bench/` préexistant).
+- **Prochaines étapes :** aucune. Si un jour un navigateur s'avère non ouvrable
+  sur une plateforme cible, réintroduire un repli **explicite** (bouton
+  « Afficher le code ») plutôt qu'un affichage automatique.
+
+---
+
 ### [2026-10-21T21:25] | Sélecteur de modèles de l'input : ancré au bouton (vrai select)
 
 - **Contexte :** le menu du sélecteur de modèles s'ouvrait « loin du select » et

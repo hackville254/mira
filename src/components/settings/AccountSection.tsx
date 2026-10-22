@@ -22,12 +22,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { LogIn, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
+import { LogIn, LogOut, ShieldCheck } from "lucide-react";
 import { PageHeader, Button, Badge, EmptyState, ErrorLine } from "./ui";
 import {
   runDeviceSignIn,
-  provisionKey,
-  syncModels,
+  refreshAccount,
   signOut,
   isSignedIn,
   loadAccount,
@@ -62,6 +61,26 @@ export default function AccountSection() {
   // Annule une éventuelle boucle de polling au démontage.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Rafraîchissement automatique du compte (plan + budget) : le client n'a plus
+  // à cliquer sur un bouton « Refresh models ». On resynchronise à l'ouverture
+  // de la page et à chaque retour de focus, ce qui couvre le passage au payant
+  // ou un changement de quota fait côté serveur pendant que l'app reste ouverte.
+  // Aucune erreur n'est remontée : c'est de l'affichage, pas une action critique.
+  useEffect(() => {
+    let alive = true;
+    const sync = async () => {
+      const fresh = await refreshAccount();
+      if (alive && fresh) setAccount(fresh);
+    };
+    void sync();
+    const onFocus = () => { void sync(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
   const handleSignIn = useCallback(async () => {
     setError(null);
     setBusy(true);
@@ -77,14 +96,14 @@ export default function AccountSection() {
         },
       });
       setFlow(null);
-      if (result === "approved") {
+      if (result.outcome === "approved") {
         setAccount(loadAccount());
         // Le sélecteur de modèles doit voir arriver le catalogue sans rechargement.
         emitCustomModelsChanged();
         setSignedIn(true);
-      } else if (result === "denied") {
+      } else if (result.outcome === "denied") {
         setError("Sign-in was denied.");
-      } else if (result === "expired") {
+      } else if (result.outcome === "expired") {
         setError("The code expired. Please try again.");
       }
     } catch (e) {
@@ -138,10 +157,9 @@ export default function AccountSection() {
                 </span>
                 {account?.plan && <Badge tone="accent">{account.plan}</Badge>}
               </div>
-              {account?.maskedHint && (
+              {typeof account?.budgetUsd === "number" && (
                 <div style={{ fontSize: 11.5, color: "var(--origin-fg-muted)", marginTop: 3 }}>
-                  Key {account.maskedHint}
-                  {typeof account.budgetUsd === "number" ? ` · $${account.budgetUsd} budget` : ""}
+                  ${account.budgetUsd} monthly budget
                 </div>
               )}
             </div>
@@ -149,48 +167,20 @@ export default function AccountSection() {
               <LogOut size={13} /> Sign out
             </Button>
           </div>
-
-          <Button
-            variant="secondary"
-            small
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              setError(null);
-              try {
-                const acc = await provisionKey();
-                setAccount(acc);
-                await syncModels();
-                emitCustomModelsChanged();
-              } catch (e) {
-                setError(normalize(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <RefreshCw size={12} /> Refresh models
-          </Button>
         </div>
       ) : flow ? (
         <div style={cardStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
             <ShieldCheck size={14} style={{ color: "var(--origin-semantic-success, #2ea043)" }} />
             <span style={{ fontSize: 13, color: "var(--origin-fg-default)" }}>
-              Finish signing in your browser
+              Waiting for you to confirm in your browser…
             </span>
           </div>
           <div style={{ fontSize: 12, color: "var(--origin-fg-muted)", marginBottom: 10 }}>
-            Enter this code on the page that just opened:
+            This window updates automatically.
           </div>
-          <div style={{
-            fontFamily: "var(--font-mono)", fontSize: 22, letterSpacing: "0.18em",
-            color: "var(--origin-fg-default)", padding: "8px 0", userSelect: "all",
-          }}>
-            {flow.userCode}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-            <Button variant="secondary" small onClick={() => openUrl(flow.verificationUriComplete).catch(() => { /* repli */ })}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button variant="secondary" small onClick={() => openUrl(flow.verificationUriComplete).catch(() => { /* repli : bouton relançable */ })}>
               Open browser again
             </Button>
             <Button variant="secondary" small onClick={handleCancel}>Cancel</Button>

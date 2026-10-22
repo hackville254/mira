@@ -47,7 +47,7 @@ import { createInterface, type Interface } from "node:readline";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
-import { CONVERGENCE, ConvergenceTracker, type ConvergenceReport } from "./convergence";
+import { ConvergenceTracker, type ConvergenceReport } from "./convergence";
 import { classifyTermination, isInconclusive, type TerminationClass } from "./termination";
 
 /** Événement normalisé du flux d'agent (sous-ensemble utilisé par le bench). */

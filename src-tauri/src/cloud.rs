@@ -111,7 +111,7 @@ pub async fn cloud_device_start(
     let url = format!("{}/api/v1/device/start", dashboard_url());
     let resp = http_client()?
         .post(&url)
-        .json(&json!({ "client_label": client_label }))
+        .json(&json!({ "client_label": client_label, "launch": true }))
         .send()
         .await
         .map_err(|e| format!("Cannot reach Mira cloud: {e}"))?;
@@ -136,7 +136,15 @@ pub enum PollOutcome {
     /// Toujours en attente : l'appelant doit respecter `interval` et réessayer.
     Pending { interval: i64 },
     /// Approuvé : les jetons ont été stockés côté Rust, le front n'y a pas accès.
-    Approved,
+    /// On remonte seulement l'identité non sensible du compte (affichage).
+    Approved {
+        email: Option<String>,
+        plan: Option<String>,
+        /// Budget mensuel courant (USD), crédit offert inclus. Permet au front
+        /// d'afficher « $1 monthly budget » dès l'approbation, sans appel de
+        /// provisioning supplémentaire.
+        budget_usd: Option<f64>,
+    },
     Denied,
     Expired,
 }
@@ -147,10 +155,20 @@ struct DevicePollWire {
     access_token: Option<String>,
     refresh_token: Option<String>,
     interval: Option<i64>,
+    /// Secret Orvyx livré UNE SEULE FOIS à l'approbation (jamais rejouable :
+    /// le code est consommé côté serveur). Rangé aussitôt dans le keychain OS.
+    key_secret: Option<String>,
+    key_fingerprint: Option<String>,
+    /// Identité non sensible du compte approuvé (jamais de secret ici).
+    email: Option<String>,
+    plan: Option<String>,
+    /// Budget mensuel courant (USD) livré dès l'approbation.
+    budget_usd: Option<f64>,
 }
 
 /// Interroge l'état du device flow courant. En cas d'approbation, stocke les
-/// jetons côté Rust et renvoie `Approved` (sans jamais exposer les jetons).
+/// jetons côté Rust **et** la clé Orvyx dans le keychain OS, puis renvoie
+/// `Approved` (sans jamais exposer jetons ni secret au front).
 #[tauri::command]
 pub async fn cloud_device_poll(state: tauri::State<'_, CloudState>) -> Result<PollOutcome, String> {
     let device_code = {
@@ -177,10 +195,23 @@ pub async fn cloud_device_poll(state: tauri::State<'_, CloudState>) -> Result<Po
             let refresh = wire
                 .refresh_token
                 .ok_or_else(|| "Approved without refresh token".to_string())?;
+
+            // La clé est livrée ici, une seule fois. On la range dans le
+            // keychain OS avant de rendre la main : si l'écriture échoue, on
+            // échoue bruyamment plutôt que de laisser une session sans clé.
+            if let Some(secret) = wire.key_secret {
+                crate::keychain::set_secret("provider:orvyx".to_string(), secret)?;
+            }
+            *state.key_fingerprint.lock().await = wire.key_fingerprint;
+
             *state.access_token.lock().await = Some(access);
             *state.refresh_token.lock().await = Some(refresh);
             *state.device_code.lock().await = None;
-            Ok(PollOutcome::Approved)
+            Ok(PollOutcome::Approved {
+                email: wire.email,
+                plan: wire.plan,
+                budget_usd: wire.budget_usd,
+            })
         }
         "denied" => {
             *state.device_code.lock().await = None;
@@ -208,6 +239,9 @@ pub struct CloudState {
     device_code: tokio::sync::Mutex<Option<String>>,
     access_token: tokio::sync::Mutex<Option<String>>,
     refresh_token: tokio::sync::Mutex<Option<String>>,
+    /// Empreinte de la clé provisionnée (non sensible) : conservée pour
+    /// l'affichage et pour détecter une clé qui ne correspondrait plus.
+    key_fingerprint: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Vue non sensible de l'état cloud, seule chose exposée à l'UI.
@@ -244,40 +278,56 @@ pub struct ProvisionedKey {
 }
 
 #[derive(Debug, Deserialize)]
-struct ProvisionedKeyWire {
-    secret: String,
-    masked_hint: String,
-    budget_usd: f64,
-    key_fingerprint: String,
+struct DesktopKeyWire {
+    #[serde(default)]
+    key_name: Option<String>,
+    #[serde(default)]
+    masked_hint: Option<String>,
+    #[serde(default)]
+    budget_usd: Option<f64>,
+    #[serde(default)]
+    key_fingerprint: Option<String>,
 }
 
-/// Provisionne (ou fait tourner) la clé Orvyx du compte, puis la range dans le
-/// keychain OS sous `provider:orvyx`. Le secret ne remonte jamais au front.
+/// Récupère les métadonnées (non sensibles) de la clé Orvyx du compte.
+///
+/// Le secret n'est PAS récupéré ici : il a déjà été livré une seule fois par le
+/// poll du device flow et rangé dans le keychain OS. Cet appel est idempotent et
+/// sert à afficher « avec quelle clé je tourne ? », y compris après un
+/// redémarrage du poste (session cloud reprise).
 #[tauri::command]
 pub async fn cloud_provision_key(
     state: tauri::State<'_, CloudState>,
-    device_label: Option<String>,
+    _device_label: Option<String>,
 ) -> Result<ProvisionedKey, String> {
     let token = access_token(&state).await?;
-    let url = format!("{}/api/v1/keys", dashboard_url());
+    let url = format!("{}/api/v1/keys/desktop", dashboard_url());
     let resp = http_client()?
-        .post(&url)
+        .get(&url)
         .bearer_auth(&token)
-        .json(&json!({ "device_label": device_label }))
         .send()
         .await
         .map_err(|e| format!("Cannot reach Mira cloud: {e}"))?;
-    let wire: ProvisionedKeyWire = serde_json::from_str(&read_bounded(resp).await?)
-        .map_err(|e| format!("Malformed keys response: {e}"))?;
+    let wire: DesktopKeyWire = serde_json::from_str(&read_bounded(resp).await?)
+        .map_err(|e| format!("Malformed desktop key response: {e}"))?;
 
-    // Stockage immédiat dans le keychain OS : c'est `get_secret("provider:orvyx")`
-    // qui alimentera ensuite le client LLM, sans repasser par l'UI.
-    crate::keychain::set_secret("provider:orvyx".to_string(), wire.secret)?;
+    // On préfère l'empreinte renvoyée par le serveur, sinon celle mémorisée au
+    // moment de la livraison de la clé.
+    let key_fingerprint = match wire.key_fingerprint {
+        Some(fp) => fp,
+        None => state
+            .key_fingerprint
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default(),
+    };
+    *state.key_fingerprint.lock().await = Some(key_fingerprint.clone());
 
     Ok(ProvisionedKey {
-        key_fingerprint: wire.key_fingerprint,
-        masked_hint: wire.masked_hint,
-        budget_usd: wire.budget_usd,
+        key_fingerprint,
+        masked_hint: wire.masked_hint.or(wire.key_name).unwrap_or_default(),
+        budget_usd: wire.budget_usd.unwrap_or(0.0),
     })
 }
 
@@ -308,6 +358,22 @@ pub async fn cloud_fetch_models(state: tauri::State<'_, CloudState>) -> Result<V
     Ok(wire.models)
 }
 
+/// Ramène la fenêtre Mira au premier plan.
+///
+/// Le navigateur ne peut pas réveiller une app native : après l'approbation du
+/// device flow, c'est au poste de se manifester. Appelé par l'UI dès que le poll
+/// renvoie `approved`, il sort la fenêtre de la barre des tâches, la restaure si
+/// elle est réduite et lui rend le focus. Best-effort : chaque étape est tolérée
+/// en échec (un OS peut refuser le focus sans action utilisateur), on ne fait
+/// donc jamais échouer la connexion pour ça.
+#[tauri::command]
+pub async fn cloud_focus_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
 /// Oublie la session cloud côté poste (les jetons en mémoire sont effacés).
 ///
 /// Ne supprime PAS la clé Orvyx : elle reste valide pour l'inférence tant que
@@ -317,5 +383,6 @@ pub async fn cloud_sign_out(state: tauri::State<'_, CloudState>) -> Result<(), S
     *state.access_token.lock().await = None;
     *state.refresh_token.lock().await = None;
     *state.device_code.lock().await = None;
+    *state.key_fingerprint.lock().await = None;
     Ok(())
 }

@@ -27,6 +27,12 @@ dpi = "0.1"
 tauri-plugin-opener = "2.7.1"
 tauri-plugin-store = "2.5.0"
 tauri-plugin-dialog = "2.8.2"
+# Deep links `mira://` (retour du navigateur après un device flow) : le plugin
+# single-instance réémet la seconde instance vers l'app déjà ouverte, et le
+# plugin deep-link décode l'URL. Desktop uniquement (pas de cible mobile ici).
+tauri-plugin-deep-link = "2"
+[target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

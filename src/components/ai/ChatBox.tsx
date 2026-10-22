@@ -10,6 +10,8 @@ import { loadCustomModels, subscribeCustomModels } from "../../lib/agent/customM
 import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
+import { useAccount } from "../../lib/agent/account";
+import { requestSignIn } from "../../lib/agent/signInBus";
 import { resolveDefaultTarget } from "../../lib/secrets";
 import { optimizePrompt } from "../../lib/promptOptimizer";
 import { revealSelection } from "../../lib/selectionRevealBus";
@@ -645,6 +647,8 @@ interface ChatBoxProps {
 
 export default function ChatBox({ onSend, getEditorContext, forcedContext, onForcedContextConsumed, isStreaming, onStop, handleRef, queued, onRemoveQueued, onEditQueued, onQueue, skills = [], commands = [], onSelectFolder, getUserHistory, onOptimizeError }: ChatBoxProps) {
   const { folderPath } = useWorkspace();
+  // Session Mira : conditionne l'envoi (l'agent tourne sur les modèles Mira).
+  const { signedIn } = useAccount();
   const containerRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
   /** Zone qui accepte le dépôt d'un fichier/dossier (délimite le hit-test OS). */
@@ -871,6 +875,17 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
     const { displayText, fileMentions } = parseContent(el);
     const contextRefs = readContextBadges(el);
     if (!displayText && fileMentions.length === 0 && contextRefs.length === 0) return;
+
+    // GARDE-FOU CONNEXION : l'agent Mira s'exécute sur nos modèles, donc derrière
+    // une session. On interrompt l'envoi AVANT le gate workspace et on ouvre la
+    // modale de connexion : le brouillon reste intact, l'utilisateur se connecte
+    // puis renvoie. Le garde-fou autoritaire reste dans `AiPanel.handleSend`
+    // (il couvre la régénération et la file d'attente) ; celui-ci n'est là que
+    // pour un retour immédiat côté composer.
+    if (!signedIn) {
+      requestSignIn();
+      return;
+    }
 
     // GARDE-FOU WORKSPACE : l'agent a besoin d'un dossier de travail pour lire et
     // écrire. Sans dossier, on n'envoie RIEN et on ouvre le sélecteur natif : le
@@ -1901,7 +1916,12 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
 
         <button
           onClick={isStreaming ? onStop : handleSend}
-          title={isStreaming ? "Stop generating" : !folderPath ? "Select a working directory to start" : "Send"}
+          title={
+            isStreaming ? "Stop generating"
+              : !signedIn ? "Sign in to Mira to start a conversation"
+              : !folderPath ? "Select a working directory to start"
+              : "Send"
+          }
           style={{
             display: "flex",
             alignItems: "center",
@@ -1912,10 +1932,10 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
             border: "none",
             cursor: "pointer",
             backgroundColor: isStreaming ? "var(--origin-bg-active)" : "var(--origin-accent-blue)",
-            // Sans dossier : le bouton reste cliquable (le clic ouvre le sélecteur
-            // de répertoire) mais s'estompe pour signaler que l'agent ne partira
-            // pas tant qu'aucun workspace n'est choisi.
-            opacity: !folderPath && !isStreaming ? 0.5 : 1,
+            // Sans connexion OU sans dossier : le bouton reste cliquable (le clic
+            // ouvre la connexion / le sélecteur de répertoire) mais s'estompe pour
+            // signaler que l'agent ne partira pas dans l'immédiat.
+            opacity: (!signedIn || !folderPath) && !isStreaming ? 0.5 : 1,
             color: isStreaming ? "var(--origin-fg-default)" : "#fff",
           }}
         >

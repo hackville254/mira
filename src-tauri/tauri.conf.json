@@ -24,6 +24,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mira"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://github.com/Origin-AI-IDE/origin/releases/latest/download/latest.json"

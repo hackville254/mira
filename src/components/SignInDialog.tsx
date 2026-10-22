@@ -2,16 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@iconify/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { runDeviceSignIn, type DeviceStart } from "../lib/agent/account";
+import { createAuthNudge } from "../lib/deepLink";
 import { emitCustomModelsChanged } from "../lib/agent/customModels";
 
 // ── Connexion Mira depuis la barre de titre ──────────────────────────────────
 //
-// Le bouton « Log in » de la barre de titre lance le device flow DIRECTEMENT,
-// sans passer par les réglages : c'est l'action attendue au premier lancement,
-// et détourner par un écran de réglages ajoutait un clic inutile.
+// Le bouton « Log in » de la barre de titre lance la connexion DIRECTEMENT,
+// sans passer par les réglages : c'est l'action attendue au premier lancement.
+//
+// Parcours « par lien » (façon Trae) : on ouvre le navigateur sur un lien qui
+// autorise l'appareil tout seul. L'utilisateur n'a RIEN à recopier — juste à
+// confirmer dans son navigateur (et à se connecter s'il ne l'est pas déjà).
+// Aucun code n'est jamais affiché : si le navigateur ne s'ouvre pas, un bouton
+// relance la page d'appairage.
 //
 // Cette modale ne voit jamais le token ni la clé Orvyx (tout reste côté Rust) :
-// elle n'affiche que le code utilisateur et l'état d'avancement.
+// elle n'affiche que l'état d'avancement.
 
 /** Normalise une erreur Tauri (chaîne) ou JS en message affichable. */
 function normalize(e: unknown): string {
@@ -23,51 +29,85 @@ function normalize(e: unknown): string {
 export default function SignInDialog({ onClose }: { onClose: () => void }) {
   const [flow, setFlow] = useState<DeviceStart | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [browserFailed, setBrowserFailed] = useState(false);
   const [done, setDone] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Une seule exécution, même si React rejoue les effets en mode strict.
-  const started = useRef(false);
+  // `onClose` sert dans l'effet à exécution unique (fermeture au succès) :
+  // on le lit via une ref pour ne pas relancer le flow si son identité change.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
+
+    // Deep link `mira://auth` : le navigateur a approuvé, on veut le savoir tout
+    // de suite plutôt que d'attendre le prochain tick de polling (jusqu'à 5 s).
+    // `listen()` renvoie un désabonnement qu'on relâche au démontage.
+    const nudge = createAuthNudge();
+    let unlistenNudge: (() => void) | undefined;
+    let cancelled = false;
+    void nudge.listen().then((off) => {
+      // L'effet a pu être démonté avant que l'écoute soit établie (React rejoue
+      // les effets) : on relâche alors immédiatement pour ne pas fuir.
+      if (cancelled) off();
+      else unlistenNudge = off;
+    });
 
     void (async () => {
       try {
         const result = await runDeviceSignIn({
           label: "Mira Desktop",
           signal: controller.signal,
+          nudge,
           onStarted: async (f: DeviceStart) => {
+            if (cancelled) return;
             setFlow(f);
             // Ouvre la page de vérification dans le navigateur de l'utilisateur.
-            await openUrl(f.verificationUriComplete).catch(() => { /* repli : le code reste affiché */ });
+            // En cas d'échec (pas de navigateur), on bascule sur le code manuel.
+            try {
+              await openUrl(f.verificationUriComplete);
+            } catch {
+              if (!cancelled) setBrowserFailed(true);
+            }
           },
         });
-        if (result === "approved") {
+        if (cancelled) return;
+        if (result.outcome === "approved") {
           // Le sélecteur de modèles doit refléter le catalogue sans rechargement.
           emitCustomModelsChanged();
           setDone(true);
-        } else if (result === "denied") {
+          // Succès : on referme aussitôt pour rendre la main à l'app (la fenêtre
+          // a déjà été ramenée au premier plan par `runDeviceSignIn`).
+          onCloseRef.current();
+        } else if (result.outcome === "denied") {
           setError("Sign-in was denied.");
-        } else if (result === "expired") {
+        } else if (result.outcome === "expired") {
           setError("The code expired. Please try again.");
         }
-        // « cancelled » : l'utilisateur a fermé, rien à afficher.
+        // « cancelled » : l'effet a été démonté, rien à afficher.
       } catch (e) {
-        setError(normalize(e));
+        if (!cancelled) setError(normalize(e));
       }
     })();
 
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      unlistenNudge?.();
+    };
   }, []);
 
   const handleClose = useCallback(() => {
     abortRef.current?.abort();
     onClose();
   }, [onClose]);
+
+  const retryBrowser = useCallback(() => {
+    if (!flow) return;
+    void openUrl(flow.verificationUriComplete).catch(() => setBrowserFailed(true));
+  }, [flow]);
 
   return (
     <div
@@ -110,38 +150,37 @@ export default function SignInDialog({ onClose }: { onClose: () => void }) {
               <Icon icon="lucide:check-circle-2" width={15} style={{ color: "var(--origin-semantic-success, #2ea043)" }} />
               Signed in. Your models are ready.
             </div>
-          ) : (
+          ) : flow ? (
             <>
-              <div style={{ color: "var(--origin-fg-muted)", marginBottom: "10px" }}>
-                {flow
-                  ? "Your browser just opened. Enter this code to finish signing in:"
-                  : "Starting sign-in…"}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--origin-fg-muted)", marginBottom: "10px" }}>
+                <Icon icon="lucide:loader-circle" width={14} className="animate-spin" />
+                <span>
+                  {browserFailed
+                    ? "Your browser did not open."
+                    : "Waiting for you to confirm in your browser…"}
+                </span>
               </div>
-              {flow && (
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)", fontSize: "22px", letterSpacing: "0.18em",
-                    color: "var(--origin-fg-default)", padding: "6px 0", userSelect: "all",
-                    textAlign: "center",
-                  }}
-                >
-                  {flow.userCode}
-                </div>
-              )}
-              {flow && (
-                <button
-                  onClick={() => openUrl(flow.verificationUriComplete).catch(() => { /* repli */ })}
-                  style={{
-                    marginTop: "6px", padding: "5px 10px", borderRadius: "6px", fontSize: "12px",
-                    cursor: "pointer", width: "100%",
-                    border: "1px solid var(--origin-border-default)",
-                    background: "transparent", color: "var(--origin-fg-default)",
-                  }}
-                >
-                  Open browser again
-                </button>
-              )}
+              <div style={{ color: "var(--origin-fg-subtle)", fontSize: "11px", marginBottom: "10px" }}>
+                This window updates automatically.
+              </div>
+
+              <button
+                onClick={retryBrowser}
+                style={{
+                  padding: "5px 10px", borderRadius: "6px", fontSize: "12px",
+                  cursor: "pointer", width: "100%",
+                  border: "1px solid var(--origin-border-default)",
+                  background: "transparent", color: "var(--origin-fg-default)",
+                }}
+              >
+                {browserFailed ? "Open the sign-in page" : "Open browser again"}
+              </button>
             </>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--origin-fg-muted)" }}>
+              <Icon icon="lucide:loader-circle" width={14} className="animate-spin" />
+              Starting sign-in…
+            </div>
           )}
         </div>
 

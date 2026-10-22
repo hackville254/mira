@@ -98,6 +98,8 @@ import { pbRead, pbWrite, pinPreview, NOTES_KEY } from "../../lib/pinboardStore"
 import type { ContextRef } from "../../lib/contextMentions";
 import { serializeContextRefs, parseContextRef } from "../../lib/contextMentions";
 import { useDiagnostics, type DiagnosticEntry } from "../../context/DiagnosticsContext";
+import { useAccount } from "../../lib/agent/account";
+import { requestSignIn } from "../../lib/agent/signInBus";
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -491,6 +493,14 @@ export default function AiPanel({
   renderMode = "sidebar",
 }: AiPanelProps) {
   const { folderPath, setFolderPath } = useWorkspace();
+  // Session Mira : sans elle, l'agent n'a aucun modèle à qui parler. On
+  // l'utilise comme GARDE-FOU à l'envoi (cf. `handleSend`) et pour piloter
+  // l'affichage de l'état vide (invitation à se connecter).
+  const { signedIn } = useAccount();
+  // `handleSend` est mémoïsé : on lit la connexion via une ref pour que le
+  // garde-fou reste exact même si `signedIn` change après la mémoïsation.
+  const signedInRef = useRef(signedIn);
+  useEffect(() => { signedInRef.current = signedIn; }, [signedIn]);
   const onActiveSessionChangeRef = useRef(onActiveSessionChange);
   useEffect(() => { onActiveSessionChangeRef.current = onActiveSessionChange; }, [onActiveSessionChange]);
 
@@ -1323,6 +1333,18 @@ export default function AiPanel({
     mode: "agent" | "ask" | "plan" = "agent",
     contextRefs: ContextRef[] = [],
   ) => {
+    // GARDE-FOU CONNEXION — placé EN TÊTE, avant toute création de session ou de
+    // run. Raison : l'agent Mira s'exécute sur nos modèles, donc derrière une
+    // session authentifiée. Sans elle, l'appel échouerait plus loin avec un
+    // message technique peu clair. On court-circuite ici, on invite l'utilisateur
+    // à se connecter, et on n'écrit RIEN (pas de session, pas de bulle, pas
+    // d'appel réseau) — ce garde-fou couvre tous les chemins d'entrée : Entrée
+    // clavier, bouton d'envoi, régénération, dépilage de la file d'attente.
+    if (!signedInRef.current) {
+      showToast("Sign in to Mira to start a conversation.", "info");
+      requestSignIn();
+      return;
+    }
     // MULTITASKING : l'état du run est propre à la session (cf. runState.ts).
     // On résout la session AVANT tout : sans session existante, on en crée une
     // d'emblée, ce qui garantit un run isolé par tâche.
@@ -3494,18 +3516,42 @@ export default function AiPanel({
               <div style={{ fontSize: "13px", color: "var(--origin-fg-muted)", textAlign: "center" }}>
                 Deep understanding of complex tasks
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px", maxWidth: 360 }}>
-                {[
-                  { icon: "lucide:check", text: "Handles iterations, bug fixes, and refactoring in large projects" },
-                  { icon: "lucide:check", text: "Plans tasks intelligently and drives execution with precision" },
-                  { icon: "lucide:check", text: "Orchestrates intelligent multi-agent collaboration" },
-                ].map((f, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
-                    <Icon icon={f.icon} width={14} style={{ color: "var(--origin-semantic-success)", flexShrink: 0, marginTop: "2px" }} />
-                    <span style={{ fontSize: "13px", color: "var(--origin-fg-muted)", lineHeight: 1.5 }}>{f.text}</span>
-                  </div>
-                ))}
-              </div>
+              {!signedIn && (
+                // Non connecté : on remplace la liste de fonctionnalités par une
+                // invitation claire à se connecter. Les capacités de l'agent
+                // n'ont pas de sens tant qu'aucun modèle n'est disponible.
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", marginTop: "8px", maxWidth: 360 }}>
+                  <span style={{ fontSize: "13px", color: "var(--origin-fg-muted)", textAlign: "center", lineHeight: 1.5 }}>
+                    Sign in to Mira to start a conversation. Your plans and models are tied to your account.
+                  </span>
+                  <button
+                    onClick={() => requestSignIn()}
+                    className="flex items-center gap-2 rounded"
+                    style={{
+                      padding: "7px 14px", fontSize: "13px", fontWeight: 600, cursor: "pointer",
+                      color: "#fff", backgroundColor: "var(--origin-accent-blue)",
+                      border: "none",
+                    }}
+                  >
+                    <Icon icon="lucide:log-in" width={14} />
+                    Sign in
+                  </button>
+                </div>
+              )}
+              {signedIn && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px", maxWidth: 360 }}>
+                  {[
+                    { icon: "lucide:check", text: "Handles iterations, bug fixes, and refactoring in large projects" },
+                    { icon: "lucide:check", text: "Plans tasks intelligently and drives execution with precision" },
+                    { icon: "lucide:check", text: "Orchestrates intelligent multi-agent collaboration" },
+                  ].map((f, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+                      <Icon icon={f.icon} width={14} style={{ color: "var(--origin-semantic-success)", flexShrink: 0, marginTop: "2px" }} />
+                      <span style={{ fontSize: "13px", color: "var(--origin-fg-muted)", lineHeight: 1.5 }}>{f.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             {pendingQuestion && (
               <div style={{ padding: "0 12px" }}>

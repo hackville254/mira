@@ -8,6 +8,7 @@ mod checkpoint;
 mod cloud;
 mod context;
 mod dap;
+mod deep_link;
 mod default_skills;
 // `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
 // réseau (`tests/lsp_install_e2e.rs`) de télécharger réellement un binaire LSP
@@ -214,7 +215,31 @@ pub fn run() {
     // Dev uniquement : injecte le `.env` (clé API, provider/modèle par défaut)
     // dans l'environnement du process. No-op en build release.
     ai_env::load_dotenv_into_env();
-    tauri::Builder::default()
+    // Le plugin single-instance DOIT être enregistré en premier : il intercepte
+    // les lancements secondaires (dont ceux déclenchés par un deep link) avant
+    // que les autres plugins ne s'initialisent. Sans lui, ouvrir un `mira://`
+    // alors que l'app tourne déjà démarrerait une seconde instance.
+    // `deep-link` en feature : la seconde instance transmet son URL à la première.
+    #[cfg(desktop)]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
+            // Une nouvelle instance a été lancée avec `argv`. Si elle vient d'un
+            // deep link, le plugin deep-link a déjà mis l'URL de côté et va
+            // déclencher `on_open_url` ; on se contente de ramener la fenêtre au
+            // premier plan, ce qui couvre aussi un simple double-clic d'icône.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            let _ = argv; // l'URL est traitée par le plugin deep-link, pas ici.
+        },
+    ));
+    #[cfg(not(desktop))]
+    let builder = tauri::Builder::default();
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -252,6 +277,22 @@ pub fn run() {
             // fichier, l'agent échoue avec ENOENT (« erreur du moteur d'agent »).
             // Idempotent : un fichier existant n'est jamais écrasé.
             extensions_store::ensure_mcp_settings_file(app.handle());
+            // Deep links `mira://` : `get_current` couvre le démarrage PAR le lien,
+            // `on_open_url` le lien reçu pendant que l'app tourne. Sur Linux et
+            // Windows (dev inclus), les schémas ne sont associés qu'à
+            // l'installation : `register_all` les force pour l'exécutable courant.
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(err) = app.deep_link().register_all() {
+                    log::origin_log(
+                        "warn".to_string(),
+                        "deep-link".to_string(),
+                        format!("register_all failed: {err}"),
+                    );
+                }
+            }
+            deep_link::init(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -384,6 +425,7 @@ pub fn run() {
             cloud::cloud_status,
             cloud::cloud_provision_key,
             cloud::cloud_fetch_models,
+            cloud::cloud_focus_window,
             cloud::cloud_sign_out,
             log::origin_log,
             lsp::lsp_start,
