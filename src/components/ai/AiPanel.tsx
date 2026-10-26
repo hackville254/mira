@@ -28,7 +28,14 @@ import QuestionPrompt from "./QuestionPrompt";
 import MarkdownMessage from "./MarkdownMessage";
 import { accentForModel } from "./providers";
 import { findCustomModel } from "../../lib/agent/customModels";
-import { resolveMiraModel } from "../../lib/agent/miraModels";
+import { resolveMiraModel, type MiraModel } from "../../lib/agent/miraModels";
+import {
+  isAutoModel,
+  resolveAutoChain,
+  type AutoModelCandidate,
+} from "../../lib/agent/autoModel";
+import { classifyFailure, parseRetryAfter } from "../../lib/agent/retry";
+import { modelHealth } from "../../lib/agent/modelHealth";
 import logoCode from "../../assets/logo-code.svg";
 import {
   STYLE_GUARDRAIL,
@@ -1382,12 +1389,43 @@ export default function AiPanel({
     // `modelId`/`providerId` reçus du ChatBox sont des CLÉS d'UI. Pour un modèle
     // personnalisé ou Mira, la clé n'est PAS l'id réel attendu par l'API.
     // On résout donc ici, une seule fois, l'id à envoyer au moteur.
-    const miraTarget = await resolveMiraModel(providerId);
+    //
+    // MODE AUTO : la clé `auto` n'est pas un modèle. On construit la chaîne des
+    // modèles Mira (ordre de préférence, réordonné par la santé observée), on
+    // prend le premier comme modèle du tour et on CONSERVE les suivants comme
+    // filets : si le modèle est saturé (rate-limit par modèle côté Orvyx), le
+    // handler d'erreur basculera sur le suivant sans intervention du client.
+    // ⚠️ Le budget USD épuisé (402 `insufficient_credits`) n'est PAS un
+    // rate-limit : il ne déclenche aucune bascule (voir `isQuotaError`).
+    const autoMode = isAutoModel(providerId);
+    const autoChain: AutoModelCandidate[] = autoMode ? await resolveAutoChain() : [];
+    if (autoMode && autoChain.length === 0) {
+      // Catalogue Mira indisponible : on ne peut pas résoudre Auto. On le dit au
+      // client plutôt que d'envoyer une clé `auto` invalide au moteur.
+      showToast("No model is available right now. Please try again later.", "error");
+      return;
+    }
+    /** Modèles de repli Auto (clés d'UI, dans l'ordre) — vide hors mode Auto. */
+    const autoChainKeys: string[] = autoChain.map(c => c.key);
+    /** Ids réels correspondants (envoyés à l'API lors d'une bascule). */
+    const autoChainModelIds = new Map(autoChain.map(c => [c.key, c.modelId]));
+    /** Libellés lisibles pour la notice de bascule. */
+    const autoChainLabels = new Map(autoChain.map(c => [c.key, c.displayName]));
+
+    // Modèle Mira de tête : en Auto, c'est le premier de la chaîne ; sinon la
+    // résolution habituelle depuis la clé d'UI sélectionnée.
+    const headMira: MiraModel | null = autoMode
+      ? (await resolveMiraModel(autoChain[0].key))
+      : await resolveMiraModel(providerId);
+    const miraTarget = headMira;
     // Id modèle réellement transmis au provider (id Mira, id custom, ou id brut).
     const apiModelId = miraTarget?.modelId ?? findCustomModel(providerId)?.modelId ?? modelId;
+    // Clé d'UI du modèle réellement utilisé : sert de clé de santé (routage
+    // adaptatif) et de cible de régénération. En Auto ce n'est jamais `auto`.
+    const effectiveModelKey = autoMode ? autoChain[0].key : modelId;
     // Mémorise la cible du tour pour permettre une régénération ultérieure.
-    activeModelIdRef.current = modelId;
-    activeProviderIdRef.current = providerId;
+    activeModelIdRef.current = effectiveModelKey;
+    activeProviderIdRef.current = effectiveModelKey;
 
     // Plus de catalogue de providers hardcodé : `providerId` EST la clé du modèle
     // choisi par le client (ex. `custom-<uuid>`). S'il est inconnu du magasin, la
@@ -1694,6 +1732,26 @@ export default function AiPanel({
       }
       return 0;
     };
+
+    // ── Bascule AUTO (rate-limit par modèle côté Orvyx) ───────────────────────
+    // `handleEvent` est déclaré AVANT `runCline` (qui détient le `handle` du SDK).
+    // Pour lui permettre de déclencher une bascule sans réordonner le fichier, on
+    // passe par cette ref : `runCline` y dépose une closure qui (1) tente de
+    // passer au modèle Mira suivant, (2) relance le tour sur ce modèle.
+    //
+    // POURQUOI une ref : `handleEvent` doit lire la DERNIÈRE valeur au moment où
+    // l'erreur survient (le handle est recréé à chaque bascule), pas une valeur
+    // capturée à la construction de la closure.
+    //
+    // ⚠️ Elle n'est JAMAIS renseignée hors mode Auto : une erreur sur un modèle
+    // choisi explicitement par le client reste une erreur, on ne substitue pas
+    // silencieusement un autre modèle.
+    const autoFallbackRef: { current: ((errMsg: string) => boolean) | null } = { current: null };
+    // Position courante dans la chaîne Auto. MUTABLE et partagée entre les tours
+    // (`runCline` est rappelé lors d'une escalade d'équipe) : une bascule avance
+    // ce curseur, et un tour relancé repart du bon modèle. Initialisé au premier
+    // modèle de la chaîne au démarrage du run.
+    const autoCursorRef: { current: number } = { current: 0 };
 
     // ── Event handler ────────────────────────────────────────────────────────
     const handleEvent = (event: AgentEvent) => {
@@ -2285,6 +2343,26 @@ export default function AiPanel({
         }
 
         case "error": {
+          // ── BASCULE AUTO (avant toute finalisation en erreur) ───────────────
+          // En mode Auto, une saturation de modèle (429 « Model busy », ou
+          // surcharge passagère) ne doit PAS tuer le tour : on passe au modèle
+          // Mira suivant de la chaîne et on relance — sans intervention du client.
+          //
+          // Ce qu'on ne bascule JAMAIS : le budget USD épuisé (402
+          // `insufficient_credits`). C'est un mur de facturation, pas une
+          // saturation : changer de modèle ne le contournerait pas et induirait
+          // le client en erreur (cf. `isQuotaError`).
+          //
+          // La décision « bascule possible ? » appartient à `runCline` (seul à
+          // connaître le handle du SDK et la position dans la chaîne) : il pose
+          // `autoFallbackRef.current`. Il renvoie `true` s'il a EFFECTIVEMENT
+          // relancé le tour — auquel cas on sort SANS clore le run (le nouveau
+          // handle poursuit le streaming sur la même génération `runSeq`).
+          if (autoFallbackRef.current && autoFallbackRef.current(event.message)) {
+            // Le tour repart : on NE libère PAS le run, on ne marque PAS la tâche
+            // en échec, et on laisse le nouveau run prendre la main.
+            break;
+          }
           if (run.flushTimer) { clearTimeout(run.flushTimer); run.flushTimer = null; }
           const dbId = run.pendingAssistantDbId;
           const partialContent = run.pendingContent;
@@ -2392,7 +2470,11 @@ export default function AiPanel({
     // CONTINUITÉ DE SESSION : on RÉUTILISE la session Cline persistée (colonne DB
     // `cline_session_id`) pour que l'agent garde tout son historique entre tours.
     // Sur reprise, les outils custom existent déjà : on ne les réinjecte pas.
-    const clineProvider = resolveClineProvider(providerId);
+    // En mode Auto, `providerId` vaut `auto` : ce n'est PAS un provider
+    // résolvable. La cible réelle est le modèle Mira de tête de la chaîne, donc
+    // on résout le provider sur SA clé (le provider Mira `orvyx`). Hors Auto, on
+    // résout sur la clé sélectionnée (inchangé).
+    const clineProvider = resolveClineProvider(autoMode ? autoChainKeys[autoCursorRef.current] : providerId);
     const runCline = async (opts: {
       systemPrompt: string;
       sdkMode: "act" | "plan";
@@ -2404,6 +2486,12 @@ export default function AiPanel({
       // Modèle fourni par Mira (`mira-<id>`) : la base URL vient de la config
       // Mira (`miraTarget`), pas d'un catalogue côté front.
       if (miraTarget) clineProvider.baseUrl = miraTarget.baseUrl;
+      // Modèle de DÉPART de ce run. En Auto, on suit le curseur : un run relancé
+      // après une bascule (ou une escalade d'équipe post-bascule) doit repartir
+      // du modèle COURANT, pas du premier de la chaîne.
+      const startModelId = autoMode
+        ? (autoChainModelIds.get(autoChainKeys[autoCursorRef.current]) ?? apiModelId)
+        : apiModelId;
       const clineSessionId = sessionId ? await getClineSessionId(sessionId) : null;
       // Session NEUVE : la surface d'extension (skills/commands) va être
       // rescanée par le sidecar. On repart d'une base propre pour ne pas
@@ -2497,7 +2585,7 @@ export default function AiPanel({
         // Plafond de tours d'outils par tour (503 par défaut si non renseigné).
         ...(clineProvider.maxIterations ? { maxIterations: clineProvider.maxIterations } : {}),
         apiKey: apiKey ?? "",
-        modelId: apiModelId,
+        modelId: startModelId,
         systemPrompt: opts.systemPrompt,
         mode: opts.sdkMode,
         enableTeams: opts.enableTeams,
@@ -2573,6 +2661,66 @@ export default function AiPanel({
       }
       // Expose la poignée d'annulation du tour vivant au callback d'escalade.
       self.abort = () => handle.abort();
+      // ── BAScule AUTO : branche le filet de sécurité sur le handle courant ──
+      // `handleEvent` appellera cette closure à chaque `case "error"`. Elle
+      // décide, au vu de la NATURE de l'erreur, s'il faut passer au modèle Mira
+      // suivant. On la (re)pose à chaque run (`handle` change à chaque bascule).
+      //
+      // Renvoie `true` UNIQUEMENT si le tour a été effectivement relancé — alors
+      // `handleEvent` ne clôt pas le run. Sinon `false` : l'erreur suit son
+      // cours normal (carte d'erreur / carte quota).
+      autoFallbackRef.current = (errMsg: string): boolean => {
+        // Hors mode Auto : aucun filet (le client a choisi CE modèle).
+        if (!autoMode) return false;
+        // Quota/budget épuisé (402) : mur de facturation. On NE bascule PAS —
+        // changer de modèle ne restaurerait pas les crédits USD du client.
+        if (isQuotaError(errMsg)) return false;
+        // Nature de l'erreur : on ne bascule que sur saturation (429) ou
+        // surcharge passagère (5xx/timeout). Une erreur permanente (401 clé
+        // invalide, requête malformée…) affecterait TOUS les modèles de la
+        // chaîne : basculer ne ferait que retarder l'échec.
+        const kind = classifyFailure(errMsg, parseRetryAfter(errMsg));
+        if (kind === "permanent") return false;
+        // Reste-t-il un modèle de repli ? Sinon on rend la main (dernière erreur).
+        const nextIndex = autoCursorRef.current + 1;
+        if (nextIndex >= autoChainKeys.length) return false;
+        const failedKey = autoChainKeys[autoCursorRef.current];
+        const nextKey = autoChainKeys[nextIndex];
+        const nextModelId = autoChainModelIds.get(nextKey);
+        if (!nextModelId) return false;
+        // Marque le modèle fautif en cooldown : le routage adaptatif des
+        // prochains tours le classera en dernier (cf. `rankModelChain`).
+        modelHealth.noteRateLimit(failedKey, Date.now());
+        const failedLabel = autoChainLabels.get(failedKey) ?? failedKey;
+        const nextLabel = autoChainLabels.get(nextKey) ?? nextKey;
+        // Bannière système in-line (même contrat que la cascade de `run.ts`) :
+        // le client VOIT que le modèle a changé, sans jargon interne.
+        handleEvent({
+          type: "notice",
+          kind: "retry",
+          detail: `Switched from ${failedLabel} to ${nextLabel} (model busy).`,
+        });
+        autoCursorRef.current = nextIndex;
+        // La cible « mémorisée » du tour suit la bascule : une régénération
+        // ultérieure doit repartir du modèle RÉELLEMENT utilisé, pas du premier
+        // de la chaîne (sinon on régénérerait sur un modèle déjà saturé).
+        activeModelIdRef.current = nextKey;
+        activeProviderIdRef.current = nextKey;
+        // Avance d'un cran dans la chaîne et relance sur le modèle suivant.
+        // `updateModel` change le modèle de la session SDK courante ; `send("")`
+        // relance le tour sur le MÊME fil (le prompt est déjà dans l'historique
+        // re-seedé, comme pour l'escalade d'équipe).
+        void (async () => {
+          try {
+            await handle.updateModel(nextModelId);
+            await handle.abort();
+            await handle.send("");
+          } catch (err) {
+            log.error("ai/panel", `bascule Auto échouée vers ${nextKey} : ${(err as Error)?.message ?? String(err)}`);
+          }
+        })();
+        return true;
+      };
       // Persiste la session SDK attribuée : les tours suivants la reprendront.
       if (sessionId && handle.sessionId && handle.sessionId !== clineSessionId) {
         setClineSessionId(sessionId, handle.sessionId)

@@ -5,14 +5,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import PreferencesDropdown from "./PreferencesDropdown";
 import logoCode from "../../assets/logo-code.svg";
 import MentionDropdown from "./MentionDropdown";
-import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID } from "./providers";
 import { loadCustomModels, subscribeCustomModels } from "../../lib/agent/customModels";
 import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
+import { isAutoModel, AUTO_MODEL_KEY } from "../../lib/agent/autoModel";
 import type { EditorContext } from "../editor/Editor";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { useAccount } from "../../lib/agent/account";
 import { requestSignIn } from "../../lib/agent/signInBus";
-import { resolveDefaultTarget } from "../../lib/secrets";
 import { optimizePrompt } from "../../lib/promptOptimizer";
 import { revealSelection } from "../../lib/selectionRevealBus";
 import { copyPath, createDirCmd, pathExists, readDir } from "../../lib/fs";
@@ -689,11 +688,15 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   const [contextPicker, setContextPicker] = useState<{ kind: "file" | "folder" | "rule"; query: string } | null>(null);
   const [contextSnap, setContextSnap] = useState<EditorContext | null>(null);
   const [contextDismissed, setContextDismissed] = useState(false);
+  // Modèle et provider sélectionnés. POLITIQUE PRODUIT : « Auto par défaut,
+  // mémorisé ». Tant que le client n'a rien choisi, on démarre en Auto (la clé
+  // `auto` sert d'id de modèle ET de provider) ; dès qu'il choisit un modèle
+  // explicite, ce choix est mémorisé et prime à chaque démarrage.
   const [selectedModelId, setSelectedModelId] = useState(
-    () => localStorage.getItem("origin-ai-model") ?? DEFAULT_MODEL_ID
+    () => localStorage.getItem("origin-ai-model") ?? AUTO_MODEL_KEY
   );
   const [selectedProviderId, setSelectedProviderId] = useState(
-    () => localStorage.getItem("origin-ai-provider") ?? DEFAULT_PROVIDER_ID
+    () => localStorage.getItem("origin-ai-provider") ?? AUTO_MODEL_KEY
   );
   /** Liste des modèles customs, tenue à jour pour refléter renommages/suppressions. */
   const [customModels, setCustomModels] = useState(() => loadCustomModels());
@@ -702,22 +705,10 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   /** Un appel d'optimisation du prompt est-il en vol (évite les doubles clics) ? */
   const [optimizing, setOptimizing] = useState(false);
 
-  // Fallback : si rien n'est mémorisé, on adopte la cible par défaut (modèle
-  // Mira fourni par Mira si configuré, sinon valeurs du `.env`). La sélection
-  // mémorisée reste prioritaire.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (localStorage.getItem("origin-ai-provider") && localStorage.getItem("origin-ai-model")) return;
-      const { providerId, modelId } = await resolveDefaultTarget(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_ID);
-      if (cancelled) return;
-      setSelectedProviderId(providerId);
-      setSelectedModelId(modelId);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // NOTE — Plus de « fallback » qui imposait le modèle Mira du `.env` au premier
+  // lancement : la politique produit est « Auto par défaut, mémorisé ». La cible
+  // n'est donc JAMAIS écrasée silencieusement ; en Auto, c'est AiPanel qui résout
+  // la chaîne à chaque tour (cf. `resolveAutoChain`).
 
   // Reflète immédiatement tout ajout / renommage / suppression fait dans les Settings.
   useEffect(() => subscribeCustomModels(() => setCustomModels(loadCustomModels())), []);
@@ -1417,9 +1408,11 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   };
 
   const showContextBadge = contextSnap && !contextDismissed;
-  const modelLabel = customModels.find(m => m.key === selectedModelId)?.displayName
-    ?? miraModels.find(m => m.key === selectedModelId)?.displayName
-    ?? selectedModelId;
+  const modelLabel = isAutoModel(selectedModelId)
+    ? "Auto"
+    : (customModels.find(m => m.key === selectedModelId)?.displayName
+      ?? miraModels.find(m => m.key === selectedModelId)?.displayName
+      ?? selectedModelId);
 
   return (
     <div

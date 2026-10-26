@@ -229,6 +229,12 @@ export interface ClineRunHandle {
   sessionId: string;
   /** Envoie un message utilisateur dans la session courante. */
   send(prompt: string, mode?: string): Promise<void>;
+  /**
+   * Change le modèle de la session courante (bascule « Auto » sur rate-limit).
+   * Best-effort : l'erreur est journalisée, jamais jetée — un échec de bascule ne
+   * doit pas masquer l'erreur d'origine remontée à l'utilisateur.
+   */
+  updateModel(modelId: string): Promise<void>;
   /** Annule le tour en cours (best-effort : l'erreur est journalisée, jamais jetée). */
   abort(): Promise<void>;
   /**
@@ -537,6 +543,16 @@ export async function startClineRun(
         });
       } catch (error) {
         log.warn("agent/clineClient", `abort ignoré: ${describeError(error)}`);
+      }
+    },
+    async updateModel(modelId: string): Promise<void> {
+      try {
+        await invoke("cline_sidecar_send", {
+          command: { type: "updateModel", sessionId, modelId },
+        });
+        log.info("agent/clineClient", `modèle de session mis à jour → ${modelId}`);
+      } catch (error) {
+        log.warn("agent/clineClient", `updateModel ignoré: ${describeError(error)}`);
       }
     },
     dispose,

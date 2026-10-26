@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
 import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
+import { AUTO_MODEL_KEY } from "../../lib/agent/autoModel";
 
 interface Props {
   /** Élément auquel le menu s'ancre (le bouton du sélecteur de modèle). */
@@ -23,6 +24,8 @@ interface Row {
   subtitle: string;
   /** Modèle fourni par Mira (fourni par l'éditeur). */
   fromMira: boolean;
+  /** Entrée spéciale « Auto » : bascule automatique entre les modèles Mira. */
+  isAuto?: boolean;
 }
 
 // ── Main dropdown (model list) ────────────────────────────────────────────────
@@ -64,6 +67,16 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
   }, [onClose]);
 
   const rows: Row[] = [
+    // « Auto » : bascule automatique dans l'ordre quand un modèle est saturé.
+    // Proposé en tête — c'est le défaut de Mira (le client n'a rien à choisir
+    // pour que ça fonctionne), mais un modèle précis reste sélectionnable.
+    {
+      key: AUTO_MODEL_KEY,
+      displayName: "Auto",
+      subtitle: "",
+      fromMira: true,
+      isAuto: true,
+    },
     ...miraModels.map((m): Row => ({
       key: m.key,
       displayName: m.displayName,
@@ -118,15 +131,21 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
 
         {rows.map((row) => {
           const isSelected = row.key === selectedModelId;
-          // Sous-titre masqué quand il duplique le titre (catalogue cloud qui
-          // ne fournit pas de libellé lisible) : on garde une ligne, épurée.
-          const showSubtitle = row.subtitle.trim() !== "" && row.subtitle !== row.displayName;
+          // La ligne « Auto » affiche toujours un sous-titre explicatif (elle
+          // n'a pas d'id technique à montrer) ; pour les modèles, le sous-titre
+          // est masqué quand il duplique le titre (catalogue cloud sans libellé).
+          const showSubtitle = row.isAuto
+            ? true
+            : row.subtitle.trim() !== "" && row.subtitle !== row.displayName;
+          const subtitle = row.isAuto
+            ? "Picks the best available model"
+            : row.subtitle;
           return (
             <button
               key={row.key}
               onMouseDown={(e) => { e.stopPropagation(); onSelect(row.key, row.subtitle); onClose(); }}
               onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-              title={showSubtitle ? `${row.displayName} · ${row.subtitle}` : row.displayName}
+              title={showSubtitle && !row.isAuto ? `${row.displayName} · ${row.subtitle}` : row.displayName}
               style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
             >
               <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
@@ -135,11 +154,11 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
                 </span>
                 {showSubtitle && (
                   <span style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {row.subtitle}
+                    {subtitle}
                   </span>
                 )}
               </span>
-              {row.fromMira && (
+              {row.fromMira && !row.isAuto && (
                 <span style={{
                   flexShrink: 0, fontSize: 9, fontWeight: 600, letterSpacing: "0.03em",
                   padding: "1px 5px", borderRadius: 4,
