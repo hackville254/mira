@@ -5,10 +5,11 @@ import { openUpgradePage } from "../../lib/agent/account";
 // ── Carte « offre supérieure » ─────────────────────────────────────────────────
 //
 // Affichée dans le fil quand le tour a échoué faute de crédit côté Orvyx (402
-// `insufficient_credits`). Le contexte agentique (gros prompt système + outils)
-// rend la requête coûteuse : un plafond d'offre trop bas la fait refuser AVANT
-// l'appel. La bonne action pour l'utilisateur n'est pas « réessayer » mais
-// « changer d'offre », d'où ce bouton dédié.
+// `insufficient_credits`). Chaque plan dispose d'un budget MENSUEL (le plan
+// gratuit : 1 USD/mois). Deux situations mènent ici : soit le budget du mois est
+// épuisé, soit la requête demande plus de crédit que le plafond du plan n'en
+// autorise d'un coup. Dans les deux cas, la bonne action n'est pas « réessayer »
+// mais « passer à une offre supérieure », d'où ce bouton dédié.
 //
 // Le message d'erreur brut reste affiché au-dessus : on informe, on ne masque
 // rien. Le bouton ouvre la page de tarifs du portail dans le navigateur système.
@@ -44,12 +45,13 @@ export default function UpgradeNotice() {
       <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "5px" }}>
         <Sparkles size={14} style={{ flexShrink: 0, color: "var(--origin-accent-default, #7c8cff)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--origin-fg-default)" }}>
-          You've reached your plan's usage limit
+          You've used up this month's plan credit
         </span>
       </div>
       <div style={{ fontSize: "12px", color: "var(--origin-fg-muted)", lineHeight: 1.6, marginBottom: "10px" }}>
-        This request needs more credit than your current plan allows. Upgrade to keep
-        using Mira's built-in models.
+        Your plan's monthly credit has run out, so Mira's built-in models can't run
+        this request. Upgrade to a higher plan to keep going - or wait for your
+        credit to reset next month.
       </div>
       <button
         onClick={handleUpgrade}

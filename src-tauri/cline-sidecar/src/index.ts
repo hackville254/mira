@@ -79,6 +79,19 @@ import { neutralizeForClient } from "./brand";
 
 // ── Types du protocole (miroir de `src-tauri/src/sidecar.rs`) ────────────────
 
+/**
+ * Plafond par défaut de tokens de SORTIE par appel modèle.
+ *
+ * POURQUOI CETTE VALEUR
+ * ---------------------
+ * Doit être : (1) assez large pour qu'un tour d'agent complet passe (raisonnement
+ * + un gros appel d'outil) ; (2) assez basse pour que la réservation de crédit
+ * d'Orvyx (`prompt + max_tokens`) reste sous un petit budget — le pré-contrôle
+ * refuse sinon un plan gratuit à 1 USD. 8192 couvre confortablement une réponse
+ * d'agent tout en restant loin du défaut démesuré d'Orvyx qui déclenchait le 402.
+ */
+const DEFAULT_MAX_TOKENS_PER_TURN = 8192;
+
 interface StartCommand {
   type: "start";
   /** Racine du workspace ouvert dans Origin (chemin absolu). */
@@ -150,6 +163,19 @@ interface StartCommand {
   enabledMcpServers?: string[];
   /** Garde-fou anti-boucle. */
   maxIterations?: number;
+  /**
+   * Plafond de tokens de SORTIE par appel modèle (transmis au SDK via
+   * `CoreModelConfig.maxTokensPerTurn`, converti en `max_tokens`).
+   *
+   * POURQUOI CE CHAMP DOIT EXISTER
+   * ------------------------------
+   * Un modèle custom (routé par `routingProviderId`) n'a pas de `ModelInfo`
+   * native : sans plafond explicite, le SDK n'envoie AUCUN `max_tokens`. Orvyx
+   * applique alors un défaut énorme dans son pré-contrôle de crédit → HTTP 402
+   * même sur un prompt trivial. Absent = on applique la valeur par défaut sûre
+   * du sidecar (`DEFAULT_MAX_TOKENS_PER_TURN`).
+   */
+  maxTokensPerTurn?: number;
 }
 
 /** Spécification déclarative d'un outil custom (pas de code exécutable). */
@@ -1138,6 +1164,27 @@ function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | nu
     apiKey: cmd.apiKey,
     baseUrl: cmd.baseUrl,
     cwd: cmd.cwd,
+    // ── PLAFOND DE SORTIE PAR APPEL ────────────────────────────────────────
+    //
+    // POURQUOI CE CHAMP EST OBLIGATOIRE POUR NOUS
+    // -------------------------------------------
+    // Orvyx (notre passerelle) applique un **pré-contrôle de crédit** : il
+    // réserve `prompt_tokens + max_tokens` AVANT d'appeler le modèle, et refuse
+    // en HTTP 402 (`insufficient_credits`) si la réservation dépasse le solde.
+    //
+    // Or, un modèle custom routé via `routingProviderId` n'a **aucune
+    // `ModelInfo.maxTokens` connue** : le SDK n'envoie donc **aucun `max_tokens`**
+    // dans la requête, et Orvyx retombe sur un défaut énorme → réservation
+    // supérieure au moindre solde → 402 SYSTÉMATIQUE, même avec un prompt court.
+    // (Vérifié empiriquement : corps de requête sans `max_tokens` → 402 ; avec
+    // un `max_tokens` borné → 200.)
+    //
+    // `maxTokensPerTurn` est le levier OFFICIEL de `CoreModelConfig` (« Maximum
+    // output tokens per API call ») : le SDK le convertit en `max_tokens`. On
+    // borne donc la sortie par tour à une valeur saine — assez large pour une
+    // réponse d'agent complète, assez basse pour que la réservation reste sous
+    // le budget d'un plan (le plan gratuit à 1 USD reste inchangé).
+    maxTokensPerTurn: cmd.maxTokensPerTurn ?? DEFAULT_MAX_TOKENS_PER_TURN,
     // `systemPrompt` est **requis** par le SDK. Si Origin n'en fournit pas
     // (mode par défaut), on passe une chaîne vide : le SDK applique alors son
     // prompt système natif plutôt que de rejeter la configuration.

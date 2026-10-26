@@ -91,27 +91,44 @@ fn vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn machine_secret() -> Vec<u8> {
     let mut parts = Vec::new();
     parts.push(format!("service={SERVICE}"));
-    if let Ok(user) = std::env::var("USER") {
+    if let Some(user) = non_blank_env("USER") {
         parts.push(format!("user={user}"));
     }
-    if let Ok(host) = std::env::var("HOSTNAME") {
-        parts.push(format!("host={host}"));
-    } else if let Ok(name) = hostname() {
-        parts.push(format!("host={name}"));
-    }
+    // ⚠️ Ne JAMAIS pousser une valeur blanche : `HOSTNAME` peut être défini mais
+    // VIDE selon le shell de lancement (`tauri dev` vs LaunchServices). Sans ce
+    // garde-fou, `host=` entrerait vide dans la clé HKDF, produisant une clé
+    // DIFFÉRENTE de celle d'un process où `HOSTNAME` est absent — le coffre
+    // écrit par l'un devenait alors indéchiffrable pour l'autre (perte de la
+    // clé Orvyx provisionnée). On retombe systématiquement sur `hostname()`.
+    let host = non_blank_env("HOSTNAME")
+        .or_else(|| hostname().ok())
+        .unwrap_or_else(|| "unknown-host".to_string());
+    parts.push(format!("host={host}"));
     if let Some(home) = home_dir() {
         parts.push(format!("home={}", home.display()));
     }
     parts.join("|").into_bytes()
 }
 
+/// Variable d'environnement non vide (après trim), sinon `None`.
+fn non_blank_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Nom d'hôte de la machine, toujours non vide.
+///
+/// `hostname` est un binaire POSIX présent sur macOS/Linux ; s'il manque ou
+/// échoue, on renvoie `localhost` plutôt qu'une chaîne vide — une composante
+/// vide rendrait la dérivation de clé instable (cf. `machine_secret`).
 fn hostname() -> Result<String, String> {
-    // `hostname` est un binaire POSIX présent sur macOS/Linux. Best-effort : en
-    // cas d'absence on se rabat simplement sur les autres composantes.
     let out = std::process::Command::new("hostname")
         .output()
         .map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if name.is_empty() { "localhost".to_string() } else { name })
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -178,10 +195,34 @@ fn encrypt_vault(map: &VaultMap) -> Result<Vec<u8>, String> {
 }
 
 /// Charge le coffre ; un fichier absent = coffre vide (pas une erreur).
+///
+/// ⚠️ Un fichier PRÉSENT mais indéchiffrable n'est PAS traité comme « vide » :
+/// on le préserve sous `.bak` avant de repartir d'un coffre vide. Pourquoi :
+/// une clé dérivée différente (changement de contexte d'exécution, cf.
+/// `machine_secret`) rend le fichier momentanément illisible ; l'écraser
+/// définitivement détruirait un secret peut-être encore récupérable dans
+/// l'autre contexte. On dégrade en « coffre vide » sans jamais détruire.
 fn load_vault(app: &tauri::AppHandle) -> VaultMap {
     let Ok(path) = vault_path(app) else { return HashMap::new() };
     let Ok(bytes) = fs::read(&path) else { return HashMap::new() };
-    decrypt_vault(&bytes).unwrap_or_default()
+    match decrypt_vault(&bytes) {
+        Ok(map) => map,
+        Err(reason) => {
+            // Fichier réellement présent mais illisible : on sauvegarde une
+            // copie (une seule, sans écraser une sauvegarde existante) pour ne
+            // rien perdre, puis on repart d'un coffre vide.
+            let backup = path.with_extension("vault.bak");
+            if !backup.exists() {
+                let _ = fs::rename(&path, &backup);
+                crate::log::log_line(
+                    "warn",
+                    "keychain",
+                    &format!("coffre illisible ({reason}) : préservé sous {backup:?}"),
+                );
+            }
+            HashMap::new()
+        }
+    }
 }
 
 /// Écrit le coffre de façon atomique (fichier temporaire + rename) avec des
@@ -221,6 +262,15 @@ pub fn set_secret(app: tauri::AppHandle, account: String, secret: String) -> Res
     let mut map = load_vault(&app);
     map.insert(account.clone(), secret.clone());
     save_vault(&app, &map)?;
+    // Trace non sensible (jamais le secret, seulement le compte et le chemin) :
+    // permet de vérifier dans `tauri dev` OÙ le coffre est réellement écrit.
+    if let Ok(path) = vault_path(&app) {
+        crate::log::log_line(
+            "debug",
+            "keychain",
+            &format!("secret «{account}» persisté dans {}", path.display()),
+        );
+    }
 
     // 2) Keychain OS — UNIQUEMENT si explicitement activé (build signé). Sinon
     //    on ne touche jamais au trousseau : y accéder depuis un binaire non
@@ -230,6 +280,20 @@ pub fn set_secret(app: tauri::AppHandle, account: String, secret: String) -> Res
         let _ = Entry::new(SERVICE, &account).and_then(|e| e.set_password(&secret));
     }
     Ok(())
+}
+
+/// Vrai si le COFFRE contient un secret non vide pour `account`.
+///
+/// Volontairement SANS le repli `.env` ni le keychain OS : on répond à la
+/// question « ce poste a-t-il une copie *persistée* de la clé ? ». C'est la
+/// condition qui décide si le poste doit demander une rotation de clé — un
+/// repli de dev (`.env`) ne doit pas faire croire à tort que la clé est
+/// persistée, sinon le coffre resterait vide en production.
+pub fn vault_has_secret(app: &tauri::AppHandle, account: &str) -> bool {
+    load_vault(app)
+        .get(account)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -305,4 +369,41 @@ fn read_legacy(account: &str) -> Option<String> {
 fn dev_fallback(account: &str) -> Option<String> {
     let provider = account.strip_prefix("provider:")?;
     crate::ai_env::api_key_for(provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Régression (vécue) : `HOSTNAME` peut être **défini mais vide** selon le
+    /// shell de lancement. Le secret machine ne doit alors JAMAIS contenir
+    /// `host=` vide, sinon la clé HKDF diffère d'un process à l'autre et le
+    /// coffre écrit par l'un devient indéchiffrable pour l'autre (perte de la
+    /// clé Orvyx provisionnée).
+    #[test]
+    fn machine_secret_has_no_blank_host_component() {
+        let secret = String::from_utf8(machine_secret()).unwrap();
+        for part in secret.split('|') {
+            if let Some(host) = part.strip_prefix("host=") {
+                assert!(
+                    !host.trim().is_empty(),
+                    "composante host vide dans le secret machine: {secret:?}"
+                );
+            }
+        }
+        assert!(secret.contains("host="), "pas de composante host: {secret:?}");
+    }
+
+    /// `non_blank_env` doit refuser une valeur blanche et accepter une valeur
+    /// réelle : c'est le garde-fou qui rend le secret stable.
+    #[test]
+    fn non_blank_env_rejects_whitespace() {
+        // Variable de test dédiée pour ne pas perturber l'environnement réel.
+        std::env::set_var("MIRA_TEST_BLANK", "   ");
+        assert_eq!(non_blank_env("MIRA_TEST_BLANK"), None);
+        std::env::set_var("MIRA_TEST_BLANK", "  value  ");
+        assert_eq!(non_blank_env("MIRA_TEST_BLANK"), Some("value".to_string()));
+        std::env::remove_var("MIRA_TEST_BLANK");
+        assert_eq!(non_blank_env("MIRA_TEST_ABSENT_VAR"), None);
+    }
 }

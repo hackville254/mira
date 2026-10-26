@@ -277,10 +277,20 @@ pub fn run() {
             // Idempotent : un fichier existant n'est jamais écrasé.
             extensions_store::ensure_mcp_settings_file(app.handle());
             // Deep links `mira://` : `get_current` couvre le démarrage PAR le lien,
-            // `on_open_url` le lien reçu pendant que l'app tourne. Sur Linux et
-            // Windows (dev inclus), les schémas ne sont associés qu'à
+            // `on_open_url` le lien reçu pendant que l'app tourne.
+            //
+            // Sur Linux et Windows, les schémas ne sont associés qu'à
             // l'installation : `register_all` les force pour l'exécutable courant.
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            //
+            // Sur macOS, PAS d'enregistrement à chaud : le plugin ne le supporte
+            // pas (`Error::UnsupportedPlatform`). L'association vient uniquement de
+            // l'`Info.plist` du bundle `.app`. Conséquence assumée : `mira://` ne
+            // peut être testé que sur une app BUNDLÉE et installée — jamais sur un
+            // `cargo tauri dev` (binaire nu). Le parcours de connexion ne doit donc
+            // JAMAIS dépendre du deep link sur macOS : le retour au premier plan est
+            // assuré par le poll du device flow (`cloud_focus_window`), le deep link
+            // n'étant qu'une accélération best-effort (voir `deep_link.rs`).
+            #[cfg(any(target_os = "linux", all(debug_assertions, target_os = "windows")))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 if let Err(err) = app.deep_link().register_all() {

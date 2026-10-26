@@ -5,7 +5,206 @@
 
 ---
 
-### [2026-10-26T00:00] | Retour au premier plan après connexion : activation OS (macOS)
+### [2026-10-26T04:10] | Clé Orvyx : le coffre restait vide (secret non re-livrable) → rééquipement par rotation
+
+- **Contexte :** « la génération ne marche pas » + bouton « Open Mira » inerte.
+  En dev la génération n'était sauvée que par le repli `.env` ; en release, plus
+  aucune clé. Investigation sur la zone signalée par l'utilisateur (chiffrement
+  de la clé).
+- **Diagnostic (mesuré) :**
+  - **Aucun `secrets.vault` n'existait sur la machine** (`find` exhaustif), alors
+    que `set_secret` est bien appelé à l'approbation.
+  - Cause racine côté serveur : le secret Orvyx n'est livrable **qu'à la
+    création** de la clé. Si la clé existe déjà, `ensure_key_for_user` renvoie
+    `(link, None)` → `key_secret: null` dans le poll → `if let Some(secret)`
+    côté desktop est faux → **`set_secret` jamais appelé** → coffre jamais créé.
+    Un poste dont le coffre est vide (réinstall, profil neuf, coffre illisible)
+    ne pouvait donc **jamais** récupérer sa clé.
+  - Bug secondaire : `machine_secret()` acceptait `HOSTNAME` **vide**
+    (`std::env::var` → `Ok("")`), donc `host=` vide entrait dans la clé HKDF →
+    clé variable selon le shell → coffre indéchiffrable → vidé silencieusement
+    (`unwrap_or_default`).
+- **Modifications effectuées :**
+  - `keychain.rs` : `machine_secret()` ignore toute valeur blanche (fallback
+    `hostname()`), `hostname()` ne renvoie jamais vide ; `load_vault()` préserve
+    un coffre illisible sous `.bak` au lieu de le détruire ; ajout de
+    `vault_has_secret()` (test **du coffre seul**, sans repli `.env`) ;
+    log de diagnostic du chemin de persistance ; 2 tests de régression.
+  - `cloud.rs` : le poll envoie `force_reprovision = !vault_has_secret(...)`.
+    Si le poste n'a **aucune copie persistée**, le serveur tourne la clé et en
+    livre une neuve. Erreur de persistance enrichie (compte + cause).
+  - (backend) `DevicePollRequest.force_reprovision` + `device.py` révoque la clé
+    avant `ensure_key_for_user` quand le flag est posé.
+- **Décisions techniques :** tester le **coffre**, pas `get_secret()`, car ce
+  dernier inclut le repli `.env` de dev — un biais qui aurait masqué le bug en
+  local et laissé le coffre vide en production. La rotation est **idempotente**
+  et ne se déclenche que sur absence locale, ce qui respecte la consigne
+  « ne pas créer une clé à chaque connexion ».
+- **Impacts & dépendances :** contrat IPC `POST /device/poll` enrichi d'un champ
+  optionnel (rétrocompatible). Le secret reste livré **hors navigateur** (le
+  `device_code` ne quitte pas Rust) : aucun secret exposé au front.
+- **Prochaines étapes :** tester le rééquipement en réel (coffre supprimé →
+  reconnexion → génération). Surveiller le taux de rotation anormal.
+
+---
+
+
+### [2026-10-26T02:50] | macOS dev : cause racine unique = absence de bundle `.app`
+
+- **Contexte :** après connexion, (1) le bouton « Open Mira » du portail ne fait
+  rien et (2) la fenêtre ne revient pas au premier plan. Mon correctif précédent
+  (inclure macOS dans `register_all`) a échoué : log runtime
+  `register_all failed: unsupported platform`.
+- **Diagnostic (mesuré, pas supposé) :**
+  - Le plugin `tauri-plugin-deep-link` **ne supporte PAS l'enregistrement à
+    chaud sur macOS** (`Error::UnsupportedPlatform`, documenté dans la source
+    du crate) : le schéma vient uniquement de l'`Info.plist` du `.app`.
+  - Instrumentation `[FOCUS-DIAG]` (temporaire) dans `window_focus.rs` : on est
+    bien sur le main thread, mais `isActive=false` **avant ET après**
+    `activateIgnoringOtherApps(true)`, `policy` restant `Regular(0)`.
+  - `file target/debug/mira` → `Mach-O 64-bit executable arm64` (binaire **nu**),
+    aucun `.app` généré.
+  - `bundle.targets` ne contenait que `["nsis","msi"]` (Windows) : même un
+    `tauri build` ne produisait pas d'`.app` macOS.
+- **Cause racine UNIQUE :** macOS ne confie le premier plan NI l'association d'un
+  schéma URL à un **exécutable nu**. Il exige une application **bundle**, connue
+  de LaunchServices. Les deux symptômes viennent de là — pas du code.
+- **Modifications effectuées :**
+  - `src-tauri/src/lib.rs` : `register_all` **retiré de macOS** (limite du
+    plugin) ; commentaire expliquant la conséquence assumée (le parcours de
+    connexion ne doit jamais dépendre du deep link sur macOS).
+  - `src-tauri/src/window_focus.rs` : `activate()` (non-garanti selon Apple,
+    déprécié) → `activateIgnoringOtherApps(true)` ; logs `[FOCUS-DIAG]` retirés ;
+    commentaire documentant le refus OS sur binaire nu.
+  - `src-tauri/tauri.conf.json` : `bundle.targets` → `["app","dmg","nsis","msi"]`
+    (ajout des cibles macOS).
+- **Décisions Techniques :** ne pas tenter de contourner LaunchServices (aucune
+  API ne le permet) ; rendre le focus tolérant (best-effort) ; la validation
+  macOS du deep link ET du focus passe par l'**.app installée** (comme en prod),
+  pas par `cargo tauri dev`.
+- **Impacts & Dépendances :** `lib.rs`, `window_focus.rs`, `tauri.conf.json`.
+  Contrat IPC inchangé. `cargo check --no-default-features` → exit 0.
+- **Prochaines étapes :** produire un `.app` de test (`tauri build` ou
+  `tauri dev` après bundle) et l'installer dans `/Applications` pour valider le
+  focus et le deep link comme un vrai utilisateur.
+
+---
+
+### [2026-10-26T02:15] | Deep link macOS en dev + retour au premier plan (analyse initiale, corrigée ci-dessus)
+
+- **Contexte :** après une connexion réussie, (1) le bouton « Open Mira » du
+  portail ne faisait rien et (2) la fenêtre Mira ne revenait plus au premier
+  plan. Deux causes **indépendantes**, toutes deux sur macOS en dev.
+- **Cause 1 — schéma `mira://` non enregistré :** l'appel
+  `app.deep_link().register_all()` du setup était conditionné à
+  `#[cfg(any(target_os = "linux", all(debug_assertions, windows)))]` — **macOS
+  exclu**. Or l'association du schéma vient normalement de l'`Info.plist` du
+  bundle `.app`, inexistant en dev (`target/debug/mira` est un binaire nu, aucun
+  `.app` généré — vérifié). LaunchServices ignorait donc totalement `mira://` :
+  le bouton du portail ne trouvait aucune app.
+- **Cause 2 — activation macOS hors main thread :** `window_focus.rs` appelait
+  `NSApplication.activate()` via `MainThreadMarker::new()`, mais
+  `cloud_focus_window` est une commande Tauri **`async`**, donc exécutée sur le
+  runtime asynchrone → hors main thread → `new()` renvoie `None` → activation
+  **silencieusement abandonnée** → seul `set_focus()` restait, que macOS ignore
+  pour une app non activée.
+- **Modifications effectuées :**
+  - **`src-tauri/src/lib.rs`** : le `cfg` de `register_all` inclut désormais
+    `all(debug_assertions, any(target_os = "windows", target_os = "macos"))`
+    (macOS **en dev seulement** ; en release le bundle fournit l'association).
+  - **`src-tauri/src/window_focus.rs`** : `bring_to_front` publie le geste sur
+    le main thread via `app.run_on_main_thread(...)` (activation OS + focus
+    fenêtre réunis dans la closure) ; `bring_window_to_front` délègue à
+    `bring_to_front` au lieu de dupliquer. Commentaires enrichis sur la
+    contrainte `MainThreadOnly`.
+- **Décisions Techniques :** centraliser le geste de focus (une seule
+  implémentation pour les 3 chemins) ; ne pas appeler `register_all` en release
+  macOS (inutile et modifierait l'enregistrement de l'app installée) ;
+  best-effort intégral conservé (un focus refusé ne casse jamais la connexion).
+- **Impacts & Dépendances :** `src-tauri/src/lib.rs`, `src-tauri/src/window_focus.rs`.
+  Contrat IPC inchangé (`cloud_focus_window` signature identique).
+  `cargo check --no-default-features` → exit 0.
+- **Prochaines étapes :** valider en réel — au 1er lancement dev, macOS doit
+  demander/l'accepter l'association `mira://` ; le bouton « Open Mira » doit
+  ramener la fenêtre, et le poll (`focusCloudWindow`) aussi.
+
+---
+
+### [2026-10-26T01:30] | Carte « forfait supérieur » : texte calé sur le budget mensuel
+
+- **Contexte :** clarification produit — le budget des comptes gratuits est
+  **mensuel** (1 USD/mois). À épuisement, l'utilisateur doit être invité à passer
+  à **un forfait supérieur**. La carte d'upgrade existait déjà mais son texte
+  (« You've reached your plan's usage limit ») ne disait ni « mensuel » ni
+  « change d'offre ».
+- **Vérification d'ensemble (rien à recâbler) :** le budget par plan est déjà la
+  source de vérité côté backend (`plan_budget_free = 1.0`, `pro = 20`, etc.), la
+  clé Orvyx est provisionnée avec `monthlyLimitUsd = budget du plan`, le 402 est
+  détecté (`isQuotaError`) et marque le message (`quotaExhausted`), et le bouton
+  ouvre `<dashboard>/pricing` via `cloud_upgrade_url` (URL fabriquée côté Rust).
+- **Modifications effectuées :**
+  - **`src/components/ai/UpgradeNotice.tsx`** : titres/textes explicites —
+    « You've used up this month's plan credit » + corps expliquant que le crédit
+    **mensuel** est épuisé et proposant d'**upgrade** à une offre supérieure (ou
+    d'attendre le reset mensuel). Commentaire d'en-tête mis à jour.
+- **Décisions Techniques :** **ne pas relever** `plan_budget_free` (exigence
+  explicite : 1 USD/mois reste la limite du gratuit) ; le plafond de sortie
+  `maxTokensPerTurn` reste à **8192** (choix validé) — assez large pour un tour
+  d'agent, assez borné pour un pré-contrôle prévisible.
+- **Impacts & Dépendances :** texte UI uniquement (anglais, cohérent avec le
+  reste de `components/ai`). Aucun impact backend. `npx tsc --noEmit` → exit 0.
+- **Prochaines étapes :** confirmer visuellement la carte dans l'UI au prochain
+  épuisement réel (ou en forçant un 402).
+
+---
+
+- **Contexte :** en local, la génération ne produisait plus rien. Le log
+  applicatif s'arrêtait après `[checkpoint] begin turn=…` sans aucune erreur :
+  normal, le refus venait du réseau et n'était pas journalisé côté app.
+- **Diagnostic (empirique, pas d'hypothèse) :** interception des appels réseau
+  réels du SDK (`__netspy.mjs`) puis reproduction en `curl`. Constats :
+  1. **Le routage est sain** : la requête part bien vers
+     `https://api.orvyx-ai.com/v1/chat/completions` (variantes `orvyx` et
+     `openai-compatible` identiques). Aucun bug Mira.
+  2. **Orvyx renvoie `HTTP 402 insufficient_credits`** : Orvyx fait un
+     *pré-contrôle de crédit* qui réserve `prompt_tokens + max_tokens` AVANT
+     l'appel modèle et refuse si la réservation dépasse le solde.
+  3. **Le SDK Cline n'envoyait AUCUN `max_tokens`** : un modèle custom routé par
+     `routingProviderId` n'a pas de `ModelInfo.maxTokens` connue → pas de
+     plafond → Orvyx applique un défaut énorme → 402 même sur un prompt trivial.
+     Prouvé : corps sans `max_tokens` → 402 ; avec `max_tokens` borné → 200.
+  4. **La clé Orvyx du `.env` de dev était quasi à sec** (`oryx_l2ef…`, solde
+     de l'ordre de quelques centimes). Ce n'est PAS une clé utilisateur du compte
+     provisionneur (`Invalid account token` sur le control plane).
+- **Modifications effectuées :**
+  - **`src-tauri/cline-sidecar/src/index.ts`** :
+    - nouveau champ `StartCommand.maxTokensPerTurn?: number` ;
+    - constante `DEFAULT_MAX_TOKENS_PER_TURN = 8192` ;
+    - `maxTokensPerTurn: cmd.maxTokensPerTurn ?? DEFAULT_MAX_TOKENS_PER_TURN`
+      posé dans la config de session → converti par le SDK en `max_tokens`.
+      Le plafond borne la réservation et rend le pré-contrôle prévisible, sans
+      toucher aux budgets (le plan gratuit reste à 1 USD).
+  - **`.env`** : remplacement de la clé de dev à sec par une clé fraîche
+    `mira-dev-desktop` provisionnée via le compte Orvyx (`POST /v1/keys`),
+    **`monthlyLimitUsd = maxSpendUsd = 1`**, scopes `["chat","embeddings"]`
+    (moindre privilège, aligné sur `OrvyxClient.create_key`).
+- **Décisions Techniques :** (1) s'appuyer sur le levier **officiel**
+  `CoreModelConfig.maxTokensPerTurn` plutôt que de bidouiller la requête HTTP —
+  c'est le contrat du SDK et ça survit aux montées de version ; (2) **ne pas
+  relever le budget du plan gratuit** (exigence explicite) — on corrige la cause
+  (plafond manquant + clé épuisée), pas le symptôme ; (3) provisionner la clé via
+  le même chemin que la prod (`OrvyxClient`) pour rester reproductible.
+- **Impacts & Dépendances :** `dist/index.mjs` du sidecar rebuilt ; `npx tsc
+  --noEmit` → exit 0. Aucun changement de contrat IPC. Le champ est optionnel :
+  un appelant qui ne le fournit pas obtient le défaut sûr de 8192.
+- **Validation bout-en-bout :** `mira_diag.mjs` (SDK réel) avec la nouvelle clé
+  → `max_tokens: 8192` envoyé, **HTTP 200**, réponse `PONG`, événement `done`
+  complet (`inputTokens: 3169, outputTokens: 3`).
+- **Prochaines étapes :** relancer `pnpm run dev` et confirmer la génération dans
+  l'UI. Surveiller la consommation : à 8192 de plafond et 1 USD de budget, un
+  usage intensif peut épuiser la clé — prévoir un réapprovisionnement de dev.
+
+---
 
 - **Contexte :** après une authentification réussie (device flow), la fenêtre du
   desktop ne revenait plus automatiquement au premier plan (surtout en dev, mais

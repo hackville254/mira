@@ -180,10 +180,27 @@ pub async fn cloud_device_poll(
     }
     .ok_or_else(|| "No device flow in progress".to_string())?;
 
+    // Le secret Orvyx n'est livrable qu'à la CRÉATION de la clé et jamais
+    // re-livrable ensuite. Si ce poste n'a AUCUNE copie PERSISTÉE de la clé
+    // (coffre vide : réinstallation, profil neuf, coffre illisible), il ne
+    // recevra jamais le secret d'une clé déjà existante côté serveur. On
+    // demande donc au serveur de faire tourner la clé pour qu'il en émette une
+    // neuve, livrée par ce poll. Inoffensif au tout premier claim (aucune clé
+    // à révoquer) et jamais déclenché par le navigateur (il n'a pas le
+    // `device_code`, qui reste côté Rust).
+    //
+    // On teste le COFFRE, pas `get_secret` : ce dernier inclut le repli `.env`
+    // de dev, qui ferait croire à tort à une clé persistée alors que le coffre
+    // est vide (biais qui masquerait justement le bug en local).
+    let force_reprovision = !crate::keychain::vault_has_secret(&app, "provider:orvyx");
+
     let url = format!("{}/api/v1/device/poll", dashboard_url());
     let resp = http_client()?
         .post(&url)
-        .json(&json!({ "device_code": device_code }))
+        .json(&json!({
+            "device_code": device_code,
+            "force_reprovision": force_reprovision,
+        }))
         .send()
         .await
         .map_err(|e| format!("Cannot reach Mira cloud: {e}"))?;
@@ -199,11 +216,15 @@ pub async fn cloud_device_poll(
                 .refresh_token
                 .ok_or_else(|| "Approved without refresh token".to_string())?;
 
-            // La clé est livrée ici, une seule fois. On la range dans le
-            // keychain OS avant de rendre la main : si l'écriture échoue, on
+            // La clé est livrée ici, une seule fois. On la range dans le coffre
+            // chiffré local avant de rendre la main : si l'écriture échoue, on
             // échoue bruyamment plutôt que de laisser une session sans clé.
+            // On ENRICHIT l'erreur du contexte (compte + chemin attendu) : sans
+            // cela, un échec remonte comme une simple chaîne et devient
+            // indiagnosticable dans `tauri dev`.
             if let Some(secret) = wire.key_secret {
-                crate::keychain::set_secret(app, "provider:orvyx".to_string(), secret)?;
+                crate::keychain::set_secret(app, "provider:orvyx".to_string(), secret)
+                    .map_err(|e| format!("Persistance de la clé Orvyx impossible: {e}"))?;
             }
             *state.key_fingerprint.lock().await = wire.key_fingerprint;
 

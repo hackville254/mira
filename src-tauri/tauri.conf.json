@@ -42,7 +42,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis", "msi"],
+    "targets": ["app", "dmg", "nsis", "msi"],
     "resources": {
       "cline-sidecar/dist/index.mjs": "cline-sidecar/dist/index.mjs",
       "default_skills": "default_skills"
