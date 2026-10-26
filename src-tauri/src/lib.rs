@@ -34,6 +34,7 @@ mod skills_import;
 mod system;
 mod terminal;
 mod tree;
+mod window_focus;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -227,11 +228,9 @@ pub fn run() {
             // deep link, le plugin deep-link a déjà mis l'URL de côté et va
             // déclencher `on_open_url` ; on se contente de ramener la fenêtre au
             // premier plan, ce qui couvre aussi un simple double-clic d'icône.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // `bring_to_front` gère l'activation macOS (sinon `set_focus` seul est
+            // ignoré par le système).
+            window_focus::bring_to_front(app);
             let _ = argv; // l'URL est traitée par le plugin deep-link, pas ici.
         },
     ));
@@ -426,6 +425,7 @@ pub fn run() {
             cloud::cloud_provision_key,
             cloud::cloud_fetch_models,
             cloud::cloud_focus_window,
+            cloud::cloud_upgrade_url,
             cloud::cloud_sign_out,
             log::origin_log,
             lsp::lsp_start,

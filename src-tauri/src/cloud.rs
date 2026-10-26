@@ -170,7 +170,10 @@ struct DevicePollWire {
 /// jetons côté Rust **et** la clé Orvyx dans le keychain OS, puis renvoie
 /// `Approved` (sans jamais exposer jetons ni secret au front).
 #[tauri::command]
-pub async fn cloud_device_poll(state: tauri::State<'_, CloudState>) -> Result<PollOutcome, String> {
+pub async fn cloud_device_poll(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, CloudState>,
+) -> Result<PollOutcome, String> {
     let device_code = {
         let guard = state.device_code.lock().await;
         guard.clone()
@@ -200,7 +203,7 @@ pub async fn cloud_device_poll(state: tauri::State<'_, CloudState>) -> Result<Po
             // keychain OS avant de rendre la main : si l'écriture échoue, on
             // échoue bruyamment plutôt que de laisser une session sans clé.
             if let Some(secret) = wire.key_secret {
-                crate::keychain::set_secret("provider:orvyx".to_string(), secret)?;
+                crate::keychain::set_secret(app, "provider:orvyx".to_string(), secret)?;
             }
             *state.key_fingerprint.lock().await = wire.key_fingerprint;
 
@@ -368,10 +371,19 @@ pub async fn cloud_fetch_models(state: tauri::State<'_, CloudState>) -> Result<V
 /// donc jamais échouer la connexion pour ça.
 #[tauri::command]
 pub async fn cloud_focus_window(window: tauri::WebviewWindow) -> Result<(), String> {
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
+    crate::window_focus::bring_window_to_front(&window);
     Ok(())
+}
+
+/// URL de la page de tarifs du portail Mira, où l'utilisateur change d'offre.
+///
+/// L'URL est construite à partir de la MÊME base que le reste du plan de
+/// contrôle (`dashboard_url()`), donc jamais fournie par l'utilisateur ni par
+/// un modèle : pas de SSRF ni d'ouverture d'un lien arbitraire. Le front se
+/// contente de l'ouvrir dans le navigateur système.
+#[tauri::command]
+pub async fn cloud_upgrade_url() -> Result<String, String> {
+    Ok(format!("{}/pricing", dashboard_url()))
 }
 
 /// Oublie la session cloud côté poste (les jetons en mémoire sont effacés).

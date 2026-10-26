@@ -34,6 +34,11 @@ tauri-plugin-deep-link = "2"
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+# Coffre de secrets local (repli sans prompt keychain, cf. `keychain.rs`) :
+# chiffrement authentifié AES-256-GCM + dérivation de clé HKDF-SHA256.
+aes-gcm = "0.10"
+hkdf = "0.12"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.8"
@@ -51,6 +56,15 @@ regex = "1"
 # Surveillance du système de fichiers (explorateur) : FSEvents (macOS),
 # inotify (Linux), ReadDirectoryChangesW (Windows). Voir `src/fs_watch.rs`.
 notify = "6"
+
+# macOS uniquement : activation de l'app au niveau de l'OS pour que `set_focus`
+# ramène réellement la fenêtre au premier plan après une authentification ou un
+# deep link (voir `src/window_focus.rs`). Scoped à macOS : ces crates ne sont
+# pas compilées sur les autres plateformes.
+[target."cfg(target_os = \"macos\")".dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
 
 [dev-dependencies]
 # `macros` : nécessaire aux tests `#[tokio::test]` (routage des réponses de

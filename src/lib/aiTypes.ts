@@ -57,6 +57,31 @@ export interface DisplayMessage {
    * supprimer les messages postérieurs à ce point.
    */
   dbId?: string;
+  /**
+   * Le tour a échoué faute de crédit côté Orvyx (402 `insufficient_credits`).
+   * On ne remplace PAS l'erreur brute par du texte marketing : on l'annote, et
+   * l'UI affiche en plus une carte « passer à une offre supérieure ». Persisté
+   * via le statut `quota` pour survivre à un rechargement de la conversation.
+   */
+  quotaExhausted?: boolean;
+}
+
+/**
+ * Reconnaît une erreur de quota Orvyx/SDK dans un message d'erreur brut.
+ *
+ * Orvyx renvoie `{"error":{"message":"Insufficient credit balance for this
+ * request","code":"insufficient_credits"}}` ; le SDK rethrow la SEULE chaîne du
+ * message (le `code` est perdu). On matche donc le texte, en tolérant les
+ * variantes : majuscules/minuscules et libellés approchants.
+ */
+export function isQuotaError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("insufficient credit balance") ||
+    m.includes("insufficient_credits") ||
+    m.includes("insufficient quota") ||
+    m.includes("exceeded your current quota")
+  );
 }
 
 export interface PinnedMessage {

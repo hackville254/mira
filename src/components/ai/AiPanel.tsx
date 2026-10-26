@@ -88,7 +88,7 @@ import { useWorkspace } from "../../context/WorkspaceContext";
 import {
   type DisplayMessage, type MessagePart, type PinnedMessage, type ToolCallDisplay, type SubAgentChild,
   type QueuedMessage,
-  appendText, appendReasoning, updateTcInParts,
+  appendText, appendReasoning, updateTcInParts, isQuotaError,
 } from "../../lib/aiTypes";
 import {
   activeSessionKey, lsForPath, lsPush, lsTouch, lsDelete,
@@ -2293,12 +2293,18 @@ export default function AiPanel({
           // terminal `tauri dev` + le fichier de log, sans DevTools.
           log.error("ai/panel", `tour en erreur (dbId=${dbId ?? "-"}, partiel=${partialContent.length} car.) : ${event.message}`);
           log.flush();
-          if (dbId) updateMessageContent(dbId, partialContent || `Error: ${event.message}`, "error").catch(() => {});
+          // Quota Orvyx épuisé (402) : on le distingue d'une erreur technique,
+          // car l'action attendue est commerciale (« passer à une offre
+          // supérieure ») et non un simple « réessayer ». L'erreur brute reste
+          // affichée ; on ajoute seulement la carte d'upgrade.
+          const quota = isQuotaError(event.message);
+          const errStatus = quota ? "quota" : "error";
+          if (dbId) updateMessageContent(dbId, partialContent || `Error: ${event.message}`, errStatus).catch(() => {});
           updateThread(prev => {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.role === "assistant") {
-              next[next.length - 1] = { ...last, content: `Error: ${event.message}`, streaming: false };
+              next[next.length - 1] = { ...last, content: `Error: ${event.message}`, streaming: false, quotaExhausted: quota || undefined };
             }
             return next;
           });

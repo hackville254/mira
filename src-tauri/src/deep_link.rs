@@ -16,7 +16,7 @@
 //! Sécurité : le schéma est vérifié contre la liste blanche (`mira`), et seuls
 //! les hôtes connus sont acceptés. Tout le reste est ignoré en silence.
 
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Nom de l'évènement écouté par le front (voir `src/lib/deepLink.ts`).
@@ -54,11 +54,9 @@ pub fn handle_urls<R: Runtime>(app: &AppHandle<R>, urls: Vec<String>) {
         return;
     }
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    // Retour au premier plan (avec activation OS sur macOS, sinon le navigateur
+    // garde le focus après la redirection `mira://`).
+    crate::window_focus::bring_to_front(app);
 
     for url in accepted {
         let _ = app.emit(DEEP_LINK_EVENT, url);

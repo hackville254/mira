@@ -654,6 +654,8 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
   /** Zone qui accepte le dépôt d'un fichier/dossier (délimite le hit-test OS). */
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const modeAnchorRef = useRef<HTMLDivElement>(null);
+  /** Ancre du sélecteur de modèle (le menu est rendu en portal depuis ce bouton). */
+  const modelAnchorRef = useRef<HTMLDivElement>(null);
   const plusBtnRef = useRef<HTMLButtonElement>(null);
   const mentionRangeRef = useRef<Range | null>(null);
   /** Position du curseur au moment où la requête `#` a été détectée. */
@@ -1867,6 +1869,7 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
         {/* Model selector — un select classique : le menu s'ancre au bouton. */}
         <div style={{ position: "relative", minWidth: 0 }}>
           <div
+            ref={modelAnchorRef}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={() => setPrefsOpen(v => !v)}
             style={{ display:"flex", alignItems:"center", gap:"4px", fontSize:"12px", fontWeight:500,
@@ -1875,13 +1878,15 @@ export default function ChatBox({ onSend, getEditorContext, forcedContext, onFor
               backgroundColor: prefsOpen ? "var(--origin-bg-active)" : "transparent",
               color: prefsOpen ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
               userSelect:"none", cursor:"pointer",
-              transition:"background 0.1s, color 0.1s, border-color 0.1s", maxWidth:"96px", minWidth:0 }}>
+              transition:"background 0.1s, color 0.1s, border-color 0.1s", maxWidth:"200px", minWidth:0 }}>
             <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{modelLabel}</span>
             <ChevronDown size={10} style={{ flexShrink: 0, transform: prefsOpen ? "rotate(180deg)" : "none", transition: "transform 0.1s" }} />
           </div>
 
           {prefsOpen && (
             <PreferencesDropdown
+              // eslint-disable-next-line react-hooks/refs -- anchorEl portal pattern: positions dropdown relative to the anchor button
+              anchorEl={modelAnchorRef.current}
               selectedModelId={selectedModelId}
               onSelect={(modelKey) => {
                 // Pour un modèle custom, la « clé » sert à la fois d'id de provider et de modèle.

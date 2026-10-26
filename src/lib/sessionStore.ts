@@ -136,6 +136,10 @@ export function dbMsgsToDisplay(msgs: DbMessage[]): DisplayMessage[] {
       sourceFilePath: m.message_type === "assistant" ? lastUserSingleMention : undefined,
       fileMentions,
       dbId: m.id,
+      // Tour échoué faute de crédit Orvyx : on restaure l'annotation pour que
+      // la carte « passer à une offre supérieure » réapparaisse après un
+      // rechargement de la conversation.
+      quotaExhausted: m.status === "quota" || undefined,
       editorContext: m.editor_context_json
         ? { ...(JSON.parse(m.editor_context_json) as object), code: "", language: "" } as EditorContext
         : undefined,

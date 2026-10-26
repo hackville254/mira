@@ -1127,9 +1127,13 @@ function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | nu
   const enableTeams = cmd.enableTeams === true;
   return {
     providerId: cmd.providerId ?? "openai-compatible",
-    // Le protocole de transport est décidé par `clientType` (modèles
-    // personnalisés) ; à défaut, le SDK le déduit du `providerId`.
-    ...(cmd.clientType ? { clientType: cmd.clientType } : {}),
+    // Le protocole de transport est décidé par `clientType` — MAIS ce champ
+    // n'appartient PAS à `CoreModelConfig` (donc il serait ignoré s'il était
+    // posé au top-level). Il vit dans `ProviderConfig`, uniquement atteignable
+    // via `providerConfig`. Voir le bloc `providerConfig` plus bas.
+    // Bonus : pour un id de provider CUSTOM (ex. `orvyx`) non built-in, le SDK
+    // exige `routingProviderId` pour réutiliser le comportement d'un provider
+    // natif (sinon aucun handler n'est résolu → génération impossible).
     modelId: cmd.modelId,
     apiKey: cmd.apiKey,
     baseUrl: cmd.baseUrl,
@@ -1182,6 +1186,37 @@ function buildStartConfig(cmd: StartCommand, extensions?: SessionExtensions | nu
       : {}),
     ...(typeof cmd.maxIterations === "number"
       ? { maxIterations: cmd.maxIterations }
+      : {}),
+    // ── ROUTAGE DU PROVIDER ────────────────────────────────────────────────
+    //
+    // POURQUOI `providerConfig` ET PAS LE TOP-LEVEL
+    // ---------------------------------------------
+    // `clientType` (« quel handler de transport utiliser ») n'appartient PAS à
+    // `CoreModelConfig` : c'est un champ de `ProviderConfig`. Posé au
+    // top-level de la config de session, il est donc **silencieusement
+    // ignoré** par le SDK. On le place ici, dans le sous-objet `providerConfig`
+    // que le SDK lit réellement.
+    //
+    // POURQUOI `routingProviderId`
+    // ----------------------------
+    // Les modèles Mira exposent un id de provider PROPRE (`orvyx`), absent du
+    // catalogue natif du SDK. Sans indication, le SDK ne résout AUCUN handler
+    // pour cet id → l'appel LLM n'est jamais émis. `routingProviderId` est
+    // prévu EXACTEMENT pour ce cas : il permet d'exposer un id/catalogue
+    // custom tout en réutilisant l'implémentation d'un provider natif. On
+    // route donc vers `openai-compatible` (protocole REST OpenAI), qui est ce
+    // que sert l'API Orvyx (`/v1/chat/completions`).
+    ...(cmd.clientType || cmd.providerId
+      ? {
+          providerConfig: {
+            providerId: cmd.providerId ?? "openai-compatible",
+            clientType: cmd.clientType ?? "openai-compatible",
+            routingProviderId: cmd.clientType ?? "openai-compatible",
+            apiKey: cmd.apiKey,
+            modelId: cmd.modelId,
+            ...(cmd.baseUrl ? { baseUrl: cmd.baseUrl } : {}),
+          },
+        }
       : {}),
   } as never;
 }

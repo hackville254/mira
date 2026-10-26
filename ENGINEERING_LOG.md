@@ -5,6 +5,85 @@
 
 ---
 
+### [2026-10-26T00:00] | Retour au premier plan après connexion : activation OS (macOS)
+
+- **Contexte :** après une authentification réussie (device flow), la fenêtre du
+  desktop ne revenait plus automatiquement au premier plan (surtout en dev, mais
+  aussi quand le navigateur gardait le focus). Symptôme supplémentaire : un
+  backend local non lancé faisait échouer `device/start` (corrigé séparément en
+  démarrant l'API sur 8747).
+- **Cause racine (macOS) :** `window.set_focus()` ne suffit pas quand le process
+  n'est pas une application *activée* (`NSApplicationActivationPolicy::Regular`
+  + `NSApplication.activate()`). Le binaire de dev lancé par `cargo tauri dev`
+  n'est pas enregistré auprès de LaunchServices → le système refuse le premier
+  plan. Le focus était de plus **dupliqué** en trois endroits
+  (`cloud_focus_window`, `deep_link::handle_urls`, callback `single_instance`).
+- **Modifications effectuées :**
+  - **`src-tauri/src/window_focus.rs` (nouveau)** : module partagé exposant
+    `bring_to_front(app)` et `bring_window_to_front(window)`. Sur macOS :
+    `setActivationPolicy(Regular)` + `unhide` + `NSApplication.activate()` via
+    `objc2-app-kit`, puis `unminimize`/`show`/`set_focus`. Best-effort intégral
+    (aucune erreur ne remonte à l'appelant).
+  - **`src-tauri/src/deep_link.rs`** : `handle_urls` appelle désormais
+    `window_focus::bring_to_front` (import `Manager` retiré, devenu inutile).
+  - **`src-tauri/src/cloud.rs`** : `cloud_focus_window` délègue à
+    `window_focus::bring_window_to_front`.
+  - **`src-tauri/src/lib.rs`** : callback `single_instance` délègue à
+    `window_focus::bring_to_front` ; module déclaré.
+  - **`src-tauri/Cargo.toml`** : deps macOS-scoped `objc2 = "0.6"`,
+    `objc2-app-kit = "0.3"`, `objc2-foundation = "0.3"` (déjà présentes en
+    transitif via Tauri, désormais explicites et directes).
+- **Décisions Techniques :** (1) **centraliser** le geste au lieu de le copier en
+  trois exemplaires — un seul endroit à corriger si la stratégie d'activation
+  change ; (2) cibler les deps **uniquement sur macOS** pour ne rien alourdir
+  ailleurs ; (3) rester **best-effort** : un refus de focus ne doit jamais faire
+  échouer une connexion ni un deep link.
+- **Impacts & Dépendances :** aucun changement de contrat IPC (les commandes et
+  évènements existants sont conservés à l'identique) ; le comportement sur
+  Windows/Linux est inchangé (no-op d'activation, mêmes appels de fenêtre).
+  Vérifié : `cargo check` **exit 0, zéro warning**.
+- **Prochaines étapes :** valider sur un build dev macOS réel (connexion →
+  fenêtre au premier plan). Résidus antérieurs inchangés.
+
+---
+
+### [2026-10-26T00:00] | Crédit Orvyx épuisé : carte d'action « upgrade » dans le fil
+
+- **Contexte :** le routage Orvyx est correctement câblé, mais quand le contexte
+  agentique devient volumineux (~15k tokens), Orvyx répond **HTTP 402
+  `insufficient_credits`** avant l'inférence. L'utilisateur ne voyait qu'un
+  message d'erreur technique, sans piste d'action. Besoin métier : l'inviter à
+  passer sur une offre supérieure, directement depuis le chat.
+- **Modifications effectuées :**
+  - **`src/lib/aiTypes.ts`** : flag `quotaExhausted?` sur `DisplayMessage` +
+    helper `isQuotaError(message)` (reconnaissance par *substring* — le SDK
+    rethrow uniquement le message, le `code` est perdu).
+  - **`src/components/ai/AiPanel.tsx`** : dans `case "error"`, détection quota,
+    statut persisté `"quota"` (au lieu de `"error"`) et pose du flag.
+  - **`src/lib/sessionStore.ts`** : `dbMsgsToDisplay` restaure le flag depuis le
+    statut DB → l'invite survit à un rechargement de conversation.
+  - **`src-tauri/src/cloud.rs`** : commande `cloud_upgrade_url` renvoyant
+    `<dashboard>/pricing` (jamais d'URL en dur côté front).
+  - **`src-tauri/src/lib.rs`** : enregistrement de la commande.
+  - **`src/lib/agent/account.ts`** : helper `openUpgradePage()` (invoke + `openUrl`).
+  - **`src/components/ai/UpgradeNotice.tsx`** : carte + bouton « Upgrade plan ».
+  - **`src/components/ai/MessageBubble.tsx`** : rendu de la carte **sous** l'erreur
+    brute, jamais à sa place.
+- **Décisions Techniques :** (1) on **ne supprime pas** le message d'erreur brut —
+  on informe, on n'efface rien ; (2) le statut DB `"quota"` est un marqueur
+  *libre* (colonne sans contrainte CHECK) → aucune migration ; (3) l'URL
+  d'upgrade passe par le **control plane / dashboard configuré** via `.env`, donc
+  local et prod partagent le même code ; (4) détection par message côté client,
+  seule surface disponible sans modifier l'agent (contrainte « on ne change rien
+  sur l'agent, juste l'affichage »).
+- **Impacts & Dépendances :** `dbMsgsToDisplay`, `AiPanel`, `MessageBubble`,
+  `account.ts`, `cloud.rs`/`lib.rs`. Aucun impact sur le SDK Cline ni sur la
+  logique agent. Le nouveau statut `"quota"` est sans effet sur les autres
+  lecteurs (`db.ts` ne teste que `'streaming'`/`'interrupted'`).
+- **Prochaines étapes :** relever éventuellement le `plan_budget_free` côté
+  Orvyx (non nécessaire, choix produit à confirmer) ; valider le parcours en
+  local avant prod.
+
 ### [2026-10-21T23:10] | Connexion desktop : suppression totale du code (100 % par lien)
 
 - **Contexte :** malgré le mode « launch » (lien d'appairage), l'utilisateur

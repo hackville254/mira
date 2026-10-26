@@ -6,6 +6,7 @@ import ToolGroupCard from "./ToolGroupCard";
 import SubAgentCard from "./SubAgentCard";
 import PlanCard from "./PlanCard";
 import StatusNotice from "./StatusNotice";
+import UpgradeNotice from "./UpgradeNotice";
 import ReasoningBlock from "./ReasoningBlock";
 import MessageActionsBar, { UserMessageActions, type FeedbackVote } from "./MessageActionsBar";
 import type { TurnFileDelta } from "../../lib/turnCheckpoint";
@@ -269,6 +270,10 @@ export default function MessageBubble({
           onInsertTerminal={onInsertTerminal}
         />
       ) : null}
+
+      {/* Quota Orvyx épuisé : on ajoute une carte d'action commerciale SOUS
+          l'erreur brute (conservée), jamais à sa place. */}
+      {!isUser && !message.streaming && message.quotaExhausted && <UpgradeNotice />}
 
       {hasAttachments && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "8px" }}>

@@ -1,17 +1,19 @@
 import { useState, useEffect, useRef } from "react";
-import { Info, Check } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check } from "lucide-react";
 import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
 import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
-import { accentForModel } from "./providers";
 
 interface Props {
+  /** Élément auquel le menu s'ancre (le bouton du sélecteur de modèle). */
+  anchorEl: HTMLElement | null;
   /** Clé du modèle actif (clé Mira ou clé custom) */
   selectedModelId: string;
   onSelect: (modelKey: string, modelId: string) => void;
   onClose: () => void;
 }
 
-const MENU_WIDTH = 280;
+const MENU_WIDTH = 260;
 const MENU_MAX_HEIGHT = 340;
 
 /** Entrée unifiée du sélecteur : un modèle Mira ou un modèle du client. */
@@ -19,17 +21,18 @@ interface Row {
   key: string;
   displayName: string;
   subtitle: string;
-  /** Modèle fourni par Mira (badge « Mira »). */
+  /** Modèle fourni par Mira (fourni par l'éditeur). */
   fromMira: boolean;
 }
 
 // ── Main dropdown (model list) ────────────────────────────────────────────────
 
-export default function PreferencesDropdown({ selectedModelId, onSelect, onClose }: Props) {
+export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelect, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
   /** Modèles fournis par Mira (catalogue de l'éditeur), chargés une fois. */
   const [miraModels, setMiraModels] = useState<MiraModel[]>([]);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
 
   // Source unique de vérité : le magasin de modèles, rafraîchi à chaque changement.
   useEffect(() => subscribeCustomModels(() => setModels(loadCustomModels())), []);
@@ -39,6 +42,26 @@ export default function PreferencesDropdown({ selectedModelId, onSelect, onClose
     loadMiraModels().then(list => { if (alive) setMiraModels(list); });
     return () => { alive = false; };
   }, []);
+
+  // Position calculée depuis le bouton : le menu est rendu dans `document.body`
+  // (portal) pour échapper au `overflow: hidden` du panneau de chat, qui sinon
+  // le clipperait et le coincerait sous le contenu voisin.
+  useEffect(() => {
+    if (!anchorEl) return;
+    const r = anchorEl.getBoundingClientRect();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- position portal from measured anchor rect
+    setPos({ left: r.left, top: r.top - 6 });
+  }, [anchorEl]);
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) onClose();
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [onClose]);
 
   const rows: Row[] = [
     ...miraModels.map((m): Row => ({
@@ -55,30 +78,19 @@ export default function PreferencesDropdown({ selectedModelId, onSelect, onClose
     })),
   ];
 
-  useEffect(() => {
-    function onDown(e: MouseEvent) {
-      if (!menuRef.current?.contains(e.target as Node)) onClose();
-    }
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-  }, [onClose]);
-
   const hoverOn = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; };
   const hoverOff = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "transparent"; };
 
-  // Menu ancré au-dessus du bouton, en position absolue par rapport au conteneur
-  // du chat (qui est `position: relative`). Aucune mesure d'écran n'est faite :
-  // le menu suit le bouton, comme un select natif — c'était l'origine du bug
-  // « la modal s'ouvre loin du select ».
-  return (
+  if (!anchorEl) return null;
+
+  return createPortal(
     <div
       ref={menuRef}
       style={{
-        position: "absolute",
-        bottom: "calc(100% + 6px)",
-        left: 0,
+        position: "fixed",
+        top: pos.top,
+        left: pos.left,
+        transform: "translateY(-100%)",
         width: MENU_WIDTH,
         maxWidth: "calc(100vw - 24px)",
         maxHeight: MENU_MAX_HEIGHT,
@@ -86,15 +98,14 @@ export default function PreferencesDropdown({ selectedModelId, onSelect, onClose
         background: "color-mix(in srgb, var(--origin-bg-base) 92%, transparent)",
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: "1px solid var(--origin-border-default)", borderRadius: 10,
-        boxShadow: "0 8px 32px rgba(0,0,0,0.35)", overflow: "hidden", zIndex: 50,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.35)", overflow: "hidden", zIndex: 9999,
       }}
     >
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px 6px", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 12px 6px", flexShrink: 0 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--origin-fg-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
           Models
         </span>
-        <Info size={12} style={{ color: "var(--origin-fg-subtle)" }} />
       </div>
 
       {/* Scrollable list */}
@@ -107,31 +118,26 @@ export default function PreferencesDropdown({ selectedModelId, onSelect, onClose
 
         {rows.map((row) => {
           const isSelected = row.key === selectedModelId;
-          const accent = accentForModel(row.key);
+          // Sous-titre masqué quand il duplique le titre (catalogue cloud qui
+          // ne fournit pas de libellé lisible) : on garde une ligne, épurée.
+          const showSubtitle = row.subtitle.trim() !== "" && row.subtitle !== row.displayName;
           return (
             <button
               key={row.key}
               onMouseDown={(e) => { e.stopPropagation(); onSelect(row.key, row.subtitle); onClose(); }}
               onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-              title={`${row.displayName} · ${row.subtitle}`}
-              style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
+              title={showSubtitle ? `${row.displayName} · ${row.subtitle}` : row.displayName}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
             >
-              <span
-                style={{
-                  width: 20, height: 20, borderRadius: 5, flexShrink: 0,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  background: `${accent}22`, color: accent, fontSize: 9, fontWeight: 700,
-                }}
-              >
-                {row.displayName.slice(0, 2).toUpperCase()}
-              </span>
               <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
                 <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {row.displayName}
                 </span>
-                <span style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {row.subtitle}
-                </span>
+                {showSubtitle && (
+                  <span style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {row.subtitle}
+                  </span>
+                )}
               </span>
               {row.fromMira && (
                 <span style={{
@@ -163,6 +169,7 @@ export default function PreferencesDropdown({ selectedModelId, onSelect, onClose
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 /**
  * Compte Mira : connexion du poste au plan de contrôle (device flow OAuth 2.0)
@@ -293,6 +294,19 @@ export async function syncModels(): Promise<CloudModel[]> {
  */
 export async function focusCloudWindow(): Promise<void> {
   await invoke("cloud_focus_window").catch(() => { /* focus best-effort */ });
+}
+
+/**
+ * Ouvre la page de tarifs du portail Mira dans le navigateur système.
+ *
+ * Utilisé quand Orvyx refuse une requête faute de crédit : l'action utile pour
+ * l'utilisateur est de changer d'offre, pas de réessayer. L'URL est fabriquée
+ * côté Rust à partir de la base du plan de contrôle (jamais fournie par un
+ * modèle ni par l'utilisateur) — le front ne fait que l'ouvrir.
+ */
+export async function openUpgradePage(): Promise<void> {
+  const url = await invoke<string>("cloud_upgrade_url");
+  await openUrl(url);
 }
 
 /** Efface la session cloud côté poste (sans révoquer la clé Orvyx). */
