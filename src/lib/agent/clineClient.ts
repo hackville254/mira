@@ -615,6 +615,16 @@ export async function listExtensions(cwd: string): Promise<ClineSessionExtension
  * Toute erreur est journalisée mais JAMAIS jetée : une exception remonterait
  * dans le callback de `listen` (hors promesse) et laisserait le sidecar bloqué
  * jusqu'à son timeout. On garantit donc qu'une réponse part **toujours**.
+ *
+ * GARANTIE DE RÉPONSE (pourquoi le `catch` répond lui aussi)
+ * ---------------------------------------------------------
+ * `respondToInvoke` couvre déjà ses propres erreurs internes, mais une panne
+ * peut survenir AVANT d'y entrer (traduction, allowlist, résolution d'onglet qui
+ * lève). Le sidecar, lui, ne sait rien de ces étapes : il attend un
+ * `tool_invoke_response` jusqu'à son timeout (30 s) puis fait échouer l'outil
+ * avec « browser command timed out » — un message opaque qui masque la vraie
+ * cause. On émet donc ici une réponse d'échec EXPLICITE, pour que l'agent voie
+ * l'erreur réelle et puisse réagir, au lieu d'un timeout silencieux.
  */
 async function handleControlLine(
   control: ReturnType<typeof translateClineControlLine>,
@@ -632,6 +642,22 @@ async function handleControlLine(
     }
   } catch (error) {
     log.error("agent/clineClient", `échec du traitement d'une demande bloquante: ${describeError(error)}`);
+    // Une approbation/écriture non aboutie retombe sur son délai de sécurité
+    // (refus par défaut), mais un `tool_invoke` n'a AUCUN repli côté sidecar :
+    // sans cette réponse, l'outil échoue après 30 s avec un message trompeur.
+    if (control.kind === "tool_invoke") {
+      try {
+        await invoke("cline_sidecar_send", {
+          command: {
+            type: "tool_invoke_response",
+            requestId: control.request.requestId,
+            error: `internal error while handling ${control.request.command}: ${describeError(error)}`,
+          },
+        });
+      } catch (sendError) {
+        log.error("agent/clineClient", `impossible d'acquitter le tool_invoke: ${describeError(sendError)}`);
+      }
+    }
   }
 }
 
@@ -924,7 +950,14 @@ async function respondToInvoke(request: { requestId: string; command: string; ar
     if (result?.truncated) parts.push("(output truncated)");
     await reply({ output: parts.join("\n") });
   } catch (error) {
-    await reply({ error: describeError(error) });
+    // Le `reply` d'échec est isolé : si le canal est lui-même indisponible
+    // (sidecar arrêté), on ne relance pas — l'outil retombera sur son timeout
+    // côté sidecar, mais aucune exception ne doit remonter hors du handler.
+    try {
+      await reply({ error: describeError(error) });
+    } catch (sendError) {
+      log.error("agent/clineClient", `impossible d'acquitter l'échec du tool_invoke: ${describeError(sendError)}`);
+    }
   }
 }
 

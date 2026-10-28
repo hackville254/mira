@@ -14,6 +14,16 @@ edition = "2021"
 name = "mira_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# `default` = distribution directe (GitHub Releases) : l'auto-updater Tauri est
+# actif sur toutes les plateformes.
+default = []
+# `msstore` = build destiné au Microsoft Store (MSIX). L'updater Tauri est
+# DÉSACTIVÉ à la compilation : le Store gère lui-même les mises à jour, et un
+# updater concurrent écraserait le paquet géré par Windows (comportement
+# interdit par la politique du Store). Voir `src/distribution.rs`.
+msstore = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

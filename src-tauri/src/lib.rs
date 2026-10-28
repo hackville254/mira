@@ -10,6 +10,7 @@ mod context;
 mod dap;
 mod deep_link;
 mod default_skills;
+mod distribution;
 // `downloader` et `lsp_index` sont publics pour permettre au test d'intégration
 // réseau (`tests/lsp_install_e2e.rs`) de télécharger réellement un binaire LSP
 // et de vérifier son empreinte. Cela n'ajoute aucune commande `invoke`.
@@ -237,13 +238,20 @@ pub fn run() {
     #[cfg(not(desktop))]
     let builder = tauri::Builder::default();
 
+    // L'auto-updater Tauri n'est monté QUE hors Microsoft Store (cf.
+    // `distribution.rs` : sur MSIX, c'est le Store qui possède la mise à jour ;
+    // deux updaters concurrents corrompraient le paquet géré par Windows).
+    #[cfg(all(desktop, not(feature = "msstore")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(all(desktop, feature = "msstore"))]
+    let builder = builder;
+
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(terminal::TerminalState::new())
         .manage(lsp::LspState::new())
@@ -393,6 +401,9 @@ pub fn run() {
             extensions_store::delete_agent,
             skills_import::import_skills_from_repo,
             system::sys_memory,
+            // Canal de distribution (direct vs Microsoft Store) : le frontend
+            // masque le bouton de mise à jour quand le Store gère tout.
+            distribution::distribution_channel,
             env::detect_dev_environment,
             terminal::terminal_create,
             terminal::terminal_create_task,

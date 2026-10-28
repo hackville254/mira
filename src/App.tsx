@@ -25,6 +25,7 @@ import { getBranch } from "./lib/git";
 import { onGitDiff } from "./lib/gitDiffBus";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { canSelfUpdate } from "./lib/distribution";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { languageLabel } from "./components/editor/languageSupport";
@@ -319,19 +320,25 @@ function App() {
   // Check for updates once on startup; show a persistent toast if one is available.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs once on mount
   useEffect(() => {
-    checkForUpdate().then(async (update) => {
-      if (!update) return;
-      showToast(`Update available — v${update.version}`, 'info', {
-        label: 'Install & Restart',
-        onClick: async () => {
-          try {
-            showToast('Downloading update...', 'info');
-            await update.downloadAndInstall();
-            await relaunch();
-          } catch {
-            showToast('Update failed. Try again later.', 'error');
-          }
-        },
+    // Sur le Microsoft Store, le plugin updater n'est pas enregistré (c'est le
+    // Store qui met à jour) : ne jamais appeler check() dans ce cas, sinon
+    // l'IPC échoue. On interroge d'abord le canal de distribution.
+    canSelfUpdate().then(maySelfUpdate => {
+      if (!maySelfUpdate) return;
+      return checkForUpdate().then(async (update) => {
+        if (!update) return;
+        showToast(`Update available — v${update.version}`, 'info', {
+          label: 'Install & Restart',
+          onClick: async () => {
+            try {
+              showToast('Downloading update...', 'info');
+              await update.downloadAndInstall();
+              await relaunch();
+            } catch {
+              showToast('Update failed. Try again later.', 'error');
+            }
+          },
+        });
       });
     }).catch(() => { /* offline or no update endpoint configured */ });
   }, []);

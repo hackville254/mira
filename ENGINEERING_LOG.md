@@ -5,6 +5,152 @@
 
 ---
 
+### [2026-10-28T18:30] | Navigateur intégré : fin des échecs `browser command timed out` + bouton Stop qui disparaît
+
+- **Contexte :** deux bugs signalés sur l'agent utilisant le navigateur intégré :
+  1. les outils `browser_*` (surtout `browser_navigate`) échouaient avec
+     `Error: {"error":"browser command timed out"}` — message opaque ne
+     correspondant à aucun délai réel côté Rust ;
+  2. dès que le navigateur était lancé, **l'icône Stop** du panneau agent
+     **disparaissait**.
+
+- **Analyse (cause racine de #2) :** la webview native est créée via
+  `add_child` (Tauri 2) : elle est peinte **au-dessus de tout le HTML**, sans
+  rapport avec le `z-index` CSS. Sa géométrie est pilotée par
+  `resize_ide_panel`, elle-même déclenchée par un `ResizeObserver` qui
+  n'observait que `outerWrapperRef` ([WebPreviewPane.tsx](file:///Users/user/code/orvyx-desktop/origin/mira/src/components/editor/WebPreviewPane.tsx)).
+  Un `ResizeObserver` ne réagit qu'aux changements **de taille** : aucune
+  détection des **translations** ni des variations de taille d'un **ancêtre**.
+  Quand `AiPanel` s'élargit (drag du séparateur) ou que `TaskProgressBar`
+  apparaît, le panneau central se décale sans que la webview soit re-mesurée :
+  elle reste à ses anciennes coordonnées et **recouvre** le bouton Stop (qui vit
+  dans `AiPanel`, piloté par `isStreaming`).
+
+- **Analyse (cause racine de #1) :** le bus `tool_invoke` (sidecar Node) attend un
+  `tool_invoke_response` avec un timeout de 30 s ; en son absence l'outil échoue
+  avec ce message trompeur. Deux fuites possibles : (a) un échec **précoce** dans
+  `respondToInvoke` (allowlist, résolution d'onglet) pouvait ne pas être
+  acquitté ; (b) le `reply` d'échec du `catch` pouvait lui-même lever.
+
+- **Modifications effectuées :**
+  - `src/components/editor/WebPreviewPane.tsx` : l'effet de resynchronisation
+    observe désormais **toute la chaîne d'ancêtres** (jusqu'au `body`) via un
+    `ResizeObserver`, **plus** un `MutationObserver` sur les attributs
+    `style`/`class` des ancêtres (capte les translations pures). Les deux
+    notifient un `scheduleSync` coalescé par `requestAnimationFrame` → une seule
+    mesure par frame, pas de spam d'`invoke` pendant un drag.
+  - `src/lib/agent/clineClient.ts` : le `catch` de `respondToInvoke` isole son
+    `reply` d'échec (try/catch interne) pour garantir qu'**aucune exception ne
+    remonte** hors du handler (défense en profondeur sur la garantie de réponse).
+  - `src-tauri/cline-sidecar/src/index.ts` (session précédente, confirmé) :
+    `withTimeout` prend un `timeoutMs` explicite ; `INVOKE_TIMEOUT_MS = 30_000`
+    appliqué aux deux `invoke` (browser + origin) ; les chemins d'approbation
+    conservent 120 s ; constante morte supprimée.
+
+- **Décisions techniques :** observer les ancêtres plutôt que de recalculer en
+  boucle (polling) — on reste événementiel et déterministe ; le `MutationObserver`
+  est filtré sur `style`/`class` (attributs susceptibles de porter une
+  translation) et **ne** surveille **pas** les enfants, pour un coût négligeable.
+  On ne touche à rien d'autre dans la logique du navigateur.
+
+- **Impacts & Dépendances :** aucun changement d'API ni de contrat d'outil. Le
+  comportement visuel (webview bornée au conteneur, onglets inactifs hors écran)
+  est inchangé ; seule la réactivité géométrique s'améliore. Cas encore non
+  couvert : si l'écouteur `cline://event` est détaché (`dispose`) **pendant**
+  qu'un `tool_invoke` est en vol, la réponse peut manquer — non reproduit, laissé
+  tel quel pour ne pas élargir le périmètre.
+
+- **Prochaines étapes :** valider en local (lancement du navigateur depuis
+  l'agent → plus de timeout ; ouvrir/redimensionner le panneau agent → le bouton
+  Stop reste cliquable). Surveillance : si le timeout réapparaît, vérifier
+  l'ordre `abort()`/`dispose()` côté `AiPanel`.
+
+---
+
+### [2026-10-28T12:00] | Distribution multi-OS à coût nul : macOS ad-hoc, Windows via Microsoft Store, Linux AppImage/deb/rpm
+
+- **Contexte :** besoin de distribuer Mira sur macOS, Windows et Linux **sans
+  payer** de certificat OV/EV (Windows, ~70–300 $/an) ni de compte Apple
+  Developer (99 $/an), tout en supprimant au maximum les avertissements à
+  l'installation, et en gardant des mises à jour fonctionnelles.
+
+- **Contrainte de fond (mesurée, pas supposée) :** aucune signature GRATUITE
+  n'est « de confiance » pour SmartScreen/Gatekeeper (les CA facturent la
+  vérification d'identité). Conséquences retenues :
+  - **Windows** : un certificat auto-signé **n'enlève pas** SmartScreen et
+    obligerait l'utilisateur à installer la racine à la main (pire UX). → Seule
+    voie propre et gratuite = **Microsoft Store (MSIX)** : Microsoft signe le
+    paquet, l'utilisateur ne voit AUCUN avertissement. Décision : le Store est
+    le canal Windows officiel.
+  - **macOS** : signature **ad-hoc** (`APPLE_SIGNING_IDENTITY="-"`, gratuite) +
+    retrait de la quarantaine côté utilisateur ⇒ plus d'erreur « app
+    endommagée ». Reste « développeur non identifié » au 1er clic, contournable
+    (Clic droit ▸ Ouvrir). Acceptable, documenté.
+  - **Linux** : aucune signature requise ; distribution directe.
+
+- **Modifications effectuées :**
+  - `src-tauri/tauri.conf.json` : `bundle.targets` += `appimage, deb, rpm`
+    (Linux absent auparavant) ; ajout du bloc `bundle.macOS` (entitlements +
+    `minimumSystemVersion 10.15`) ; bloc `bundle.linux.deb`.
+  - `src-tauri/entitlements.plist` (nouveau) : entitlements macOS minimaux
+    (JIT WebView, mémoire exécutable non signée pour sidecar/LSP, réseau sortant,
+    fichiers). Volontairement **non sandboxé** (IDE : écrit partout, lance des
+    process) et **sans** `allow-unsigned-executable-memory=true` inutile.
+  - `src-tauri/tauri.microsoftstore.conf.json` (nouveau) : override de build
+    Store — NSIS `perMachine` + `webviewInstallMode: offlineInstaller`
+    (exigé par le Store pour un installateur hors-ligne).
+  - `src-tauri/msix/AppxManifest.xml` (nouveau) : manifeste MSIX
+    (FullTrust + internetClient, target 17763). `Identity/Name` et
+    `Publisher` = placeholders à remplir depuis le Partner Center.
+  - `src-tauri/msix/build-msix.ps1` (nouveau) : empaquette l'installeur NSIS +
+    assets icônes (dérivation auto des 7 visuels Store via System.Drawing),
+    substitution de version semver → quadripartite, appel à `MakeAppx`,
+    option `-SelfSign` (PFX de test) pour installation locale.
+  - `src-tauri/src/distribution.rs` (nouveau) : source de vérité du canal
+    (feature Cargo `msstore`) + commande `distribution_channel`.
+  - `src-tauri/Cargo.toml` : features `default` / `msstore`.
+  - `src-tauri/src/lib.rs` : l'updater Tauri est monté **uniquement** hors
+    `msstore` ; enregistrement de `distribution_channel`.
+  - `src/lib/distribution.ts` (nouveau) + `AboutSection.tsx` + `App.tsx` :
+    le front **n'appelle jamais** l'updater sur le Store (il n'y est pas
+    enregistré) ; l'écran Réglages › À propos affiche « géré par le Microsoft
+    Store » à la place du bouton.
+  - `package.json` : script `build:msstore`.
+  - `.github/workflows/release.yml` (nouveau) : CI macOS (universel, ad-hoc) +
+    Linux, avec signature minisign des artefacts de MAJ et release GitHub.
+
+- **Décisions techniques :**
+  - Choix **compile-time** (feature Cargo) pour le canal, pas runtime : le
+    binaire Store n'embarque même pas le code updater ⇒ impossible de se tromper,
+    et respect strict de la politique Store (deux updaters concurrents
+    corrompraient le paquet géré par Windows).
+  - La signature des mises à jour (minisign, `tauri-plugin-updater`) est
+    **indépendante** des signatures OS et **gratuite** : elle reste active sur
+    macOS ad-hoc et Linux. Le Store, lui, gère ses propres MAJ.
+  - MSIX plutôt que NSIS signé pour Windows : c'est la seule option gratuite
+    qui supprime réellement l'avertissement SmartScreen.
+
+- **Impacts & dépendances :**
+  - Nouveau contrat IPC `distribution_channel` (ajout, non breaking).
+  - Le build Windows **Store** doit utiliser `npm run build:msstore` (features +
+    config dédiée) puis `msix/build-msix.ps1`. Le build Windows hors Store
+    (`nsis`/`msi`) reste non signé (SmartScreen visible).
+  - CI : nécessite les secrets `TAURI_SIGNING_PRIVATE_KEY` (+
+    `_PASSWORD`). Le fichier `latest.json` de l'updater devra être publié en
+    asset de release « latest ».
+
+- **Prochaines étapes :**
+  1. Réserver le nom de l'app dans le Partner Center et renseigner
+     `Identity/Name` + `Identity/Publisher` dans `AppxManifest.xml`.
+  2. Créer le certificat auto-signé de test (PFX) pour valider le MSIX en local
+     avant soumission.
+  3. Vérifier la génération de `latest.json` au premier build macOS/Linux et le
+     publier.
+  4. À terme (optionnel) : notarisation macOS via compte Apple Developer, et
+     éventuelle signature OV Windows si distribution hors Store.
+
+---
+
 ### [2026-10-26T04:10] | Clé Orvyx : le coffre restait vide (secret non re-livrable) → rééquipement par rotation
 
 - **Contexte :** « la génération ne marche pas » + bouton « Open Mira » inerte.

@@ -487,23 +487,65 @@ export default function WebPreviewPane() {
     void o;
   }, [tabs, activeId, viewW, viewH, boundsFor]);
 
-  // Resynchronise la géométrie de l'onglet actif au redimensionnement.
+  // Resynchronise la géométrie de l'onglet actif après tout changement de
+  // layout susceptible de déplacer son conteneur.
+  //
+  // Pourquoi observer TOUTE la chaîne d'ancêtres et pas seulement le wrapper :
+  // la webview native est peinte AU-DESSUS du HTML, indépendamment du z-index.
+  // Si sa géométrie n'est pas mise à jour dès que le layout bouge, elle reste à
+  // ses anciennes coordonnées et recouvre le reste de l'UI — typiquement le
+  // bouton Stop du panneau agent quand `AiPanel` s'élargit (drag du séparateur)
+  // ou que la barre de progression apparaît.
+  //
+  // Un `ResizeObserver` ne se déclenche QUE sur changement de taille ; il rate
+  // donc les translations pures (ex. glissement horizontal sans changement de
+  // taille). On ajoute un `MutationObserver` sur les attributs `class`/`style`
+  // des ancêtres pour capter ces cas. Tous deux notifient `scheduleSync`, qui
+  // coalesce les rafales d'événements en une seule mesure avant le prochain
+  // repaint (sinon on spamme l'invoke natif pendant un drag).
   useEffect(() => {
     const outer = outerWrapperRef.current;
     if (!outer || !activeId) return;
-    const sync = () => {
+
+    let raf = 0;
+    const runSync = () => {
+      raf = 0;
       const panelId = panelIdForTab(activeId);
       const b = boundsFor(activeId);
       if (b) void invoke('resize_ide_panel', { panelId, ...b }).catch(() => {});
     };
-    const ro = new ResizeObserver(sync);
-    ro.observe(outer);
-    window.addEventListener('resize', sync);
-    window.addEventListener('scroll', sync, true);
+    const scheduleSync = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(runSync);
+    };
+
+    // 1) Taille : on observe le wrapper ET tous ses ancêtres (jusqu'au body) —
+    //    le panneau central change de largeur quand AiPanel est redimensionné.
+    const ro = new ResizeObserver(scheduleSync);
+    const ancestors: Element[] = [];
+    for (let el: Element | null = outer; el; el = el.parentElement) {
+      ro.observe(el);
+      ancestors.push(el);
+      if (el === document.body) break;
+    }
+
+    // 2) Translation : les changements de `style`/`class` d'un ancêtre (drag du
+    //    séparateur, apparition/disparition de la barre de tâches…) déplacent le
+    //    conteneur sans changer sa taille. On surveille uniquement ces attributs
+    //    du sous-arbre, jamais le contenu ni les enfants (coût négligeable).
+    const mo = new MutationObserver(scheduleSync);
+    for (const el of ancestors) {
+      mo.observe(el, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
+
+    window.addEventListener('resize', scheduleSync);
+    window.addEventListener('scroll', scheduleSync, true);
     return () => {
+      if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
-      window.removeEventListener('resize', sync);
-      window.removeEventListener('scroll', sync, true);
+      mo.disconnect();
+      window.removeEventListener('resize', scheduleSync);
+      window.removeEventListener('scroll', scheduleSync, true);
     };
   }, [activeId, boundsFor]);
 

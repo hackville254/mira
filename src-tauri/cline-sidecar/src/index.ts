@@ -433,9 +433,19 @@ function nextRequestId(prefix: string): string {
  */
 const APPROVAL_TIMEOUT_MS = 120_000;
 
-function withTimeout<T>(promise: Promise<T>, fallback: T): Promise<T> {
+/**
+ * Délai maximal d'attente d'une réponse `tool_invoke_response`.
+ *
+ * PLUS COURT QUE L'APPROBATION : un invoke navigateur est une opération
+ * technique (toucher une webview), pas une décision humaine. Au-delà de 30 s,
+ * le front est considéré injoignable et l'outil échoue explicitement — l'agent
+ * peut alors réessayer ou changer de stratégie au lieu de rester bloqué 2 min.
+ */
+const INVOKE_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(fallback), APPROVAL_TIMEOUT_MS);
+    const timer = setTimeout(() => resolve(fallback), timeoutMs);
     void promise.then((value) => {
       clearTimeout(timer);
       resolve(value);
@@ -458,7 +468,7 @@ const transport: ApprovalTransport = {
       policy: req.policy,
     });
     // Refus par défaut en cas d'absence de réponse : sûr par construction.
-    return withTimeout(promise, { approved: false, reason: "approval_timeout" });
+    return withTimeout(promise, { approved: false, reason: "approval_timeout" }, APPROVAL_TIMEOUT_MS);
   },
 
   notifyWrite(paths: string[]): Promise<void> {
@@ -468,7 +478,7 @@ const transport: ApprovalTransport = {
     });
     emit({ kind: "tool_write", requestId, paths });
     // Une écriture imminente ne doit pas bloquer l'agent : on borne l'attente.
-    return withTimeout(promise, undefined);
+    return withTimeout(promise, undefined, APPROVAL_TIMEOUT_MS);
   },
 };
 
@@ -487,8 +497,6 @@ const transport: ApprovalTransport = {
  * En cas de non-réponse (front fermé), on échoue EXPLICITEMENT : un outil
  * navigateur qui « réussirait » sans rien faire tromperait le modèle.
  */
-const INVOKE_TIMEOUT_MS = 30_000;
-
 function browserInvoke(panelId: string): (req: BrowserInvokeRequest) => Promise<string> {
   return (req) => {
     const requestId = nextRequestId("invoke");
@@ -501,7 +509,7 @@ function browserInvoke(panelId: string): (req: BrowserInvokeRequest) => Promise<
       command: req.command,
       args: { ...req.args, panelId },
     });
-    return withTimeout(promise, "__origin_invoke_timeout__").then((value) => {
+    return withTimeout(promise, "__origin_invoke_timeout__", INVOKE_TIMEOUT_MS).then((value) => {
       if (value === "__origin_invoke_timeout__") {
         // Le résolveur peut encore être en table : on le retire pour ne pas
         // fuiter si une réponse tardive arrivait.
@@ -534,7 +542,7 @@ function originInvoke(command: string, args: Record<string, unknown>): Promise<s
     pendingInvokes.set(requestId, resolve);
   });
   emit({ kind: "tool_invoke", requestId, command, args });
-  return withTimeout(promise, "__origin_invoke_timeout__").then((value) => {
+  return withTimeout(promise, "__origin_invoke_timeout__", INVOKE_TIMEOUT_MS).then((value) => {
     if (value === "__origin_invoke_timeout__") {
       pendingInvokes.delete(requestId);
       throw Object.assign(new Error("invoke command timed out"), {

@@ -20,6 +20,7 @@ import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ExternalLink, RefreshCw, Check } from "lucide-react";
 import { Button, sectionCard } from "./ui";
+import { getDistributionChannel } from "../../lib/distribution";
 import logoSrc from "../../assets/logo-code.svg";
 
 type UpdateState =
@@ -38,10 +39,16 @@ export default function AboutSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [name, setName] = useState<string>("Mira");
   const [update, setUpdate] = useState<UpdateState>({ kind: "idle" });
+  const [storeManaged, setStoreManaged] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion(null));
     getName().then(n => { if (n) setName(n); }).catch(() => { /* repli sur « Mira » */ });
+    // Si l'app vient du Microsoft Store, c'est le Store qui gère les mises à
+    // jour : on masque le bouton manuel (les appels updater échoueraient).
+    getDistributionChannel()
+      .then(ch => setStoreManaged(ch === "microsoft_store"))
+      .catch(() => { /* repli direct */ });
   }, []);
 
   async function runCheck() {
@@ -94,14 +101,18 @@ export default function AboutSection() {
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, color: "var(--origin-fg-default)" }}>Updates</div>
             <div style={{ fontSize: 11.5, color: "var(--origin-fg-muted)", marginTop: 3 }}>
-              {update.kind === "checking" && "Checking…"}
-              {update.kind === "uptodate" && "You're on the latest version."}
-              {update.kind === "available" && `Version ${update.version} available.`}
-              {update.kind === "error" && update.message}
-              {update.kind === "idle" && "Check if a new version is available."}
+              {storeManaged
+                ? "Updates are managed by the Microsoft Store."
+                : update.kind === "checking" ? "Checking…"
+                : update.kind === "uptodate" ? "You're on the latest version."
+                : update.kind === "available" ? `Version ${update.version} available.`
+                : update.kind === "error" ? update.message
+                : "Check if a new version is available."}
             </div>
           </div>
-          {update.kind === "available" ? (
+          {storeManaged ? (
+            <span style={{ fontSize: 11.5, color: "var(--origin-fg-subtle)" }}>via Microsoft Store</span>
+          ) : update.kind === "available" ? (
             <Button variant="primary" onClick={() => void update.install()}>Install and restart</Button>
           ) : update.kind === "uptodate" ? (
             <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--origin-semantic-success, #2ea043)" }}>

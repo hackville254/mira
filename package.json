@@ -10,6 +10,7 @@
     "build": "npm run build:sidecar && tauri build",
     "build:frontend": "tsc && vite build",
     "build:sidecar": "node scripts/build-sidecar.mjs",
+    "build:msstore": "npm run build:sidecar && tauri build --config src-tauri/tauri.microsoftstore.conf.json --features msstore",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

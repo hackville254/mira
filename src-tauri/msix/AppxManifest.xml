@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifeste MSIX pour la publication Microsoft Store.
+
+  CONTRAINTES (imposées par le Partner Center, à ne pas casser) :
+  - Identity/@Name      : doit correspondre EXACTEMENT au « Package/Identity Name »
+                          réservé dans le Partner Center.
+  - Identity/@Publisher : doit correspondre EXACTEMENT au « Publisher »
+                          (CN=...) affiché dans le Partner Center.
+  - Identity/@Version   : DOIT être au format quadripartite X.Y.Z.0 (le semver
+                          de Cargo/tauri.conf ne suffit pas). Le script
+                          `build-msix.ps1` substitue ce placeholder au build.
+  - ProcessorArchitecture : x64 (les cibles Store x64/x86/arm64 doivent être
+                          packagées séparément si multi-arch).
+
+  Ces deux premiers champs sont donc des PLACEHOLDERS : renseigne-les après
+  avoir réservé le nom de l'app dans le Partner Center. Ils ne doivent pas être
+  inventés (sinon la soumission est rejetée).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="REPLACE_WITH_PARTNER_CENTER_IDENTITY_NAME"
+    Publisher="REPLACE_WITH_PARTNER_CENTER_PUBLISHER_CN"
+    Version="__VERSION__"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Mira</DisplayName>
+    <PublisherDisplayName>Mira IDE</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <!-- Description courte requise par le Store. -->
+    <Description>Mira — éditeur de code natif assisté par IA.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 1809 (build 17763) : minimum raisonnable pour WebView2 +
+         FullTrust. Ne pas descendre plus bas sans raison. -->
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="fr-fr" />
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Mira"
+                 Executable="Mira.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Mira"
+        Description="Éditeur de code natif assisté par IA."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png"
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          ShortName="Mira" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      runFullTrust est INDISPENSABLE : Mira lance des processus (terminal PTY,
+      git, serveurs LSP, sidecar Node) et lit/écrit hors du conteneur. Sans lui,
+      l'app ne démarre pas. C'est la capacité la plus large ; elle est justifiée
+      par la nature IDE de l'application.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+    <Capability Name="internetClient" />
+  </Capabilities>
+</Package>
