@@ -27,14 +27,24 @@ if (!existsSync(sidecarDir)) {
   process.exit(1);
 }
 
-const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+const isWindows = process.platform === "win32";
 
-/** Exécute une commande npm dans le dossier du sidecar, en héritant stdio. */
+/**
+ * Exécute une commande npm dans le dossier du sidecar, en héritant stdio.
+ *
+ * `shell: true` sur Windows — OBLIGATOIRE : depuis Node 18.20.2 / 20.12.2
+ * (correctif CVE-2024-27980), `spawn` refuse d'exécuter un `.cmd`/`.bat`
+ * (`npm.cmd`) sans passer par le shell et échoue avec `EINVAL`. Le build CI
+ * Windows cassait exactement là. Les arguments étant des littéraux fixes
+ * ("ci", "install", "run", "build"), activer le shell n'introduit aucune
+ * surface d'injection.
+ */
 function run(args) {
-  const res = spawnSync(npmCmd, args, {
+  const res = spawnSync(isWindows ? "npm.cmd" : "npm", args, {
     cwd: sidecarDir,
     stdio: "inherit",
     env: process.env,
+    shell: isWindows,
   });
   if (res.error) {
     console.error(`[build-sidecar] échec d'exécution : ${res.error.message}`);
