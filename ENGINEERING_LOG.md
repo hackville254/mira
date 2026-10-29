@@ -5,6 +5,31 @@
 
 ---
 
+### [2026-10-29T14:30] | Distribution macOS : signature auto-signée (gratuite) + DMG signé
+
+- **Contexte :** distribution publique sans budget Apple Developer (99 $/an).
+  Le build adhoc précédent produisait une signature instable/identifiable.
+- **Modifications effectuées :**
+  - Nouveau [scripts/macos-sign.sh](scripts/macos-sign.sh) :
+    génère un certificat self-signed **"Mira Developer"** (RSA-4096, 10 ans,
+    **EKU Code Signing obligatoire** — sans lui `find-identity -p codesigning`
+    renvoie 0 identités), l'importe dans le keychain login via PKCS#12
+    `-legacy` (OpenSSL 3.6 `security` MAC incompat.), le marque `trustRoot`/
+    `codeSign`, puis signe le `.app` (hardened runtime + entitlements).
+  - Option `MIRA_BUILD_DMG=1` : régénère le DMG **après** signature
+    (`hdiutil`) + empreinte SHA-512 base64 (format updater Tauri).
+- **Décisions techniques :**
+  - Le bundler Tauri `--bundles dmg` **recrée** l'app en adhoc et supprime
+    même le `.app` précédent → le DMG doit impérativement être construit
+    après la signature, jamais via le bundler ensuite.
+  - Certificat signé avec timestamp + hardened runtime : durable et à jour.
+- **Impacts :** `.dmg` produits dans `src-tauri/target/release/bundle/dmg/`
+  porte maintenant `Authority=Mira Developer` (vérifié après montage).
+  Gatekeeper reste `rejected` (normal sans notarisation Apple) : les
+  utilisateurs font Clic droit ▸ Ouvrir au 1er lancement.
+- **Prochaines étapes :** brancher ce script en CI (macos runner) si l'on
+  abandonne l'ad-hoc dans release.yml ; évaluer l'App Store pour notarisation gratuite.
+
 ### [2026-10-28T18:30] | Navigateur intégré : fin des échecs `browser command timed out` + bouton Stop qui disparaît
 
 - **Contexte :** deux bugs signalés sur l'agent utilisant le navigateur intégré :
