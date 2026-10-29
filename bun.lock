@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "origin",
+      "name": "mira",
       "dependencies": {
         "@ai-sdk/anthropic": "^3.0.84",
         "@ai-sdk/google": "^3.0.82",

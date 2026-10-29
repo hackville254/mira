@@ -32,7 +32,7 @@ type UpdateState =
 
 const LINKS: Array<{ label: string; url: string; hint: string }> = [
   { label: "Documentation", url: "https://docs.trae.ai", hint: "Guides and reference" },
-  { label: "Report an issue", url: "https://github.com/Origin-AI-IDE/origin/issues", hint: "Open a ticket" },
+  { label: "Report an issue", url: "https://github.com/hackville254/mira/issues", hint: "Open a ticket" },
 ];
 
 export default function AboutSection() {

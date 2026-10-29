@@ -5,6 +5,34 @@
 
 ---
 
+### [2026-10-29T18:20] | Renommage résiduel « origin » → « Mira » (surfaces visibles)
+
+- **Contexte :** après rebranding, des chaînes « origin » restaient visibles :
+  log npm/CI `> origin@0.1.4 …`, log esbuild (`__originCreateRequire`), et le
+  lien « Report an issue » qui pointait vers un dépôt inexistant
+  (`github.com/Origin-AI-IDE/origin` → 404).
+- **Modifications effectuées :**
+  - `package.json`, `package-lock.json`, `bun.lock` : `name` → `mira`.
+  - `src-tauri/cline-sidecar/package.json` + lock : `mira-cline-sidecar`.
+  - `src-tauri/cline-sidecar/package.json` : variable du banner esbuild
+    `__originCreateRequire` → `__miraCreateRequire` (renommage local au bundle,
+    aucun impact runtime).
+  - `src/components/settings/AboutSection.tsx` : URL « Report an issue » →
+    `https://github.com/hackville254/mira/issues`.
+- **Décisions Techniques :**
+  - Périmètre limité aux chaînes **observables** (logs de build, UI). Les
+    identifiants internes (`OriginTheme`, variables CSS `--origin-*`, clés
+    `localStorage` `origin-*`, API d'extension `origin`) sont **conservés** :
+    les renommer n'apporte aucun bénéfice client et casserait la compatibilité
+    des réglages/thèmes/extensions déjà persistés (migration gratuite = risque
+    de régression élevé).
+- **Impacts & Dépendances :** les logs de build affichent désormais
+  `mira@0.1.4` / `mira-cline-sidecar@0.1.0`. Aucun changement fonctionnel.
+- **Prochaines étapes :** rebuild de l'app (le binaire installé conserve
+  l'ancien branding tant qu'il n'est pas reconstruit).
+
+---
+
 ### [2026-10-29T17:40] | CI : validation sur PR vers `main`
 
 - **Contexte :** les builds n'étaient déclenchés que sur tag (`release.yml`) ou
