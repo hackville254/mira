@@ -31,7 +31,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/Origin-AI-IDE/origin/releases/latest/download/latest.json"
+        "https://github.com/hackville254/mira/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4NjgwODA5OUE5MUFGMTUKUldRVnI1R2FDUWhvT0crTVBMM3IvelRlSmx2c0UwWHJXSjRITjJYMXYrQmxhMWtNUmMxTFlhaXQK",
       "windows": {

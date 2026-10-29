@@ -5,6 +5,60 @@
 
 ---
 
+### [2026-10-29T18:10] | Windows Store : paquet MSIX correct + workflow CI dédié
+
+- **Contexte :** le premier jet de `build-msix.ps1` empaquetait l'installeur NSIS
+  (`MiraSetup.exe`) alors que `AppxManifest.xml` déclarait
+  `Application/@Executable="Mira.exe"`. Un MSIX n'est **pas** un conteneur
+  d'installeur : c'est un paquet contenant l'application elle-même. Le paquet
+  aurait donc été rejeté en certification (et n'aurait pas démarré). Les
+  identifiants Partner Center (produit « Application MSIX ou PWA ») sont
+  désormais renseignés dans le manifeste.
+- **Modifications effectuées :**
+  - `src-tauri/msix/build-msix.ps1` : packager `target/release/mira.exe` +
+    les ressources déclarées dans `bundle.resources` (lues depuis
+    `tauri.conf.json`, aucune liste dupliquée). Ajout d'un garde-fou :
+    `Application/@Executable` (parsé en XML) doit exister dans le paquet,
+    sinon échec explicite.
+  - `src-tauri/msix/AppxManifest.xml` : `Executable="mira.exe"` (nom réel du
+    binaire Cargo), `Identity`/`Publisher`/`PublisherDisplayName` = valeurs
+    Partner Center (`MiraCoder.MiraCoder`).
+  - `package.json` : `build:msstore` → `tauri build --no-bundle` (on ne veut
+    ni NSIS ni artefacts updater, seulement le binaire + ressources).
+  - `src-tauri/tauri.microsoftstore.conf.json` : `createUpdaterArtifacts:false`
+    (le Store gère les MAJ ; évite un échec de signature minisign en CI).
+  - Nouveau `.github/workflows/windows-msix.yml` : build sur `windows-latest`,
+    packaging MSIX, **vérification du contenu du paquet** (zip : manifeste,
+    `mira.exe`, assets), upload de l'artefact.
+  - **Emplacement corrigé** : les workflows étaient dans `origin/.github/`,
+    un dossier **hors de tout dépôt git** (le repo est `mira`, remote
+    `hackville254/mira`) → ils n'ont jamais été exécutés par GitHub. Déplacés
+    dans `mira/.github/workflows/` et chemins réécrits pour une racine = `mira`
+    (plus de préfixe `mira/`, plus de `working-directory: mira`).
+  - **Endpoint updater corrigé** dans `tauri.conf.json` :
+    `Origin-AI-IDE/origin` → `hackville254/mira` (l'ancienne URL renvoyait un
+    404, les mises à jour n'auraient jamais fonctionné).
+- **Décisions techniques :**
+  - Voie MSIX (et non « EXE/MSI » recommandée par Tauri) car c'est la **seule**
+    voie gratuite où Microsoft signe le paquet → plus d'avertissement
+    SmartScreen. La voie EXE/MSI exige un certificat de signature de code payant.
+  - `--no-bundle` : le config MSIX du Store (offline WebView2, perMachine)
+    ne concerne que la voie NSIS abandonnée ; inutile de la payer en temps de
+    build et en artefacts.
+  - Garde-fou + vérification CI : ce bug est silencieux en local (Windows
+    uniquement) et coûte des cycles de certification (1-3 jours ouvrés).
+- **Impacts :** le canal Windows ne dépend plus de l'updater Tauri (feature
+  `msstore` déjà en place). Les versions MSIX sont dérivées de
+  `Cargo.toml` → **doivent être incrémentées** à chaque soumission.
+- **Prochaines étapes :**
+  1. lancer le workflow, télécharger `windows-msix`, soumettre dans Partner
+     Center (justification requise pour `runFullTrust`) ;
+  2. **`latest.json` manquant** : `tauri build` NE génère PAS ce manifeste
+     d'updater (c'est `tauri-action` qui le fait). Tant qu'il n'est pas publié
+     dans la release `latest`, l'auto-update macOS/Linux reste silencieusement
+     inopérant — à implémenter (génération du JSON à partir des `.sig`) ;
+  3. valider une première installation MSIX sur un PC Windows via `-SelfSign`.
+
 ### [2026-10-29T14:30] | Distribution macOS : signature auto-signée (gratuite) + DMG signé
 
 - **Contexte :** distribution publique sans budget Apple Developer (99 $/an).

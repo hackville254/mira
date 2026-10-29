@@ -1,0 +1,96 @@
+# Windows MSIX — paquet pour le Microsoft Store.
+#
+# PÉRIMÈTRE
+# ---------
+# Produit un `.msix` prêt à téléverser dans Partner Center
+# (Apps and Games > Mira > Packages). Le Store signe le paquet : aucune
+# signature locale n'est nécessaire, donc aucun certificat payant.
+#
+# Ce workflow est SÉPARÉ de `release.yml` (macOS/Linux + auto-updater) car :
+#   - le canal Windows Store n'utilise PAS l'updater Tauri (le Store gère les
+#     mises à jour) → build avec la feature `msstore` ;
+#   - il exige un runner Windows (MakeAppx / Windows SDK).
+#
+# USAGE
+# -----
+#   - Actions > "Windows MSIX" > Run workflow
+#   - ou push d'un tag `v*` (artefact attaché au run, PAS à la release GitHub)
+# Télécharger l'artefact `windows-msix`, puis :
+#   Partner Center > Packages > upload .msix > Submit for certification.
+#
+# VERSION
+# -------
+# La version MSIX est dérivée de src-tauri/Cargo.toml (X.Y.Z -> X.Y.Z.0).
+# Le Store REFUSE une version inférieure ou égale à la précédente :
+# incrémenter la version avant chaque nouvelle soumission.
+
+name: Windows MSIX
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-msix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msix:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install deps
+        run: npm ci
+
+      # --no-bundle : on ne veut pas d'installeur, seulement le binaire + les
+      # ressources (assemblés en MSIX par l'étape suivante).
+      - name: Build (Windows, feature msstore)
+        run: npm run build:msstore
+
+      - name: Package MSIX
+        shell: pwsh
+        run: ./src-tauri/msix/build-msix.ps1
+
+      # Validation du paquet produit : le binaire déclaré dans le manifeste doit
+      # réellement être présent (cause de rejet Store la plus fréquente).
+      - name: Verify package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Get-ChildItem 'src-tauri/target/release/msix/*.msix' | Select-Object -First 1
+          if (-not $msix) { throw 'Aucun .msix produit.' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+            foreach ($required in @('AppxManifest.xml', 'mira.exe', 'Assets/Square150x150Logo.png')) {
+              if ($names -notcontains $required) { throw "Entrée manquante dans le MSIX : $required" }
+            }
+            Write-Host "OK : $($msix.Name) ($([math]::Round($msix.Length / 1MB, 2)) Mo) — $($names.Count) entrées"
+          } finally { $zip.Dispose() }
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msix
+          path: src-tauri/target/release/msix/*.msix
+          if-no-files-found: error
+          retention-days: 90

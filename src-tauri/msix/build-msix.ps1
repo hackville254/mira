@@ -1,15 +1,23 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Empaquette la sortie de `tauri build` (installateur NSIS) en un paquet MSIX
-  prêt à soumettre au Microsoft Store.
+  Empaquette la sortie de `tauri build --no-bundle` (application compilée)
+  en un paquet MSIX prêt à soumettre au Microsoft Store.
 
 .DESCRIPTION
   Tauri ne sait pas produire de MSIX nativement. Ce script :
     1. lit la version depuis src-tauri/Cargo.toml (convertie en X.Y.Z.0) ;
-    2. copie l'installeur NSIS + les assets Store dans une arborescence de package ;
+    2. copie les fichiers RÉELS de l'application (mira.exe + ressources
+       déclarées dans bundle.resources) + les assets Store dans une
+       arborescence de package ;
     3. substitue __VERSION__ dans AppxManifest.xml ;
     4. construit le MSIX avec MakeAppx.exe.
+
+  IMPORTANT (erreur historique corrigée) :
+    Un MSIX n'est pas un conteneur d'installeur : il DOIT contenir
+    l'application elle-même. Les versions précédentes de ce script
+    empaquetaient l'installeur NSIS (`MiraSetup.exe`) alors que le manifeste
+    déclare `Executable="mira.exe"` → paquet invalide et rejet Store garanti.
 
   IMPORTANT (Store) :
     - Identity/Name et Identity/Publisher doivent être renseignés dans
@@ -25,8 +33,7 @@
   uniquement). Sans ce flag, le paquet n'est pas signé (cas soumission Store).
 
 .PARAMETER CertPath
-  Chemin d'un certificat PFX de test. Requis avec -SelfSign si aucun certificat
-  n'est fourni dans le magasin utilisateur.
+  Chemin d'un certificat PFX de test. Requis avec -SelfSign.
 
 .EXAMPLE
   # Paquet pour le Store (non signé) :
@@ -51,9 +58,9 @@ $iconsDir     = Join-Path $tauriDir 'icons'
 $manifestSrc  = Join-Path $scriptDir 'AppxManifest.xml'
 $cargoToml    = Join-Path $tauriDir 'Cargo.toml'
 
-# Sortie du build Tauri (NSIS). Adapter le chemin selon le profil/target.
+# Sortie du build Tauri (`tauri build --no-bundle`) : binaire + ressources.
 $releaseDir   = Join-Path $tauriDir 'target\release'
-$nsisDir      = Join-Path $releaseDir 'bundle\nsis'
+$tauriConf    = Join-Path $tauriDir 'tauri.conf.json'
 
 # Dossier de travail du package.
 $pkgDir       = Join-Path $releaseDir 'msix\package'
@@ -76,17 +83,45 @@ Write-Host "Préparation du dossier de package..."
 if (Test-Path $pkgDir) { Remove-Item -Recurse -Force $pkgDir }
 New-Item -ItemType Directory -Force -Path $pkgDir, $assetsDir | Out-Null
 
-# 2a. Installeur NSIS : le Store exige un installeur OFFLINE (WebView2 embarqué,
-#     cf. tauri.microsoftstore.conf.json). On prend le premier .exe présent.
-$installer = Get-ChildItem -Path $nsisDir -Filter '*setup.exe' -ErrorAction SilentlyContinue |
-             Select-Object -First 1
-if (-not $installer) {
-  Fail "Installeur NSIS introuvable dans $nsisDir. Lance d'abord :`n  npm run tauri build -- --config src-tauri/tauri.microsoftstore.conf.json"
+# 2a. Application réelle : le MSIX contient le binaire et ses ressources.
+#     Le nom du binaire DOIT correspondre à Application/@Executable du manifeste.
+$appExe = Join-Path $releaseDir 'mira.exe'
+if (-not (Test-Path $appExe)) {
+  Fail "mira.exe introuvable dans $releaseDir. Lance d'abord :`n  npm run build:msstore"
 }
-Copy-Item $installer.FullName (Join-Path $pkgDir 'MiraSetup.exe')
-Write-Host "  + Installeur : $($installer.Name)"
+Copy-Item $appExe (Join-Path $pkgDir 'mira.exe')
+Write-Host "  + Binaire : mira.exe"
 
-# 2b. Assets Store : on mappe les icônes Tauri existantes vers les noms exigés
+# 2b. Ressources déclarées dans bundle.resources : on lit la config Tauri pour
+#     rester synchronisé (aucune liste dupliquée dans ce script). Tauri les
+#     copie à côté du binaire dans target\release.
+if (-not (Test-Path $tauriConf)) { Fail "tauri.conf.json introuvable: $tauriConf" }
+$conf = Get-Content $tauriConf -Raw | ConvertFrom-Json
+$resources = $conf.bundle.resources
+if ($null -ne $resources) {
+  $resourceKeys = if ($resources -is [System.Management.Automation.PSCustomObject]) {
+    $resources.PSObject.Properties.Name
+  } else {
+    @($resources)
+  }
+  foreach ($rel in $resourceKeys) {
+    $src = Join-Path $releaseDir $rel
+    if (-not (Test-Path $src)) {
+      Fail "Ressource absente du build : $rel (attendu dans $releaseDir). Lance d'abord : npm run build:msstore"
+    }
+    $dst = Join-Path $pkgDir $rel
+    $dstParent = Split-Path -Parent $dst
+    if (-not (Test-Path $dstParent)) { New-Item -ItemType Directory -Force -Path $dstParent | Out-Null }
+    if ((Get-Item $src).PSIsContainer) {
+      Copy-Item $src $dst -Recurse -Force
+    } else {
+      Copy-Item $src $dst -Force
+    }
+    Write-Host "  + Ressource : $rel"
+  }
+}
+
+# 2c. Assets Store : on mappe les icônes Tauri existantes vers les noms exigés
 #     par AppxManifest.xml. Noms Store requis :
 #       StoreLogo.png, Square44x44Logo.png, Square150x150Logo.png,
 #       Square310x310Logo.png, Square71x71Logo.png,
@@ -143,6 +178,17 @@ $manifest = $manifest -replace '__VERSION__', $msixVer
 $utf8 = New-Object System.Text.UTF8Encoding($false) # pas de BOM (exigé)
 [System.IO.File]::WriteAllText((Join-Path $pkgDir 'AppxManifest.xml'), $manifest, $utf8)
 Write-Host "  + AppxManifest.xml (v$msixVer)"
+
+# Garde-fou anti-régression : Application/@Executable doit exister dans le
+# paquet, sinon le Store rejette la soumission (et l'app ne démarre pas).
+$entryExe = ([xml]$manifest).Package.Applications.Application.Executable
+if (-not $entryExe) {
+  Fail "AppxManifest.xml : Application/@Executable introuvable."
+}
+if (-not (Test-Path (Join-Path $pkgDir $entryExe))) {
+  Fail "Application/@Executable='$entryExe' absent du paquet. Nom de binaire incohérent entre le manifeste et la sortie de build."
+}
+Write-Host "  + Point d'entrée vérifié : $entryExe"
 
 # --- 4. Construction du MSIX ------------------------------------------------
 # Localisation de MakeAppx.exe (Windows SDK).

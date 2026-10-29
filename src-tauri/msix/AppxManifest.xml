@@ -13,9 +13,12 @@
   - ProcessorArchitecture : x64 (les cibles Store x64/x86/arm64 doivent être
                           packagées séparément si multi-arch).
 
-  Ces deux premiers champs sont donc des PLACEHOLDERS : renseigne-les après
-  avoir réservé le nom de l'app dans le Partner Center. Ils ne doivent pas être
-  inventés (sinon la soumission est rejetée).
+  - Application/@Executable : doit correspondre au binaire produit par Tauri
+                          (target/release/mira.exe). Un MSIX contient
+                          l'application, PAS un installeur.
+
+  Les valeurs Identity ci-dessous proviennent du Partner Center : ne pas les
+  modifier sans mettre à jour le produit Store correspondant.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -24,17 +27,17 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="REPLACE_WITH_PARTNER_CENTER_IDENTITY_NAME"
-    Publisher="REPLACE_WITH_PARTNER_CENTER_PUBLISHER_CN"
+    Name="MiraCoder.MiraCoder"
+    Publisher="CN=775E5F9A-80F8-49D3-BB57-0ECB6D494B16"
     Version="__VERSION__"
     ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Mira</DisplayName>
-    <PublisherDisplayName>Mira IDE</PublisherDisplayName>
+    <PublisherDisplayName>Mira Coder</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <!-- Description courte requise par le Store. -->
-    <Description>Mira — éditeur de code natif assisté par IA.</Description>
+    <Description>Mira Coder - éditeur de code natif assisté par IA.</Description>
   </Properties>
 
   <Dependencies>
@@ -51,8 +54,10 @@
   </Resources>
 
   <Applications>
+    <!-- Executable DOIT correspondre au binaire produit par Tauri
+         (src-tauri/Cargo.toml -> target/release/mira.exe). -->
     <Application Id="Mira"
-                 Executable="Mira.exe"
+                 Executable="mira.exe"
                  EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Mira"
