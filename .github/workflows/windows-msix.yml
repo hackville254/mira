@@ -95,10 +95,15 @@ jobs:
             Write-Host "OK : $($msix.Name) ($([math]::Round($msix.Length / 1MB, 2)) Mo) — $($names.Count) entrées"
           } finally { $zip.Dispose() }
 
+      # Le logo 300×300 n'entre PAS dans le MSIX : c'est une image de la fiche
+      # Store (« Store listings » > Logo du Store). On le livre dans l'artefact
+      # pour pouvoir le télécharger depuis la CI.
       - name: Upload MSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-msix
-          path: src-tauri/target/release/msix/*.msix
+          path: |
+            src-tauri/target/release/msix/*.msix
+            src-tauri/msix/store-listing/StoreLogo-300x300.png
           if-no-files-found: error
           retention-days: 90

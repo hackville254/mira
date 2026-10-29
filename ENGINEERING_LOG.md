@@ -5,6 +5,47 @@
 
 ---
 
+### [2026-10-29T18:35] | Store : nom d'affichage réservé + logo 300×300 de la fiche
+
+- **Contexte :** soumission Partner Center rejetée —
+  « Le manifeste de ce package (Package/Properties/DisplayName) utilise un nom
+  d'affichage que vous n'avez pas réservé : Mira ».
+  Le nom réellement réservé côté Partner Center est **Mira Coder**.
+  Demande complémentaire : fournir l'icône de la fiche Store.
+- **Modifications effectuées :**
+  - `src-tauri/msix/AppxManifest.xml` : `Properties/DisplayName` et
+    `uap:VisualElements/@DisplayName` → **Mira Coder** (nom réservé).
+    `uap:DefaultTile/@ShortName` reste « Mira » (libellé de tuile, non soumis à
+    réservation, limite 40 caractères respectée).
+  - `src-tauri/msix/build-msix.ps1` : deux garde-fous bloquants avant MakeAppx —
+    (a) les deux DisplayName doivent être non vides et identiques ;
+    (b) chaque `Assets\*.png` référencé par le manifeste doit exister dans le
+    paquet (évite les tuiles vides).
+  - `src-tauri/msix/store-listing/StoreLogo-300x300.png` : logo 300×300 dérivé
+    de `src-tauri/icons/icon.png` (logo Mira), pour
+    Partner Center → Store listings → Logo du Store.
+  - `.github/workflows/windows-msix.yml` : le logo 300×300 est joint à
+    l'artefact `windows-msix` (téléchargeable depuis la CI).
+- **Décisions Techniques :**
+  - On aligne le manifeste sur le **nom réservé existant** plutôt que de
+    renommer le produit Store : c'est la seule modification qui débloque la
+    validation sans dépendre d'une disponibilité de nom côté Microsoft.
+    Utiliser le nom « Mira » nécessiterait de le réserver d'abord
+    (Partner Center → Gérer les noms d'application), puis de modifier les deux
+    valeurs du manifeste.
+  - Le logo 300×300 est une image de **fiche Store**, pas une ressource du
+    paquet : il ne doit donc pas entrer dans le MSIX (les tuiles Windows
+    utilisent `Assets\*.png`, déjà présents aux tailles exactes 44/50/71/150/310).
+- **Impacts & Dépendances :** le MSIX précédemment produit
+  (`Mira_0.1.4.0_x64.msix`) est invalide pour le Store et doit être reconstruit.
+  Aucun impact sur le canal GitHub Releases (macOS/Linux) ni sur l'app.
+- **Prochaines étapes :** rejouer `npm run build:msstore` +
+  `./src-tauri/msix/build-msix.ps1`, puis re-uploader le `.msix` ; uploader
+  `StoreLogo-300x300.png` dans Store listings ; ne sélectionner que la famille
+  « PC » (le manifeste ne déclare que `Windows.Desktop`).
+
+---
+
 ### [2026-10-29T18:20] | Renommage résiduel « origin » → « Mira » (surfaces visibles)
 
 - **Contexte :** après rebranding, des chaînes « origin » restaient visibles :

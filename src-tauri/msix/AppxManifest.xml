@@ -33,7 +33,15 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Mira</DisplayName>
+    <!--
+      DisplayName DOIT être EXACTEMENT un nom réservé dans le Partner Center
+      (« Nom du produit »). Erreur Store sinon :
+      « Le manifeste de ce package (Package/Properties/DisplayName) utilise un
+      nom d'affichage que vous n'avez pas réservé ».
+      Les deux occurrences (ici et uap:VisualElements/@DisplayName) doivent
+      utiliser le même nom réservé.
+    -->
+    <DisplayName>Mira Coder</DisplayName>
     <PublisherDisplayName>Mira Coder</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <!-- Description courte requise par le Store. -->
@@ -60,7 +68,7 @@
                  Executable="mira.exe"
                  EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Mira"
+        DisplayName="Mira Coder"
         Description="Éditeur de code natif assisté par IA."
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
