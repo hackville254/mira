@@ -5,6 +5,32 @@
 
 ---
 
+### [2026-10-29T17:40] | CI : validation sur PR vers `main`
+
+- **Contexte :** les builds n'étaient déclenchés que sur tag (`release.yml`) ou
+  manuellement (`windows-msix.yml`). Aucun contrôle automatique avant merge sur
+  `main` : une régression de compilation pouvait arriver sur la branche
+  principale sans être détectée.
+- **Modifications effectuées :**
+  - `release.yml` : ajout de `pull_request: branches: [main]` ; le job `publish`
+    est conditionné à `startsWith(github.ref, 'refs/tags/v')`.
+  - `windows-msix.yml` : ajout de `pull_request: branches: [main]` (artefact
+    `windows-msix` téléchargeable depuis le run de PR).
+- **Décisions Techniques :**
+  - **Garde au niveau du JOB et non de l'étape** : impossible de publier une
+    release depuis une PR, même en cas d'ajout ultérieur d'étapes dans `publish`.
+  - Les builds macOS/Linux restent exécutés sur PR : c'est précisément la
+    vérification demandée. Coût : quelques minutes de runner par PR.
+- **Impacts & Dépendances :** sur une PR vers `main`, `macos`, `linux` et `msix`
+  tournent ; `publish` est sauté. Les builds utilisent les secrets du dépôt
+  (disponibles pour les PR internes, **pas** pour les PR de forks — le build
+  macOS/Linux échouera alors faute de clé minisign).
+- **Prochaines étapes :** créer la PR `dev` → `main`, vérifier que les 3 jobs
+  passent, puis merger (nécessaire aussi pour que `workflow_dispatch` soit
+  proposé par GitHub, qui n'expose cette option que pour la branche par défaut).
+
+---
+
 ### [2026-10-29T17:06] | Auto-updater macOS/Linux : génération du manifeste `latest.json`
 
 - **Contexte :** `tauri build` produit les archives de mise à jour
