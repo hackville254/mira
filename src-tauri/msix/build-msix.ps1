@@ -190,6 +190,39 @@ if (-not (Test-Path (Join-Path $pkgDir $entryExe))) {
 }
 Write-Host "  + Point d'entrée vérifié : $entryExe"
 
+# Garde-fou Store : les deux DisplayName (Properties + VisualElements) doivent
+# être IDENTIQUES et correspondre à un nom réservé dans le Partner Center.
+# Erreur évitée : « utilise un nom d'affichage que vous n'avez pas réservé ».
+$xmlDoc = New-Object System.Xml.XmlDocument
+$xmlDoc.LoadXml($manifest)
+$ns = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
+$ns.AddNamespace('f',   'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
+$ns.AddNamespace('uap', 'http://schemas.microsoft.com/appx/manifest/uap/windows10')
+
+$propsDisplay = $xmlDoc.SelectSingleNode('/f:Package/f:Properties/f:DisplayName', $ns)
+$appDisplay   = $xmlDoc.SelectSingleNode('//uap:VisualElements/@DisplayName', $ns)
+if (-not $propsDisplay -or [string]::IsNullOrWhiteSpace($propsDisplay.InnerText)) {
+  Fail "AppxManifest.xml : Properties/DisplayName vide (doit être un nom réservé Partner Center)."
+}
+if (-not $appDisplay -or [string]::IsNullOrWhiteSpace($appDisplay.Value)) {
+  Fail "AppxManifest.xml : uap:VisualElements/@DisplayName vide (doit être un nom réservé Partner Center)."
+}
+if ($propsDisplay.InnerText -ne $appDisplay.Value) {
+  Fail "AppxManifest.xml : DisplayName incohérent ('$($propsDisplay.InnerText)' vs '$($appDisplay.Value)'). Les deux doivent être le nom réservé Partner Center."
+}
+Write-Host "  + DisplayName réservé : $($propsDisplay.InnerText)"
+
+# Garde-fou icônes : chaque Assets\*.png référencé dans le manifeste doit être
+# présent dans le paquet, sinon Store/Windows affiche une tuile vide.
+$assetRefs = [regex]::Matches($manifest, 'Assets\\[A-Za-z0-9_.-]+\.png') |
+             ForEach-Object { $_.Value } | Select-Object -Unique
+foreach ($ref in $assetRefs) {
+  if (-not (Test-Path (Join-Path $pkgDir $ref))) {
+    Fail "Asset référencé par le manifeste absent du paquet : $ref"
+  }
+}
+Write-Host "  + Assets vérifiés : $($assetRefs.Count) icônes"
+
 # --- 4. Construction du MSIX ------------------------------------------------
 # Localisation de MakeAppx.exe (Windows SDK).
 $makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse `
