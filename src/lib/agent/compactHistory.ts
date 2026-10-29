@@ -1,4 +1,9 @@
 import type { ModelMessage } from "ai";
+import { estimateTokens, PRESERVE_RECENT_TOKENS } from "./tokenBudget";
+import type { DisplayMessage } from "../aiTypes";
+
+/** Taille au-delà de laquelle un tool result ancien est vidé (nettoyage large). */
+export const LARGE_TOOL_RESULT_MAX_CHARS = 6_000;
 
 // ── Types mirroring what buildModelHistory emits ───────────────────────────────
 
@@ -13,20 +18,7 @@ type ToolResultPart = {
   output: unknown;
 };
 
-// ── Token-budget gate ──────────────────────────────────────────────────────────
-//
-// Only compact once the conversation grows large enough to matter. Rough
-// estimate: 1 token ≈ 4 chars of serialized JSON. Gate at 40k tokens — well
-// below Claude's 200k and GPT-4's 128k windows, so short sessions are never
-// touched and we avoid mangling history we don't need to.
-
-const COMPACT_TOKEN_GATE = 40_000;
-
-function estimateTokens(messages: ModelMessage[]): number {
-  return JSON.stringify(messages).length / 4;
-}
-
-// ── compactHistory ─────────────────────────────────────────────────────────────
+// ── Stale-read rewriting (port de Cline `message-builder.ts`) ──────────────────
 //
 // Removes redundant or stale read_file results from the message history before
 // sending to the model. A read result is dropped when it is no longer
@@ -43,18 +35,44 @@ function estimateTokens(messages: ModelMessage[]): number {
 // intact, so the chain of reasoning is preserved, and the most-recent
 // authoritative read is preserved verbatim.
 //
-// Compaction is gated on a token budget: under COMPACT_TOKEN_GATE the messages
-// are returned unchanged to avoid needless work on short sessions.
+// ── Pourquoi ce n'est PLUS gaté sur un budget ─────────────────────────────────
+// Avant, on ne compactait qu'au-delà de 80 % du budget : un vieux read_file
+// périmé restait donc dans le contexte pendant toute la phase « confortable »,
+// et chaque octet conservé était repayé en entrée à CHAQUE tour suivant (coût
+// quadratique, cf. Cline). Le remplacement d'une lecture périmée par un
+// marqueur d'une ligne est O(n), déterministe, sans appel LLM, et strictement
+// bénéfique : on l'exécute donc à CHAQUE tour. C'est exactement le comportement
+// de Cline (« stale-read rewriting »), qui n'attend pas la pression mémoire.
 
 export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
-  if (messages.length < 2) return messages;
+  const stale = findStaleReads(messages);
+  if (stale.size === 0) return messages;
+  return applyStaleReads(messages, stale);
+}
 
-  // Token-budget gate — short sessions are returned untouched.
-  if (estimateTokens(messages) <= COMPACT_TOKEN_GATE) return messages;
+/**
+ * Identifie les `read_file` PÉRIMÉS sans rien réécrire.
+ *
+ * POURQUOI SÉPARÉ
+ * ---------------
+ * La compaction doit pouvoir s'appliquer à DEUX représentations différentes du
+ * même fil :
+ *   - l'historique MODÈLE (`ModelMessage[]`, ce que `compactHistory` réécrit) ;
+ *   - le fil AFFICHÉ (`DisplayMessage[]`, lu par la jauge de contexte).
+ * Si l'on ne réécrivait que le premier, une compaction MANUELLE déclenchée par
+ * l'utilisateur semblerait sans effet : la jauge (calculée sur le fil affiché)
+ * ne bougerait pas. On expose donc l'ENSEMBLE des `toolCallId` périmés, que
+ * chaque appelant applique à sa propre représentation — une seule décision
+ * « qu'est-ce qui est périmé », deux applications cohérentes.
+ *
+ * Renvoie l'ensemble vide si rien n'est périmé (aucun read, ou tout récent).
+ */
+export function findStaleReads(messages: ModelMessage[]): Set<string> {
+  const empty = new Set<string>();
+  if (messages.length < 2) return empty;
 
   // Last message is the current user turn — never touch it.
   const history = messages.slice(0, -1);
-  const currentUserMsg = messages[messages.length - 1];
 
   // Pass 1: walk assistant messages in order, recording for each tool call:
   //   - read_file calls: { callId, path, index }
@@ -82,7 +100,21 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
     }
   }
 
-  if (reads.length === 0) return messages; // no file reads at all
+  if (reads.length === 0) return empty; // no file reads at all
+
+  // Fenêtre de préservation : on ne remplace JAMAIS un read des derniers
+  // ~20 000 tokens (porté de Cline `DEFAULT_PRESERVE_RECENT_TOKENS`). Le fil
+  // immédiat doit rester verbatim — le résumer forcerait le modèle à redemander
+  // le fichier, ce qui coûte un aller-retour entier.
+  // Index du premier message de la fenêtre récente (parcours depuis la fin).
+  let preserveFromIndex = 0;
+  {
+    let acc = 0;
+    for (let i = history.length - 1; i >= 0; i--) {
+      acc += estimateTokens([history[i]]);
+      if (acc > PRESERVE_RECENT_TOKENS) { preserveFromIndex = i + 1; break; }
+    }
+  }
 
   // Pass 2: determine which read call IDs are stale.
   //
@@ -97,9 +129,9 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
   }
 
   const superseded = new Set<string>();
-  const callIdToPath = new Map<string, string>();
   for (const r of reads) {
-    callIdToPath.set(r.callId, r.path);
+    // Jamais toucher un read dans la fenêtre récente.
+    if (r.index >= preserveFromIndex) continue;
 
     const lastReadIdx = lastReadIndexPerPath.get(r.path)!;
     const isSuperseded = r.index < lastReadIdx;
@@ -110,7 +142,39 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
     if (isSuperseded || isMutated) superseded.add(r.callId);
   }
 
-  if (superseded.size === 0) return messages; // nothing stale
+  if (superseded.size === 0) return empty; // nothing stale
+  return superseded;
+}
+
+/**
+ * Réécrit l'historique MODÈLE : chaque `read_file` périmé (voir
+ * `findStaleReads`) voit son résultat remplacé par un marqueur d'une ligne.
+ * Les messages assistant (raisonnement + appels d'outils) sont toujours
+ * conservés intacts — seule la CHARGE d'un résultat périmé disparaît.
+ */
+export function applyStaleReads(messages: ModelMessage[], stale: Set<string>): ModelMessage[] {
+  if (stale.size === 0 || messages.length < 2) return messages;
+  const history = messages.slice(0, -1);
+  const currentUserMsg = messages[messages.length - 1];
+
+  // Les chemins cités dans les marqueurs sont dérivés des appels `read_file`
+  // périmés encore présents dans l'historique : on retrouve, pour chaque id,
+  // le chemin concerné (nécessaire au libellé « superseded » vs « invalidated »).
+  const stalePathById = new Map<string, string>();
+  const mutatedPaths = new Set<string>();
+  for (const msg of history) {
+    if (msg.role !== "assistant") continue;
+    const content = Array.isArray(msg.content) ? (msg.content as AssistantPart[]) : [];
+    for (const part of content) {
+      if (part.type !== "tool-call") continue;
+      const path = (part.input as { path?: string })?.path ?? "";
+      if (part.toolName === "read_file" && stale.has(part.toolCallId)) {
+        stalePathById.set(part.toolCallId, path);
+      } else if (part.toolName === "write_file" || part.toolName === "edit") {
+        if (path) mutatedPaths.add(path);
+      }
+    }
+  }
 
   // Pass 3: rewrite tool messages that contain stale read results.
   const compactedHistory = history.map((msg): ModelMessage => {
@@ -119,9 +183,9 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
     const content = msg.content as ToolResultPart[];
     let changed = false;
     const newContent = content.map((part): ToolResultPart => {
-      if (part.toolName !== "read_file" || !superseded.has(part.toolCallId)) return part;
-      const path = callIdToPath.get(part.toolCallId) ?? "unknown";
-      const wasMutated = firstMutationIndex.has(path);
+      if (part.toolName !== "read_file" || !stale.has(part.toolCallId)) return part;
+      const path = stalePathById.get(part.toolCallId) ?? "unknown";
+      const wasMutated = mutatedPaths.has(path);
       changed = true;
       return {
         ...part,
@@ -138,4 +202,139 @@ export function compactHistory(messages: ModelMessage[]): ModelMessage[] {
   });
 
   return [...compactedHistory, currentUserMsg];
+}
+
+/**
+ * Applique la compaction au fil AFFICHÉ (`DisplayMessage[]`).
+ *
+ * POURQUOI
+ * --------
+ * `compactHistory` ne réécrit que l'historique MODÈLE : le fil affiché garde
+ * les résultats complets, donc la jauge de contexte (calculée sur ce fil) ne
+ * bouge pas. Quand l'utilisateur déclenche une compaction MANUELLE, il doit voir
+ * l'effet : on remplace donc, dans les bulles, le résultat des tool-calls
+ * `read_file` périmés par le MÊME marqueur d'une ligne.
+ *
+ * Les deux représentations partagent la décision de péremption : on la calcule
+ * une fois sur l'historique modèle (`findStaleReads`), puis on l'applique ici
+ * aux `ToolCallDisplay`. `mutationPaths` (chemins écrits/édités) sert à choisir
+ * le libellé « superseded » vs « invalidated », comme pour l'historique modèle.
+ *
+ * NON DESTRUCTIF : renvoie un NOUVEAU tableau ; les messages non concernés et
+ * les messages assistant (raisonnement, appels d'outils) restent intacts.
+ * Renvoie `messages` inchangé si rien n'est périmé.
+ */
+export function compactDisplayMessages(
+  messages: DisplayMessage[],
+  stale: Set<string>,
+  mutatedPaths: Set<string>,
+): DisplayMessage[] {
+  if (stale.size === 0) return messages;
+  let anyChanged = false;
+  const compacted = messages.map((msg): DisplayMessage => {
+    if (!msg.parts || msg.parts.length === 0) return msg;
+    let localChanged = false;
+    const parts = msg.parts.map((part) => {
+      if (part.type !== "tool-call") return part;
+      const tc = part.tc;
+      if (tc.toolName !== "read_file" || !stale.has(tc.id)) return part;
+      const path = (tc.args as { path?: string })?.path ?? "unknown";
+      localChanged = true;
+      anyChanged = true;
+      return {
+        ...part,
+        tc: {
+          ...tc,
+          result: mutatedPaths.has(path)
+            ? `[File contents omitted — invalidated by a later write/edit of ${path}]`
+            : `[File contents omitted — superseded by a later read of ${path}]`,
+        },
+      };
+    });
+    return localChanged ? { ...msg, parts } : msg;
+  });
+  return anyChanged ? compacted : messages;
+}
+
+/**
+ * Nettoyage déterministe LARGE : retire la charge des tool results VOLUMINEUX
+ * de l'historique ancien (hors fenêtre récente), quels que soient les outils.
+ *
+ * POURQUOI
+ * --------
+ * `findStaleReads` ne cible que les `read_file` périmés : sur une session
+ * d'écritures / commandes / recherches, il n'a rien à retirer. Or ce sont
+ * souvent les PLUS gros contributeurs de tokens (sorties de terminal, résultats
+ * de recherche, listings). On remplace donc, pour tout tool result dépassant
+ * `maxChars`, son contenu par un marqueur « résumé — contenu retiré », en
+ * préservant l'appel d'outil (le modèle sait CE QU'il a demandé, pas la charge).
+ *
+ * Garde-fous : jamais le dernier message (tour courant) ; jamais la fenêtre
+ * récente (~20 000 tokens) ; jamais un assistant (raisonnement conservé).
+ */
+export function compactLargeToolResults(
+  messages: ModelMessage[],
+  maxChars = LARGE_TOOL_RESULT_MAX_CHARS,
+): ModelMessage[] {
+  if (messages.length < 2) return messages;
+
+  // Fenêtre récente : on ne touche à aucun message à partir de cet index.
+  let preserveFromIndex = messages.length;
+  {
+    let acc = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      acc += estimateTokens([messages[i]]);
+      if (acc > PRESERVE_RECENT_TOKENS) { preserveFromIndex = i + 1; break; }
+    }
+  }
+
+  let changed = false;
+  const out = messages.map((msg, index): ModelMessage => {
+    if (index >= preserveFromIndex || msg.role !== "tool") return msg;
+    const content = msg.content as ToolResultPart[];
+    if (!Array.isArray(content)) return msg;
+
+    let localChanged = false;
+    const next = content.map((part): ToolResultPart => {
+      if (part.type !== "tool-result") return part;
+      const output = part.output as { type?: string; value?: unknown } | undefined;
+      const value = output && output.type === "text" ? String(output.value ?? "") : "";
+      if (value.length <= maxChars) return part;
+      localChanged = true;
+      changed = true;
+      return {
+        ...part,
+        output: {
+          type: "text",
+          value: `[Tool result omitted — ${value.length} chars of output from ${part.toolName} removed to save context]`,
+        },
+      };
+    });
+
+    return localChanged ? ({ ...msg, content: next } as ModelMessage) : msg;
+  });
+
+  return changed ? out : messages;
+}
+
+/**
+ * Chemins ÉCRITS ou ÉDITÉS dans le fil affiché.
+ *
+ * Nécessaire au libellé du marqueur de compaction (un read invalidé par une
+ * écriture ne se raconte pas comme un read simplement remplacé par une lecture
+ * plus récente). Calculé sur les tool-calls `write_file`/`edit` du fil affiché.
+ */
+export function mutatedPathsOf(messages: DisplayMessage[]): Set<string> {
+  const paths = new Set<string>();
+  for (const msg of messages) {
+    if (!msg.parts) continue;
+    for (const part of msg.parts) {
+      if (part.type !== "tool-call") continue;
+      const name = part.tc.toolName;
+      if (name !== "write_file" && name !== "edit") continue;
+      const path = (part.tc.args as { path?: string })?.path ?? "";
+      if (path) paths.add(path);
+    }
+  }
+  return paths;
 }

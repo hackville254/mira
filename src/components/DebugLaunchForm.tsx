@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useDebugContext } from '../context/DebugContext';
 import { readDir } from '../lib/fs';
+import { resolveDapConfig, mergeDapConfigs } from '../lib/dapConfigStore';
+import { DEFAULT_DAP_CONFIG, findAdapterForFile, type DapAdapterConfig } from '../lib/dapConfig';
 import type { DapAdapterType, DapLaunchConfig } from '../lib/dap';
 import type { DebugLastConfig } from '../lib/settings';
 
@@ -52,7 +54,10 @@ export default function DebugLaunchForm() {
   const { startSession } = useDebugContext();
 
   const saved = loadSaved();
-  const [adapter, setAdapter]       = useState<DapAdapterType>(saved?.adapter as DapAdapterType ?? 'codelldb');
+  const [adapters, setAdapters] = useState<DapAdapterConfig[]>(
+    () => mergeDapConfigs(DEFAULT_DAP_CONFIG, null).adapters,
+  );
+  const [adapter, setAdapter]       = useState<DapAdapterType>(saved?.adapter ?? 'codelldb');
   const [adapterPath, setAdapterPath] = useState(saved?.adapterPath ?? '');
   const [program, setProgram]       = useState(saved?.program ?? '');
   const [args, setArgs]             = useState(saved?.args ?? '');
@@ -60,7 +65,23 @@ export default function DebugLaunchForm() {
   const [stopOnEntry, setStopOnEntry] = useState(saved?.stopOnEntry ?? false);
   const [launching, setLaunching]   = useState(false);
 
-  // Auto-detect adapter + program from project files
+  // Charge la config d'adaptateurs effective (workspace > global > défaut).
+  useEffect(() => {
+    let cancelled = false;
+    resolveDapConfig(folderPath ?? '').then(cfg => {
+      if (cancelled) return;
+      setAdapters(cfg.adapters);
+      // Si l'adaptateur courant n'est plus disponible, retomber sur le 1ᵉʳ connu.
+      setAdapter(prev => {
+        const enabled = cfg.adapters.filter(a => a.enabled !== false);
+        if (enabled.some(a => a.adapterId === prev)) return prev;
+        return enabled[0]?.adapterId ?? prev;
+      });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [folderPath]);
+
+  // Auto-détection de l'adaptateur + programme à partir des fichiers du projet.
   useEffect(() => {
     if (!folderPath || saved) return;
     readDir(folderPath).then(entries => {
@@ -69,14 +90,17 @@ export default function DebugLaunchForm() {
         setAdapter('codelldb');
         const projName = folderPath.split(/[\\/]/).filter(Boolean).pop() ?? 'app';
         setProgram(`${folderPath}\\target\\debug\\${projName}.exe`);
-      } else if (names.some(n => n.endsWith('.py') || n === 'requirements.txt')) {
-        setAdapter('debugpy');
-        setProgram(`${folderPath}\\main.py`);
+      } else {
+        const firstSrc = entries.find(e => !e.is_dir && /\.[a-z0-9]+$/i.test(e.name));
+        if (firstSrc) {
+          const match = findAdapterForFile({ version: 1, adapters }, firstSrc.path);
+          if (match) setAdapter(match.adapterId);
+        }
       }
       setCwd(folderPath);
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderPath]);
+  }, [folderPath, adapters]);
 
   async function handleLaunch() {
     if (!program.trim()) return;
@@ -110,8 +134,9 @@ export default function DebugLaunchForm() {
           onChange={e => setAdapter(e.target.value as DapAdapterType)}
           style={{ ...FIELD_STYLE, cursor: 'pointer' }}
         >
-          <option value="codelldb">codelldb (Rust / C++)</option>
-          <option value="debugpy">debugpy (Python)</option>
+          {adapters.filter(a => a.enabled !== false).map(a => (
+            <option key={a.adapterId} value={a.adapterId}>{a.label}</option>
+          ))}
         </select>
       </Field>
 
@@ -120,7 +145,7 @@ export default function DebugLaunchForm() {
           type="text"
           value={adapterPath}
           onChange={e => setAdapterPath(e.target.value)}
-          placeholder={adapter === 'codelldb' ? 'codelldb.exe' : 'python (on PATH)'}
+          placeholder="path to the adapter binary (empty = PATH)"
           style={FIELD_STYLE}
           onFocus={e => { (e.target as HTMLElement).style.borderColor = 'var(--origin-accent-blue)'; }}
           onBlur={e => { (e.target as HTMLElement).style.borderColor = 'var(--origin-border-default)'; }}

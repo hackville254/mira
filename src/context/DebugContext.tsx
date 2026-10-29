@@ -6,7 +6,6 @@ import {
   type DapLaunchConfig,
   type DapScope,
   type DapSessionStatus,
-  type DapSourceBreakpoint,
   type DapStackFrame,
   type DapStoppedReason,
   type DapThread,
@@ -15,6 +14,7 @@ import {
   dapStop,
   onDapEvent,
 } from '../lib/dap';
+import { fromEvaluate, toSourceBreakpoints } from '../lib/dapWatch';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,24 @@ export interface BreakpointEntry {
   line: number;
   verified: boolean;
   adapterBpId?: number;
+  /** Condition d'arrêt (expression évaluée par l'adaptateur). */
   condition?: string;
+  /** Nombre de passages (hit count, ex. "5" ou ">3"). */
+  hitCondition?: string;
+  /** Log point : message loggé au lieu d'arrêter (interpolation {expr}). */
+  logMessage?: string;
+}
+
+/** Résultat d'une ligne de console / watch. */
+export interface DebugEvalEntry {
+  id: number;
+  expression: string;
+  value?: string;
+  type?: string;
+  variablesReference?: number;
+  error?: string;
+  /** Ligne de la debug console (REPL) plutôt que d'un watch. */
+  kind: 'console' | 'watch';
 }
 
 export interface DebugSessionState {
@@ -37,11 +54,29 @@ export interface DebugSessionState {
   /** Absolute file path → breakpoint entries. Updated optimistically on toggle. */
   breakpoints: Map<string, BreakpointEntry[]>;
   outputLines: Array<{ category: string; text: string }>;
+  /** Watch : expressions suivies, réévaluées à chaque arrêt. */
+  watchExpressions: string[];
+  /** Résultats d'évaluation (watch + debug console). */
+  evalEntries: DebugEvalEntry[];
 }
 
 export interface DebugContextType {
   session: DebugSessionState;
   toggleBreakpoint: (filePath: string, line: number) => void;
+  /** Met à jour (ou supprime si vide) la condition d'un breakpoint. */
+  setBreakpointCondition: (filePath: string, line: number, condition: string) => void;
+  /** Met à jour (ou supprime si vide) le hit count d'un breakpoint. */
+  setBreakpointHitCondition: (filePath: string, line: number, hitCondition: string) => void;
+  /** Met à jour (ou supprime si vide) le log message (log point) d'un breakpoint. */
+  setBreakpointLogMessage: (filePath: string, line: number, logMessage: string) => void;
+  /** Ajoute une expression au watch (dédoublonnée) et l'évalue si en pause. */
+  addWatchExpression: (expression: string) => void;
+  /** Retire une expression du watch. */
+  removeWatchExpression: (expression: string) => void;
+  /** Évalue une expression dans le contexte du point d'arrêt courant (Debug Console). */
+  evaluateExpression: (expression: string) => Promise<void>;
+  /** Vide le contenu de la Debug Console (résultats d'évaluation). */
+  clearConsole: () => void;
   startSession: (config: DapLaunchConfig) => Promise<void>;
   stopSession: () => Promise<void>;
   continueExec: () => Promise<void>;
@@ -66,6 +101,8 @@ const emptySession: DebugSessionState = {
   scopes: [],
   breakpoints: new Map(),
   outputLines: [],
+  watchExpressions: [],
+  evalEntries: [],
 };
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -186,6 +223,35 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
 
         setSession(prev => ({ ...prev, threads, stackFrames, scopes }));
 
+        // Réévalue toutes les expressions de watch dans le contexte de la frame courante.
+        const frameId = stackFrames[0]?.id;
+        const watchExprs = sessionRef.current.watchExpressions;
+        if (frameId !== undefined && watchExprs.length > 0) {
+          const results = await Promise.all(watchExprs.map(async expr => {
+            const res = await dapRequest(sid, 'evaluate', {
+              expression: expr,
+              frameId,
+              context: 'watch',
+            }).catch(() => ({ success: false, message: 'evaluation failed' }));
+            return fromEvaluate(expr, res);
+          }));
+          setSession(prev => ({
+            ...prev,
+            evalEntries: [
+              ...prev.evalEntries.filter(e => e.kind !== 'watch'),
+              ...results.map((r, i) => ({
+                id: Date.now() + i,
+                expression: r.expression,
+                value: r.value,
+                type: r.type,
+                variablesReference: r.variablesReference,
+                error: r.error,
+                kind: 'watch' as const,
+              })),
+            ],
+          }));
+        }
+
         // Navigate editor to the paused line
         const frame = stackFrames[0];
         if (frame?.source?.path && navigationCbRef.current) {
@@ -244,42 +310,150 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  const toggleBreakpoint = useCallback((filePath: string, line: number) => {
+  /** Applique une mutation aux breakpoints d'un fichier puis resynchronise l'adaptateur. */
+  function mutateBreakpoints(
+    filePath: string,
+    fn: (entries: BreakpointEntry[]) => BreakpointEntry[],
+  ) {
+    // Calcule la liste cible à partir de l'état courant (source de vérité : ref).
+    const updated = fn(sessionRef.current.breakpoints.get(filePath) ?? []);
     setSession(prev => {
       const next = new Map(prev.breakpoints);
-      const entries = next.get(filePath) ?? [];
-      const idx = entries.findIndex(e => e.line === line);
-      if (idx >= 0) {
-        const updated = entries.filter((_, i) => i !== idx);
-        if (updated.length === 0) next.delete(filePath);
-        else next.set(filePath, updated);
-      } else {
-        next.set(filePath, [...entries, { line, verified: false }]);
-      }
+      if (updated.length === 0) next.delete(filePath);
+      else next.set(filePath, updated);
       return { ...prev, breakpoints: next };
     });
-
-    // If a session is active, update the adapter immediately
+    // Pousse la valeur calculée (pas de dépendance au re-render asynchrone).
     const { sessionId: sid, status } = sessionRef.current;
     if (sid && (status === 'running' || status === 'paused')) {
-      const updatedEntries = sessionRef.current.breakpoints.get(filePath) ?? [];
-      const bps: DapSourceBreakpoint[] = updatedEntries.map(e => ({ line: e.line }));
       dapRequest(sid, 'setBreakpoints', {
         source: { path: filePath },
-        breakpoints: bps,
+        breakpoints: toSourceBreakpoints(updated),
       }).catch(() => {});
     }
+  }
+
+  const toggleBreakpoint = useCallback((filePath: string, line: number) => {
+    mutateBreakpoints(filePath, entries => {
+      const idx = entries.findIndex(e => e.line === line);
+      if (idx >= 0) return entries.filter((_, i) => i !== idx);
+      return [...entries, { line, verified: false }];
+    });
+  }, []);
+
+  /** Met à jour un champ texte d'un breakpoint ('' → supprime le champ). */
+  function setBreakpointField(
+    filePath: string,
+    line: number,
+    field: 'condition' | 'hitCondition' | 'logMessage',
+    value: string,
+  ) {
+    const v = value.trim() ? value : undefined;
+    mutateBreakpoints(filePath, entries =>
+      entries.map(e => (e.line === line ? { ...e, [field]: v } : e)),
+    );
+  }
+
+  const setBreakpointCondition = useCallback((filePath: string, line: number, condition: string) => {
+    setBreakpointField(filePath, line, 'condition', condition);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setBreakpointField est stable
+  }, []);
+
+  const setBreakpointHitCondition = useCallback((filePath: string, line: number, hitCondition: string) => {
+    setBreakpointField(filePath, line, 'hitCondition', hitCondition);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setBreakpointField est stable
+  }, []);
+
+  const setBreakpointLogMessage = useCallback((filePath: string, line: number, logMessage: string) => {
+    setBreakpointField(filePath, line, 'logMessage', logMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setBreakpointField est stable
+  }, []);
+
+  const addWatchExpression = useCallback((expression: string) => {
+    const expr = expression.trim();
+    if (!expr) return;
+    setSession(prev => ({
+      ...prev,
+      watchExpressions: prev.watchExpressions.includes(expr)
+        ? prev.watchExpressions
+        : [...prev.watchExpressions, expr],
+    }));
+    // Évalue immédiatement si une frame est disponible (session en pause).
+    const { sessionId: sid, stackFrames } = sessionRef.current;
+    const frameId = stackFrames[0]?.id;
+    if (sid && frameId !== undefined) {
+      dapRequest(sid, 'evaluate', { expression: expr, frameId, context: 'watch' })
+        .catch(() => ({ success: false, message: 'evaluation failed' }))
+        .then(res => {
+          const r = fromEvaluate(expr, res);
+          setSession(prev => ({
+            ...prev,
+            evalEntries: [
+              ...prev.evalEntries,
+              {
+                id: Date.now(),
+                expression: r.expression,
+                value: r.value,
+                type: r.type,
+                variablesReference: r.variablesReference,
+                error: r.error,
+                kind: 'watch',
+              },
+            ],
+          }));
+        });
+    }
+  }, []);
+
+  const removeWatchExpression = useCallback((expression: string) => {
+    setSession(prev => ({
+      ...prev,
+      watchExpressions: prev.watchExpressions.filter(e => e !== expression),
+      evalEntries: prev.evalEntries.filter(e => !(e.kind === 'watch' && e.expression === expression)),
+    }));
+  }, []);
+
+  const evaluateExpression = useCallback(async (expression: string) => {
+    const expr = expression.trim();
+    const { sessionId: sid, stackFrames } = sessionRef.current;
+    if (!sid || !expr) return;
+    const frameId = stackFrames[0]?.id;
+    const res = await dapRequest(sid, 'evaluate', {
+      expression: expr,
+      ...(frameId !== undefined ? { frameId } : {}),
+      context: 'repl',
+    }).catch(() => ({ success: false, message: 'evaluation failed' }));
+    const r = fromEvaluate(expr, res);
+    setSession(prev => ({
+      ...prev,
+      evalEntries: [
+        ...prev.evalEntries,
+        {
+          id: Date.now(),
+          expression: r.expression,
+          value: r.value,
+          type: r.type,
+          variablesReference: r.variablesReference,
+          error: r.error,
+          kind: 'console',
+        },
+      ],
+    }));
+  }, []);
+
+  const clearConsole = useCallback(() => {
+    setSession(prev => ({ ...prev, evalEntries: [] }));
   }, []);
 
   const startSession = useCallback(async (config: DapLaunchConfig) => {
     const id = crypto.randomUUID();
     launchConfigRef.current = config;
 
-    // Carry existing breakpoints into the launch config
+    // Carry existing breakpoints (avec qualificatifs) into the launch config
     const currentBps = new Map(sessionRef.current.breakpoints);
     if (config.sourceBreakpoints.size === 0 && currentBps.size > 0) {
       for (const [fp, entries] of currentBps) {
-        config.sourceBreakpoints.set(fp, entries.map(e => ({ line: e.line })));
+        config.sourceBreakpoints.set(fp, toSourceBreakpoints(entries));
       }
     }
 
@@ -298,8 +472,8 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
     await dapStart(id, config.adapter, config.adapterPath);
 
     const caps = await dapRequest(id, 'initialize', {
-      clientID: 'origin',
-      clientName: 'Origin IDE',
+      clientID: 'mira',
+      clientName: 'Mira',
       adapterID: config.adapter,
       pathFormat: 'path',
       linesStartAt1: true,
@@ -362,6 +536,13 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
     <DebugContext.Provider value={{
       session,
       toggleBreakpoint,
+      setBreakpointCondition,
+      setBreakpointHitCondition,
+      setBreakpointLogMessage,
+      addWatchExpression,
+      removeWatchExpression,
+      evaluateExpression,
+      clearConsole,
       startSession,
       stopSession,
       continueExec,

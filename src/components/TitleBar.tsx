@@ -3,8 +3,14 @@ import { Icon } from "@iconify/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Tooltip } from "./ui/Tooltip";
 import DropdownMenu, { type MenuEntry } from "./ui/DropdownMenu";
+import ProjectMenu from "./ui/ProjectMenu";
 import { useCommands } from "../context/CommandContext";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { useToast } from "./ui/Toast";
+import { formatShortcut } from "../lib/platform";
+import { useAccount } from "../lib/agent/account";
+import { onSignInRequest } from "../lib/agent/signInBus";
+import SignInDialog from "./SignInDialog";
 import logoSrc from "../assets/logo-code.svg";
 
 const win = getCurrentWindow();
@@ -53,11 +59,11 @@ function IconBtn({
  * active one is highlighted, and the thumb holds the mode icon.
  */
 function ModeSwitch({
-  aiPanelOpen,
-  onSetAiPanel,
+  aiMode,
+  onSetMode,
 }: {
-  aiPanelOpen: boolean;
-  onSetAiPanel: (open: boolean) => void;
+  aiMode: boolean;
+  onSetMode: (open: boolean) => void;
 }) {
   const ideRef = useRef<HTMLButtonElement>(null);
   const aiRef = useRef<HTMLButtonElement>(null);
@@ -65,10 +71,10 @@ function ModeSwitch({
 
   // Recompute the thumb geometry from the active segment's box.
   useEffect(() => {
-    const el = aiPanelOpen ? aiRef.current : ideRef.current;
+    const el = aiMode ? aiRef.current : ideRef.current;
     if (!el) return;
     setThumb({ left: el.offsetLeft, width: el.offsetWidth });
-  }, [aiPanelOpen]);
+  }, [aiMode]);
 
   const segmentStyle = (active: boolean) => ({
     color: active ? "var(--origin-fg-default)" : "var(--origin-fg-subtle)",
@@ -76,66 +82,87 @@ function ModeSwitch({
   });
 
   return (
-    <div className="flex items-center gap-1.5" style={{ color: "var(--origin-fg-muted)" }}>
-      <img src={logoSrc} alt="Origin" style={{ height: "16px", width: "auto" }} />
-      <div
-        role="tablist"
-        aria-label="Editor mode"
-        className="relative flex items-center rounded-lg p-0.5"
-        style={{ backgroundColor: "var(--origin-bg-hover)" }}
+    <div
+      role="tablist"
+      aria-label="Editor mode"
+      className="relative flex items-center rounded-lg p-0.5"
+      style={{ backgroundColor: "var(--origin-bg-hover)" }}
+    >
+      {/* Sliding thumb — holds the Origin logo */}
+      <span
+        aria-hidden
+        className="absolute flex items-center justify-center rounded-md"
+        style={{
+          top: "2px",
+          bottom: "2px",
+          left: 0,
+          width: `${thumb.width}px`,
+          transform: `translateX(${thumb.left}px)`,
+          backgroundColor: "#ffffff",
+          transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
+        }}
       >
-        {/* Sliding thumb — holds the mode glyph */}
-        <span
-          aria-hidden
-          className="absolute flex items-center justify-center rounded-md"
-          style={{
-            top: "2px",
-            bottom: "2px",
-            left: 0,
-            width: `${thumb.width}px`,
-            transform: `translateX(${thumb.left}px)`,
-            backgroundColor: "#ffffff",
-            transition: "transform 260ms cubic-bezier(0.34, 1.3, 0.64, 1), width 260ms cubic-bezier(0.34, 1.3, 0.64, 1)",
-          }}
+        <img src={logoSrc} alt="Mira" style={{ height: "14px", width: "auto" }} />
+      </span>
+
+      <Tooltip content={aiMode ? "Switch to IDE Mode" : ""} side="bottom">
+        <button
+          ref={ideRef}
+          role="tab"
+          aria-selected={!aiMode}
+          onClick={() => onSetMode(false)}
+          className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+          style={segmentStyle(!aiMode)}
         >
-          <Icon icon="lucide:square-terminal" width={14} strokeWidth={2.5} style={{ color: "#111111" }} />
-        </span>
+          <span style={{ visibility: !aiMode ? "hidden" : "visible" }}>IDE</span>
+        </button>
+      </Tooltip>
 
-        <Tooltip content={aiPanelOpen ? "Switch to IDE Mode" : ""} side="bottom">
-          <button
-            ref={ideRef}
-            role="tab"
-            aria-selected={!aiPanelOpen}
-            onClick={() => onSetAiPanel(false)}
-            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
-            style={segmentStyle(!aiPanelOpen)}
-          >
-            <span style={{ visibility: !aiPanelOpen ? "hidden" : "visible" }}>IDE</span>
-          </button>
-        </Tooltip>
-
-        <Tooltip content={!aiPanelOpen ? "Switch to AI Mode" : ""} side="bottom">
-          <button
-            ref={aiRef}
-            role="tab"
-            aria-selected={aiPanelOpen}
-            onClick={() => onSetAiPanel(true)}
-            className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
-            style={segmentStyle(aiPanelOpen)}
-          >
-            <span style={{ visibility: aiPanelOpen ? "hidden" : "visible", paddingLeft: "2px" }}>AI MODE</span>
-          </button>
-        </Tooltip>
-      </div>
+      <Tooltip content={!aiMode ? "Switch to AI Mode" : ""} side="bottom">
+        <button
+          ref={aiRef}
+          role="tab"
+          aria-selected={aiMode}
+          onClick={() => onSetMode(true)}
+          className="relative z-10 rounded-md px-2 py-1 text-xs font-bold tracking-wide"
+          style={segmentStyle(aiMode)}
+        >
+          <span style={{ visibility: aiMode ? "hidden" : "visible", paddingLeft: "2px" }}>AI MODE</span>
+        </button>
+      </Tooltip>
     </div>
+  );
+}
+
+/**
+ * Affiché à la place du sélecteur IDE/AI mode tant que l'utilisateur n'est pas
+ * connecté à Mira. Les deux modes reposent sur des modèles : sans compte, il
+ * n'y a rien à basculer. Le bouton ouvre les réglages sur la page Compte.
+ */
+function LoginButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip content="Sign in to Mira" side="bottom">
+      <button
+        onClick={onClick}
+        className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+        style={{ backgroundColor: "var(--origin-accent-blue)", color: "#fff" }}
+        onMouseEnter={e => { e.currentTarget.style.opacity = "0.9"; }}
+        onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
+      >
+        <Icon icon="lucide:log-in" width={13} />
+        Log in
+      </button>
+    </Tooltip>
   );
 }
 
 export default function TitleBar() {
   const { folderPath } = useWorkspace();
+  const { showToast } = useToast();
   const {
     sidebarOpen, terminalOpen, aiPanelOpen,
-    onToggleSidebar, onToggleTerminal, onToggleAiPanel, onSetAiPanel,
+    appMode, onSetAppMode,
+    onToggleSidebar, onToggleTerminal, onToggleAiPanel,
     onOpenFolder, onOpenFile, onNewFile, onNewWindow, onOpenPalette, onOpenSettings,
     dirtyCount, hasActiveTab, hasFolderOpen,
     onSave, onSaveAs, onSaveAll, onCloseEditor, onCloseFolder,
@@ -143,66 +170,79 @@ export default function TitleBar() {
     onZoomIn, onZoomOut, onZoomReset,
     onNewTerminalTab, onClearTerminal, onKillTerminal,
     onStartDebugging, onStopDebugging, isDebugActive,
+    onOpenProject, onCloneRepo,
   } = useCommands();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const projectBtnRef = useRef<HTMLButtonElement>(null);
+  // Sans compte Mira, le sélecteur IDE/AI mode laisse place à un bouton de
+  // connexion : les deux modes dépendent de modèles, donc d'une session.
+  const { signedIn } = useAccount();
+  // Modale de connexion : le bouton « Log in » lance le device flow
+  // directement, sans détour par les réglages. Le chat peut aussi demander son
+  // ouverture via le canal `origin-open-signin` (message bloqué sans session).
+  const [signInOpen, setSignInOpen] = useState(false);
+  useEffect(() => onSignInRequest(() => setSignInOpen(true)), []);
 
   const close = () => { setMenuOpen(false); setMenuAnchor(null); };
   const toggleMenu = () => {
     setMenuOpen(open => !open);
     setMenuAnchor(menuBtnRef.current);
   };
+  // Affiche un raccourci au format natif de l'OS (⌘ sur macOS, Ctrl ailleurs).
+  const sc = formatShortcut;
   const fileEntries: MenuEntry[] = [
-    { type: 'item', label: 'New File',      shortcut: 'Ctrl+N',        onClick: onNewFile },
-    { type: 'item', label: 'New Window',    shortcut: 'Ctrl+Shift+N',  onClick: onNewWindow },
+    { type: 'item', label: 'New File',      shortcut: sc('ctrl+n'),        onClick: onNewFile },
+    { type: 'item', label: 'New Window',    shortcut: sc('ctrl+shift+n'),  onClick: onNewWindow },
     { type: 'separator' },
-    { type: 'item', label: 'Open Folder…', shortcut: 'Ctrl+K Ctrl+O', onClick: onOpenFolder },
-    { type: 'item', label: 'Open File…',   shortcut: 'Ctrl+O',        onClick: onOpenFile },
+    { type: 'item', label: 'Open Folder…', shortcut: sc('ctrl+k o'), onClick: onOpenFolder },
+    { type: 'item', label: 'Open File…',   shortcut: sc('ctrl+o'),        onClick: onOpenFile },
     { type: 'separator' },
-    { type: 'item', label: 'Save',         shortcut: 'Ctrl+S',        disabled: !hasActiveTab, onClick: () => { close(); onSave?.(); } },
-    { type: 'item', label: 'Save As…',     shortcut: 'Ctrl+Shift+S',  disabled: !hasActiveTab, onClick: () => { close(); onSaveAs?.(); } },
-    { type: 'item', label: 'Save All',     shortcut: 'Ctrl+K S',      disabled: dirtyCount === 0, onClick: () => { close(); onSaveAll?.(); } },
+    { type: 'item', label: 'Save',         shortcut: sc('ctrl+s'),        disabled: !hasActiveTab, onClick: () => { close(); onSave?.(); } },
+    { type: 'item', label: 'Save As…',     shortcut: sc('ctrl+shift+s'),  disabled: !hasActiveTab, onClick: () => { close(); onSaveAs?.(); } },
+    { type: 'item', label: 'Save All',     shortcut: sc('ctrl+k s'),      disabled: dirtyCount === 0, onClick: () => { close(); onSaveAll?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Close Editor', shortcut: 'Ctrl+W',        disabled: !hasActiveTab, onClick: () => { close(); onCloseEditor?.(); } },
+    { type: 'item', label: 'Close Editor', shortcut: sc('ctrl+w'),        disabled: !hasActiveTab, onClick: () => { close(); onCloseEditor?.(); } },
     { type: 'item', label: 'Close Folder',                             disabled: !hasFolderOpen, onClick: () => { close(); onCloseFolder?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Exit',         shortcut: 'Alt+F4',        onClick: () => win.close() },
+    { type: 'item', label: 'Exit',         shortcut: sc('alt+f4'),        onClick: () => win.close() },
   ];
 
   const editEntries: MenuEntry[] = [
-    { type: 'item', label: 'Undo',       shortcut: 'Ctrl+Z',  disabled: !hasActiveTab, onClick: () => { close(); onEditorUndo?.(); } },
-    { type: 'item', label: 'Redo',       shortcut: 'Ctrl+Y',  disabled: !hasActiveTab, onClick: () => { close(); onEditorRedo?.(); } },
+    { type: 'item', label: 'Undo',       shortcut: sc('ctrl+z'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorUndo?.(); } },
+    { type: 'item', label: 'Redo',       shortcut: sc('ctrl+y'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorRedo?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Cut',        shortcut: 'Ctrl+X',  disabled: !hasActiveTab, onClick: () => { close(); onEditorCut?.(); } },
-    { type: 'item', label: 'Copy',       shortcut: 'Ctrl+C',  disabled: !hasActiveTab, onClick: () => { close(); onEditorCopy?.(); } },
-    { type: 'item', label: 'Paste',      shortcut: 'Ctrl+V',  disabled: !hasActiveTab, onClick: () => { close(); onEditorPaste?.(); } },
+    { type: 'item', label: 'Cut',        shortcut: sc('ctrl+x'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorCut?.(); } },
+    { type: 'item', label: 'Copy',       shortcut: sc('ctrl+c'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorCopy?.(); } },
+    { type: 'item', label: 'Paste',      shortcut: sc('ctrl+v'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorPaste?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Select All', shortcut: 'Ctrl+A',  disabled: !hasActiveTab, onClick: () => { close(); onEditorSelectAll?.(); } },
+    { type: 'item', label: 'Select All', shortcut: sc('ctrl+a'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorSelectAll?.(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Find',       shortcut: 'Ctrl+F',  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
-    { type: 'item', label: 'Replace',    shortcut: 'Ctrl+H',  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
+    { type: 'item', label: 'Find',       shortcut: sc('ctrl+f'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
+    { type: 'item', label: 'Replace',    shortcut: sc('ctrl+h'),  disabled: !hasActiveTab, onClick: () => { close(); onEditorFind?.(); } },
   ];
 
   const viewEntries: MenuEntry[] = [
-    { type: 'item', label: 'Command Palette', shortcut: 'Ctrl+P', onClick: () => { close(); onOpenPalette(); } },
+    { type: 'item', label: 'Command Palette', shortcut: sc('ctrl+shift+p'), onClick: () => { close(); onOpenPalette(); } },
     { type: 'separator' },
     { type: 'item', label: sidebarOpen ? 'Hide Sidebar' : 'Show Sidebar', onClick: () => { close(); onToggleSidebar(); } },
-    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: 'Ctrl+`', onClick: () => { close(); onToggleTerminal(); } },
+    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: sc('ctrl+`'), onClick: () => { close(); onToggleTerminal(); } },
     { type: 'item', label: aiPanelOpen ? 'Hide AI Panel' : 'Show AI Panel', onClick: () => { close(); onToggleAiPanel(); } },
     { type: 'separator' },
-    { type: 'item', label: 'Zoom In',    shortcut: 'Ctrl+=', onClick: () => { close(); onZoomIn?.(); } },
-    { type: 'item', label: 'Zoom Out',   shortcut: 'Ctrl+-', onClick: () => { close(); onZoomOut?.(); } },
-    { type: 'item', label: 'Reset Zoom', shortcut: 'Ctrl+0', onClick: () => { close(); onZoomReset?.(); } },
+    { type: 'item', label: 'Zoom In',    shortcut: sc('ctrl+='), onClick: () => { close(); onZoomIn?.(); } },
+    { type: 'item', label: 'Zoom Out',   shortcut: sc('ctrl+-'), onClick: () => { close(); onZoomOut?.(); } },
+    { type: 'item', label: 'Reset Zoom', shortcut: sc('ctrl+0'), onClick: () => { close(); onZoomReset?.(); } },
   ];
 
   const runEntries: MenuEntry[] = [
-    { type: 'item', label: 'Start Debugging', shortcut: 'F5', disabled: isDebugActive, onClick: () => { close(); onStartDebugging(); } },
-    { type: 'item', label: 'Stop Debugging',  shortcut: 'Shift+F5', disabled: !isDebugActive, onClick: () => { close(); onStopDebugging(); } },
+    { type: 'item', label: 'Start Debugging', shortcut: sc('f5'), disabled: isDebugActive, onClick: () => { close(); onStartDebugging(); } },
+    { type: 'item', label: 'Stop Debugging',  shortcut: sc('shift+f5'), disabled: !isDebugActive, onClick: () => { close(); onStopDebugging(); } },
   ];
 
   const terminalEntries: MenuEntry[] = [
-    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: 'Ctrl+`', onClick: () => { close(); onToggleTerminal(); } },
+    { type: 'item', label: terminalOpen ? 'Hide Terminal' : 'Show Terminal', shortcut: sc('ctrl+`'), onClick: () => { close(); onToggleTerminal(); } },
     { type: 'separator' },
     { type: 'item', label: 'New Terminal Tab', onClick: () => { close(); onNewTerminalTab?.(); } },
     { type: 'item', label: 'Clear Terminal',   disabled: !terminalOpen, onClick: () => { close(); onClearTerminal?.(); } },
@@ -210,7 +250,7 @@ export default function TitleBar() {
   ];
 
   const helpEntries: MenuEntry[] = [
-    { type: 'item', label: 'Keyboard Shortcuts', shortcut: 'Ctrl+P', onClick: () => { close(); onOpenPalette(); } },
+    { type: 'item', label: 'Keyboard Shortcuts', shortcut: sc('ctrl+shift+p'), onClick: () => { close(); onOpenPalette(); } },
   ];
 
   const projectName = folderPath
@@ -241,14 +281,19 @@ export default function TitleBar() {
     >
       {/* Left — IDE logo + mode toggle + project name */}
       <div className="flex items-center gap-1 px-2 z-10 shrink-0">
-        <ModeSwitch aiPanelOpen={aiPanelOpen} onSetAiPanel={onSetAiPanel} />
+        {signedIn ? (
+          <ModeSwitch aiMode={appMode === 'ai'} onSetMode={(on) => onSetAppMode(on ? 'ai' : 'ide')} />
+        ) : (
+          <LoginButton onClick={() => setSignInOpen(true)} />
+        )}
 
         {/* Divider */}
         <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--origin-border-default)" }} />
 
         {/* Project selector */}
         <button
-          onClick={onOpenPalette}
+          ref={projectBtnRef}
+          onClick={() => setProjectMenuOpen(open => !open)}
           className="flex items-center gap-1.5 px-2 py-1 rounded transition-colors text-xs"
           style={{ color: "var(--origin-fg-default)", backgroundColor: "transparent" }}
           onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
@@ -258,6 +303,17 @@ export default function TitleBar() {
           <span className="font-medium">{projectName}</span>
           <Icon icon="lucide:chevron-down" width={12} style={{ color: "var(--origin-fg-subtle)" }} />
         </button>
+        {projectMenuOpen && (
+          <ProjectMenu
+            anchorEl={projectBtnRef.current}
+            currentPath={folderPath}
+            onClose={() => setProjectMenuOpen(false)}
+            onOpenFolder={() => { void onOpenFolder(); }}
+            onCloneRepo={() => onCloneRepo()}
+            onConnectRemote={() => showToast("Remote host connections are coming soon.", "info")}
+            onOpenProject={onOpenProject}
+          />
+        )}
       </div>
 
       {/* Center — Search */}
@@ -268,7 +324,7 @@ export default function TitleBar() {
           style={{ color: "var(--origin-fg-muted)", backgroundColor: "var(--origin-bg-hover)" }}
           onMouseEnter={e => { e.currentTarget.style.color = "var(--origin-fg-default)"; }}
           onMouseLeave={e => { e.currentTarget.style.color = "var(--origin-fg-muted)"; }}
-          title="Search (Ctrl+P)"
+          title={`Search (${sc('ctrl+p')})`}
         >
           <Icon icon="lucide:search" width={13} />
           <span>Search</span>
@@ -307,7 +363,7 @@ export default function TitleBar() {
 
         {/* Settings */}
         <div data-no-drag>
-          <IconBtn label="Settings" tooltip="Settings (Ctrl+,)" onClick={onOpenSettings}>
+          <IconBtn label="Settings" tooltip={`Settings (${sc('ctrl+,')})`} onClick={onOpenSettings}>
             <Icon icon="lucide:settings" width={15} />
           </IconBtn>
         </div>
@@ -368,6 +424,9 @@ export default function TitleBar() {
           <Icon icon="lucide:x" width={15} />
         </button>
       </div>
+
+      {/* Modale de connexion Mira (device flow lancé directement). */}
+      {signInOpen && <SignInDialog onClose={() => setSignInOpen(false)} />}
     </div>
   );
 }

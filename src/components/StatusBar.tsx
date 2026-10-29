@@ -1,5 +1,7 @@
 import { Icon } from '@iconify/react';
 import { useTheme } from '../themes/ThemeContext';
+import { materialIconByKey } from '../themes/materialIcons';
+import type { MobileFramework } from '../lib/mobileFrameworks';
 
 interface Props {
   language: string;
@@ -7,6 +9,16 @@ interface Props {
   col: number;
   branch: string | null;
   debugStatus?: 'paused' | 'running' | null;
+  errors?: number;
+  warnings?: number;
+  spaces?: number;
+  lineEnding?: 'LF' | 'CRLF';
+  /** Frameworks mobiles détectés dans le projet courant (badge informatif). */
+  mobileFrameworks?: MobileFramework[];
+  /** Ouvre le panneau Problems au clic sur le compteur. */
+  onShowProblems?: () => void;
+  /** Ouvre le Launchpad (palette de commandes) — équivalent VS Code. */
+  onOpenLaunchpad?: () => void;
 }
 
 function StatusItem({ children, onClick, title }: { children: React.ReactNode; onClick?: () => void; title?: string }) {
@@ -34,7 +46,13 @@ function StatusItem({ children, onClick, title }: { children: React.ReactNode; o
   );
 }
 
-export default function StatusBar({ language, line, col, branch, debugStatus }: Props) {
+export default function StatusBar({
+  language, line, col, branch, debugStatus,
+  errors = 0, warnings = 0, spaces = 2, lineEnding = 'LF',
+  mobileFrameworks = [],
+  onShowProblems,
+  onOpenLaunchpad,
+}: Props) {
   const { theme, themes, setTheme } = useTheme();
   const isDark = theme.type === 'dark';
 
@@ -82,15 +100,51 @@ export default function StatusBar({ language, line, col, branch, debugStatus }: 
             <span>{debugStatus === 'paused' ? 'Paused' : 'Running'}</span>
           </StatusItem>
         )}
+
+        {/* Launchpad — clic = palette de commandes (comme VS Code) */}
+        <StatusItem title="Launchpad" onClick={onOpenLaunchpad}>
+          <Icon icon="lucide:rocket" width={11} />
+          <span>Launchpad</span>
+        </StatusItem>
+
+        {/* Errors & Warnings */}
+        <StatusItem title="Problems" onClick={onShowProblems}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: errors > 0 ? 'var(--origin-semantic-error)' : undefined }}>
+            <Icon icon="lucide:x-circle" width={11} />
+            {errors}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: warnings > 0 ? 'var(--origin-accent-yellow)' : undefined }}>
+            <Icon icon="lucide:triangle-alert" width={11} />
+            {warnings}
+          </span>
+        </StatusItem>
       </div>
 
       {/* Right */}
       <div style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+        {mobileFrameworks.map(fw => (
+          <StatusItem key={fw.id} title={`${fw.label} · ${fw.markers.join(', ')}`}>
+            <img
+              src={materialIconByKey(fw.icon)}
+              width={12}
+              height={12}
+              alt=""
+              style={{ flexShrink: 0, display: 'block' }}
+            />
+            <span>{fw.label}</span>
+          </StatusItem>
+        ))}
         <StatusItem>
           <span>{language}</span>
         </StatusItem>
         <StatusItem>
           <span>Ln {line}, Col {col}</span>
+        </StatusItem>
+        <StatusItem>
+          <span>Spaces: {spaces}</span>
+        </StatusItem>
+        <StatusItem>
+          <span>{lineEnding}</span>
         </StatusItem>
         <StatusItem>
           <span>UTF-8</span>

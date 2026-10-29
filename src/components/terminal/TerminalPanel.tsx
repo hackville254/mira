@@ -2,12 +2,25 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { getSetting, setSetting, type SavedTermTab } from "../../lib/settings";
 import { terminalShellName } from "../../lib/terminal";
+import { formatShortcut } from "../../lib/platform";
 import TerminalInstance from "./Terminal";
+import AgentTerminalView from "./AgentTerminalView";
+import { useAgentTerminal } from "../../lib/agent/agentTerminalStore";
+import ProblemsPanel from "../problems/ProblemsPanel";
+import OutputPanel from "../output/OutputPanel";
 
 const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 600;
+/**
+ * Marge conservée au-dessus du terminal quand il est étiré au maximum : on
+ * réserve ~96px pour la barre d'onglets et un reste d'éditeur visible, afin que
+ * le terminal puisse occuper « toute la hauteur disponible » sans jamais
+ * recouvrir complètement la zone de travail.
+ */
+const RESERVED_ABOVE = 96;
 const LS_TABS = "origin-terminal-tabs";
 const LS_ACTIVE = "origin-terminal-active-index";
+/** Onglet réservé au terminal de l'agent (clé négative : jamais un tab utilisateur). */
+const AGENT_TAB_ID = -1;
 
 interface TermTab {
   id: number;
@@ -25,6 +38,17 @@ export interface TerminalPanelHandle {
   clearActive: () => void;
   killActive: () => void;
   runInNewTab: (command: string) => void;
+  /** Lance une tâche « Run » dans un nouvel onglet (spawn argv, sans shell). */
+  runTaskInNewTab: (name: string, program: string, args: string[]) => void;
+  /**
+   * Injecte un texte dans le terminal ACTIF sans l'exécuter : la commande est
+   * écrite dans le PTY, sans touche Entrée. L'utilisateur garde le dernier mot.
+   */
+  insertIntoActive: (text: string) => void;
+  /** Ouvre l'onglet Problems dans le panneau bas. */
+  showProblems: () => void;
+  /** Ouvre l'onglet Output dans le panneau bas. */
+  showOutput: () => void;
 }
 
 interface Props {
@@ -33,7 +57,35 @@ interface Props {
   onResize: (h: number) => void;
   onClose: () => void;
   hidden?: boolean;
+  /** Racine du workspace, pour afficher des chemins relatifs dans Problems. */
+  rootPath?: string | null;
+  /** Ouverture d'un fichier à une ligne (clic sur un diagnostic). */
+  onOpenFile?: (path: string, line: number, col: number) => void;
+  /**
+   * Session d'agent dont on veut suivre le terminal (mode IA/IDE). Quand elle est
+   * fournie, un onglet « Agent » en LECTURE SEULE apparaît dans la liste : il
+   * affiche, en direct, les commandes shell que l'agent exécute. Le client ne
+   * peut rien y taper — c'est un miroir, pas un shell.
+   */
+  agentSessionId?: string | null;
+  /**
+   * Quand `true`, le panneau REMPLIT toute la hauteur de son conteneur (hauteur
+   * 100%) au lieu d'utiliser la hauteur persistée redimensionnable.
+   *
+   * Cas d'usage : le terminal affiché comme ONGLET plein écran (mode IA) — il n'a
+   * pas de sens de lui garder une hauteur figée qui laisse un vide sous lui. Le
+   * panneau bas classique de l'éditeur laisse `fill` à `false` (hauteur
+   * redimensionnable conservée).
+   */
+  fill?: boolean;
+  /**
+   * Envoi de la sélection du terminal vers l'input du chat (« Add to AI »).
+   * Relayé à chaque instance de terminal ; le panneau ne fait que transmettre.
+   */
+  onAddSelectionToAi?: (text: string) => void;
 }
+
+type BottomView = 'terminal' | 'problems' | 'output';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -131,6 +183,23 @@ function PanelBtn({
   );
 }
 
+/** Pastille « live » du terminal agent : bleue pulsée tant que la commande tourne. */
+function AgentLiveBadge({ sessionId }: { sessionId: string }) {
+  const { running } = useAgentTerminal(sessionId);
+  if (!running) return null;
+  return (
+    <span
+      title="Command running"
+      style={{
+        width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+        backgroundColor: "var(--origin-accent-blue)",
+        animation: "pulse 1.2s ease-in-out infinite",
+        display: "inline-block",
+      }}
+    />
+  );
+}
+
 function ShellDot({ info }: { info: TabShellInfo | undefined }) {
   if (!info) return null;
   if (info.state === 'running') {
@@ -157,7 +226,8 @@ function ShellDot({ info }: { info: TabShellInfo | undefined }) {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden }, ref) {
+const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ cwd, height, onResize, onClose, hidden, rootPath = null, onOpenFile, agentSessionId = null, fill = false, onAddSelectionToAi }, ref) {
+  const [view, setView] = useState<BottomView>('terminal');
   const [tabs, setTabs] = useState<TermTab[]>(() => loadSavedTabs(cwd, "bash"));
   const [activeId, setActiveId] = useState<number>(() => {
     const idx = loadSavedActiveIndex(tabs.length);
@@ -168,6 +238,12 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const prevCwdRef = useRef(cwd);
   const [clearKeys, setClearKeys] = useState<Record<number, number>>({});
   const [pendingInputs, setPendingInputs] = useState<Record<number, string>>({});
+  // Insertion sans exécution (bouton « insérer dans le terminal » d'un bloc de
+  // code) : texte injecté dans le PTY de l'onglet VISÉ, sans `\r`. Le `nonce`
+  // force la réinjection même si deux demandes portent le même texte.
+  const insertNonceRef = useRef(0);
+  const [pendingInserts, setPendingInserts] = useState<Record<number, { text: string; nonce: number }>>({});
+  const [taskSpawns, setTaskSpawns] = useState<Record<number, { program: string; args: string[] }>>({});
   const [shellInfos, setShellInfos] = useState<Record<number, TabShellInfo>>({});
   const [hoveredTab, setHoveredTab] = useState<number | null>(null);
   const exitClearTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -175,7 +251,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
   useImperativeHandle(ref, () => ({
-    addTab,
+    addTab() { setView('terminal'); addTab(); },
     clearActive() {
       setClearKeys(prev => ({ ...prev, [activeId]: (prev[activeId] ?? 0) + 1 }));
     },
@@ -188,7 +264,24 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       setTabs((prev) => [...prev, { id, name, cwd }]);
       setActiveId(id);
       setPendingInputs(prev => ({ ...prev, [id]: command }));
+      setView('terminal');
     },
+    runTaskInNewTab(name: string, program: string, args: string[]) {
+      const id = nextId.current++;
+      setTabs((prev) => [...prev, { id, name, cwd }]);
+      setActiveId(id);
+      setTaskSpawns(prev => ({ ...prev, [id]: { program, args } }));
+      setView('terminal');
+    },
+    insertIntoActive(text: string) {
+      // On écrit dans l'onglet ACTIF : pas de nouvel onglet (l'utilisateur veut
+      // compléter une ligne de commande existante, pas en ouvrir une autre).
+      const nonce = ++insertNonceRef.current;
+      setPendingInserts(prev => ({ ...prev, [activeId]: { text, nonce } }));
+      setView('terminal');
+    },
+    showProblems() { setView('problems'); },
+    showOutput() { setView('output'); },
   }));
 
   // ── Resolve the real shell name, then restore/create the initial tab ─────
@@ -230,16 +323,51 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     saveActiveIndex(tabs, activeId);
   }, [activeId, tabs]);
 
+  // ── Plafond réel de hauteur ──────────────────────────────────────────────
+  // La hauteur est PERSISTÉE (localStorage) : si la fenêtre a rétréci ou si une
+  // grande valeur a été mémorisée, un rendu brut de `height` débordait du
+  // conteneur flex parent (le terminal était coupé sur l'axe Y, et « descendait »
+  // en poussant la mise en page). On mesure donc l'espace réellement disponible
+  // dans le parent et on borne la hauteur rendue entre MIN_HEIGHT et cet espace.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [maxAvailable, setMaxAvailable] = useState<number>(() =>
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerHeight - RESERVED_ABOVE,
+  );
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !el.parentElement) return;
+    const parent = el.parentElement;
+    const measure = () => {
+      // `clientHeight` du parent = espace total alloué au panneau bas. On réserve
+      // une petite marge pour ne jamais coller les deux bords.
+      const avail = parent.clientHeight;
+      if (avail > 0) setMaxAvailable(avail);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(parent);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+
+  const renderHeight = Math.max(MIN_HEIGHT, Math.min(height, maxAvailable));
+  // En mode « fill » (onglet plein écran), on occupe TOUT l'espace du conteneur :
+  // `flex: 1` + hauteur minimale nulle, plutôt qu'une hauteur figée qui laissait
+  // un vide sous le terminal. Le redimensionnement vertical n'a alors pas de sens.
+  const filling = fill;
+  const rootHeight: number | string = filling ? "100%" : renderHeight;
+
   // ── Resize drag ──────────────────────────────────────────────────────────
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      dragRef.current = { startY: e.clientY, startH: height };
+      dragRef.current = { startY: e.clientY, startH: renderHeight };
 
       function onMove(ev: MouseEvent) {
         if (!dragRef.current) return;
         const delta = dragRef.current.startY - ev.clientY;
-        onResize(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
+        onResize(Math.min(maxAvailable, Math.max(MIN_HEIGHT, dragRef.current.startH + delta)));
       }
 
       function onUp() {
@@ -251,7 +379,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [height, onResize],
+    [renderHeight, onResize, maxAvailable],
   );
 
   // ── Reset tabs when project folder changes ───────────────────────────────
@@ -263,6 +391,14 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     setTabs(fresh);
     setActiveId(newId);
   }, [cwd]);
+
+  // ── Onglet effectivement affiché ─────────────────────────────────────────
+  // Si l'onglet « Agent » était sélectionné mais que le terminal de l'agent
+  // n'existe plus (fin de run), on retombe sur le premier onglet utilisateur —
+  // sans setState dans un effet (simple dérivation au rendu).
+  const effectiveActiveId = (!agentSessionId && activeId === AGENT_TAB_ID)
+    ? (tabs[0]?.id ?? activeId)
+    : activeId;
 
   // ── Tab management ───────────────────────────────────────────────────────
   function addTab() {
@@ -321,15 +457,19 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div
+      ref={rootRef}
       style={{
-        height,
+        height: rootHeight,
+        flex: filling ? 1 : undefined,
+        minHeight: filling ? 0 : undefined,
         flexShrink: 0,
         display: hidden ? "none" : "flex",
         flexDirection: "column",
         backgroundColor: "var(--origin-bg-panel)",
       }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — masquée en mode « fill » : la hauteur n'est pas réglable. */}
+      {!filling && (
       <div
         onMouseDown={handleDragStart}
         style={{ height: 4, flexShrink: 0, cursor: "row-resize" }}
@@ -340,6 +480,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
         }}
       />
+      )}
 
       {/* Header */}
       <div
@@ -355,37 +496,71 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           userSelect: "none",
         }}
       >
-        {/* Panel title */}
-        <span
-          style={{
-            flex: 1,
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--origin-fg-default)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          Terminal
-        </span>
+        {/* Panel tabs */}
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, overflow: "hidden" }}>
+          {([['terminal', 'Terminal'], ['problems', 'Problems'], ['output', 'Output']] as const).map(([id, label]) => {
+            const active = view === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setView(id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "0 8px", height: 22, borderRadius: 4, border: "none",
+                  background: active ? "var(--origin-bg-active)" : "transparent",
+                  color: active ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                  fontSize: 12, fontWeight: active ? 600 : 400, cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--origin-bg-hover)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
 
-        {/* New terminal */}
-        <PanelBtn onClick={addTab} title="New Terminal">
-          <Plus size={13} />
-        </PanelBtn>
+        {/* New terminal — only relevant in the Terminal view */}
+        {view === "terminal" && (
+          <PanelBtn onClick={addTab} title="New Terminal">
+            <Plus size={13} />
+          </PanelBtn>
+        )}
 
         {/* Close panel */}
-        <PanelBtn onClick={onClose} title="Close Terminal (Ctrl+`)">
+        <PanelBtn onClick={onClose} title={`Close Panel (${formatShortcut('ctrl+`')})`}>
           <X size={12} />
         </PanelBtn>
       </div>
 
-      {/* Body: terminal on the left, tab list on the right */}
+      {view === "problems" ? (
+        <ProblemsPanel
+          rootPath={rootPath}
+          onOpenFile={(path, line, col) => onOpenFile?.(path, line, col)}
+        />
+      ) : view === "output" ? (
+        <OutputPanel />
+      ) : (
+      /* Body: terminal on the left, tab list on the right */
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
         {/* Terminal instances — all mounted, only active is visible */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+
+          {/* Terminal de l'agent (lecture seule) — monté uniquement pendant un run */}
+          {agentSessionId && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                opacity: effectiveActiveId === AGENT_TAB_ID ? 1 : 0,
+                pointerEvents: effectiveActiveId === AGENT_TAB_ID ? "auto" : "none",
+              }}
+            >
+              <AgentTerminalView sessionId={agentSessionId} active={effectiveActiveId === AGENT_TAB_ID} />
+            </div>
+          )}
 
           {tabs.map((tab) => (
             <div
@@ -393,8 +568,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
               style={{
                 position: "absolute",
                 inset: 0,
-                opacity: tab.id === activeId ? 1 : 0,
-                pointerEvents: tab.id === activeId ? "auto" : "none",
+                opacity: tab.id === effectiveActiveId ? 1 : 0,
+                pointerEvents: tab.id === effectiveActiveId ? "auto" : "none",
               }}
             >
               <TerminalInstance
@@ -402,8 +577,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
                 active={tab.id === activeId}
                 clearKey={clearKeys[tab.id] ?? 0}
                 pendingInput={pendingInputs[tab.id]}
+                insertRequest={pendingInserts[tab.id]}
+                task={taskSpawns[tab.id]}
                 onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
                 onShellState={(state, exitCode) => handleShellState(tab.id, state, exitCode)}
+                onAddSelectionToAi={onAddSelectionToAi}
               />
             </div>
           ))}
@@ -421,8 +599,40 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
             gap: 1,
           }}
         >
+          {agentSessionId && (
+            <div
+              onClick={() => setActiveId(AGENT_TAB_ID)}
+              title="Agent terminal (read-only)"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                height: 28,
+                paddingLeft: 12,
+                paddingRight: 8,
+                cursor: "pointer",
+                fontSize: 12,
+                fontFamily: "var(--font-mono)",
+                color: effectiveActiveId === AGENT_TAB_ID ? "var(--origin-fg-default)" : "var(--origin-fg-muted)",
+                backgroundColor: effectiveActiveId === AGENT_TAB_ID
+                  ? "var(--origin-bg-active)"
+                  : hoveredTab === AGENT_TAB_ID
+                    ? "var(--origin-bg-hover)"
+                    : "transparent",
+              }}
+              onMouseEnter={() => setHoveredTab(AGENT_TAB_ID)}
+              onMouseLeave={() => setHoveredTab((h) => (h === AGENT_TAB_ID ? null : h))}
+            >
+              <img src="/logo-code.svg" width={13} height={13} alt="" style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Agent
+              </span>
+              <AgentLiveBadge sessionId={agentSessionId} />
+            </div>
+          )}
+
           {tabs.map((tab) => {
-            const isActive = tab.id === activeId;
+            const isActive = tab.id === effectiveActiveId;
             return (
               <div
                 key={tab.id}
@@ -483,6 +693,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           })}
         </div>
       </div>
+      )}
     </div>
   );
 });

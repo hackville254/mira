@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Origin",
+  "productName": "Mira",
   "version": "0.1.4",
-  "identifier": "com.originide.ide",
+  "identifier": "com.mira.ide",
   "build": {
     "beforeDevCommand": "npm run vite",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Origin",
+        "title": "Mira",
         "width": 1280,
         "height": 800,
         "decorations": false,
@@ -24,9 +24,14 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mira"]
+      }
+    },
     "updater": {
       "endpoints": [
-        "https://github.com/Origin-AI-IDE/origin/releases/latest/download/latest.json"
+        "https://github.com/hackville254/mira/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4NjgwODA5OUE5MUFGMTUKUldRVnI1R2FDUWhvT0crTVBMM3IvelRlSmx2c0UwWHJXSjRITjJYMXYrQmxhMWtNUmMxTFlhaXQK",
       "windows": {
@@ -37,7 +42,19 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis", "msi"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "msi",
+      "appimage",
+      "deb",
+      "rpm"
+    ],
+    "resources": {
+      "cline-sidecar/dist/index.mjs": "cline-sidecar/dist/index.mjs",
+      "default_skills": "default_skills"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,9 +62,18 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "10.15"
+    },
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
       }
     }
   }

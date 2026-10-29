@@ -27,12 +27,9 @@ export default function WelcomePage({ onStart, onSkip }: Props) {
 
       {/* Hero */}
       <div className="flex flex-col items-center" style={{ gap: '12px', marginBottom: '20px' }}>
-        <img src={logoCode} alt="Origin" style={{ height: '56px', width: 'auto' }} />
+        <img src={logoCode} alt="Mira" style={{ height: '56px', width: 'auto' }} />
         <p style={{ fontSize: '21px', fontWeight: 600, color: 'var(--origin-fg-default)', letterSpacing: '-0.3px', textAlign: 'center', lineHeight: 1.3 }}>
-          Open-source AI coding without lock-in.
-        </p>
-        <p style={{ fontSize: '14px', color: 'var(--origin-fg-subtle)', textAlign: 'center', lineHeight: 1.5, maxWidth: '460px' }}>
-          Connect Claude, GPT, Gemini, OpenRouter, Ollama, or your own infrastructure.
+          A Cursor-class AI code editor, your way.
         </p>
       </div>
 

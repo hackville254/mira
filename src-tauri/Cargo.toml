@@ -1,8 +1,8 @@
 [package]
-name = "origin"
+name = "mira"
 version = "0.1.4"
-description = "Origin — AI-native code editor"
-authors = ["Origin IDE"]
+description = "Mira — AI-native code editor"
+authors = ["Mira IDE"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,8 +11,18 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "origin_lib"
+name = "mira_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# `default` = distribution directe (GitHub Releases) : l'auto-updater Tauri est
+# actif sur toutes les plateformes.
+default = []
+# `msstore` = build destiné au Microsoft Store (MSIX). L'updater Tauri est
+# DÉSACTIVÉ à la compilation : le Store gère lui-même les mises à jour, et un
+# updater concurrent écraserait le paquet géré par Windows (comportement
+# interdit par la politique du Store). Voir `src/distribution.rs`.
+msstore = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -20,21 +30,57 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["unstable"] }
 url = "2"
+# Résolution DNS (validation anti-SSRF des endpoints personnalisés) : voir
+# `ai::validate_endpoint_url`, qui refuse les adresses privées/loopback.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "process", "io-util", "time", "net"] }
 dpi = "0.1"
-tauri-plugin-opener = "2"
-tauri-plugin-store = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2.7.1"
+tauri-plugin-store = "2.5.0"
+tauri-plugin-dialog = "2.8.2"
+# Deep links `mira://` (retour du navigateur après un device flow) : le plugin
+# single-instance réémet la seconde instance vers l'app déjà ouverte, et le
+# plugin deep-link décode l'URL. Desktop uniquement (pas de cible mobile ici).
+tauri-plugin-deep-link = "2"
+[target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+# Coffre de secrets local (repli sans prompt keychain, cf. `keychain.rs`) :
+# chiffrement authentifié AES-256-GCM + dérivation de clé HKDF-SHA256.
+aes-gcm = "0.10"
+hkdf = "0.12"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.8"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "process", "io-util", "time"] }
 sysinfo = "0.30"
 reqwest = { version = "0.12", features = ["json"] }
-tauri-plugin-sql = { version = "2", features = ["sqlite"] }
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+tauri-plugin-sql = { version = "2.5.0", features = ["sqlite"] }
+tauri-plugin-updater = "2.13.3"
+tauri-plugin-process = "2.4.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+base64 = "0.22"
+regex = "1"
+# Surveillance du système de fichiers (explorateur) : FSEvents (macOS),
+# inotify (Linux), ReadDirectoryChangesW (Windows). Voir `src/fs_watch.rs`.
+notify = "6"
+
+# macOS uniquement : activation de l'app au niveau de l'OS pour que `set_focus`
+# ramène réellement la fenêtre au premier plan après une authentification ou un
+# deep link (voir `src/window_focus.rs`). Scoped à macOS : ces crates ne sont
+# pas compilées sur les autres plateformes.
+[target."cfg(target_os = \"macos\")".dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
+[dev-dependencies]
+# `macros` : nécessaire aux tests `#[tokio::test]` (routage des réponses de
+# commande). On ne l'ajoute PAS aux dépendances de production pour ne pas
+# embarquer la machinerie de macro inutilement.
+tokio = { version = "1", features = ["macros"] }
 
 [profile.release]
 opt-level   = "z"      # optimize for size (not speed)

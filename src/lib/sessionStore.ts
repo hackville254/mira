@@ -78,11 +78,26 @@ export function dbMsgsToDisplay(msgs: DbMessage[]): DisplayMessage[] {
         const raw = JSON.parse(m.tool_calls_json) as Record<string, unknown>[];
         if (raw.length > 0) {
           if ("type" in raw[0]) {
-            restoredParts = raw.map(p =>
-              (p.type === "tool-call" && p.tc)
-                ? { type: "tool-call" as const, tc: { ...(p.tc as ToolCallDisplay), status: "complete" as const, approve: undefined, reject: undefined } }
-                : { type: "text" as const, content: String((p as { content?: unknown }).content ?? "") }
-            );
+            restoredParts = raw.map(p => {
+              if (p.type === "tool-call" && p.tc) {
+                return { type: "tool-call" as const, tc: { ...(p.tc as ToolCallDisplay), status: "complete" as const, approve: undefined, reject: undefined } };
+              }
+              if (p.type === "status") {
+                return {
+                  type: "status" as const,
+                  kind: (p.kind as "compaction" | "retry") ?? "compaction",
+                  detail: String((p as { detail?: unknown }).detail ?? ""),
+                  savedTokens: typeof p.savedTokens === "number" ? p.savedTokens : undefined,
+                };
+              }
+              if (p.type === "plan-card") {
+                return p as unknown as MessagePart;
+              }
+              if (p.type === "reasoning") {
+                return { type: "reasoning" as const, content: String((p as { content?: unknown }).content ?? "") };
+              }
+              return { type: "text" as const, content: String((p as { content?: unknown }).content ?? "") };
+            });
           } else {
             restoredParts = raw.map(tc => ({
               type: "tool-call" as const,
@@ -120,6 +135,11 @@ export function dbMsgsToDisplay(msgs: DbMessage[]): DisplayMessage[] {
       parts: finalParts && finalParts.length > 0 ? finalParts : undefined,
       sourceFilePath: m.message_type === "assistant" ? lastUserSingleMention : undefined,
       fileMentions,
+      dbId: m.id,
+      // Tour échoué faute de crédit Orvyx : on restaure l'annotation pour que
+      // la carte « passer à une offre supérieure » réapparaisse après un
+      // rechargement de la conversation.
+      quotaExhausted: m.status === "quota" || undefined,
       editorContext: m.editor_context_json
         ? { ...(JSON.parse(m.editor_context_json) as object), code: "", language: "" } as EditorContext
         : undefined,

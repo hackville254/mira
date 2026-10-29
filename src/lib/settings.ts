@@ -33,6 +33,10 @@ export interface IDESettings {
   'terminal.tabs': SavedTermTab[];
   'terminal.activeIndex': number;
   'debug.lastLaunchConfig': DebugLastConfig | null;
+  /** Mode applicatif global : « ide » (éditeur) ou « ai » (centré agent / SOLO). */
+  'app.mode': 'ide' | 'ai';
+  /** Todo lists persistantes par session : `{ [sessionId]: TodoItem[] }`. */
+  'todo.list': Record<string, { id: string; content: string; status: string }[]>;
 }
 
 const DEFAULTS: IDESettings = {
@@ -49,6 +53,8 @@ const DEFAULTS: IDESettings = {
   'terminal.tabs': [],
   'terminal.activeIndex': 0,
   'debug.lastLaunchConfig': null,
+  'app.mode': 'ide',
+  'todo.list': {},
 };
 
 let _store: Store | null = null;
@@ -67,6 +73,12 @@ export async function getSetting<K extends keyof IDESettings>(key: K): Promise<I
 export async function setSetting<K extends keyof IDESettings>(key: K, value: IDESettings[K]): Promise<void> {
   const store = await getStore();
   await store.set(key, value);
+}
+
+/** Supprime une clé du store (retour au défaut au prochain `getSetting`). */
+export async function deleteSetting<K extends keyof IDESettings>(key: K): Promise<void> {
+  const store = await getStore();
+  await store.delete(key);
 }
 
 export async function pushRecentProject(project: RecentProject): Promise<void> {

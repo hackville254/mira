@@ -1,0 +1,159 @@
+# Release — distribution DIRECTE (GitHub Releases) : macOS + Linux.
+#
+# PÉRIMÈTRE
+# ---------
+# Ce workflow couvre les canaux où l'app se met à jour ELLE-MÊME via
+# `tauri-plugin-updater` :
+#   - macOS : .app / .dmg (signature ad-hoc) + archive de MAJ (.app.zip + .sig)
+#   - Linux : .AppImage / .deb / .rpm + signature de l'archive de MAJ
+#
+# Windows N'EST PAS ici : il est distribué via Microsoft Store (MSIX), où c'est
+# le Store qui gère les mises à jour (voir src-tauri/msix/ + ENGINEERING_LOG).
+# Le build Windows hors Store reste possible manuellement (workflow_dispatch).
+#
+# SIGNATURES
+# ----------
+# 1. Update signature (minisign) : OBLIGATOIRE pour l'auto-updater Tauri, sur
+#    macOS ET Linux. Indépendante des signatures OS. Fournie via
+#    TAURI_SIGNING_PRIVATE_KEY (+ password). C'est elle qui « signe » le
+#    `latest.json`.
+# 2. macOS : signature ad-hoc gratuite (`APPLE_SIGNING_IDENTITY="-"`), pas de
+#    notarisation (pas de compte Apple Developer). L'utilisateur retire la
+#    quarantaine au 1er lancement (voir docs). Gatekeeper affichera « développeur
+#    non identifié » — contournable via Clic droit > Ouvrir.
+# 3. Windows (hors Store) : non signé ; SmartScreen reste visible. Non utilisé en
+#    production (le Store est le canal officiel Windows).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # macOS — build universel, ad-hoc, + artefacts de mise à jour
+  # ---------------------------------------------------------------------------
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install deps
+        run: npm ci
+
+      # Signature ad-hoc : « - » = pas de certificat Apple. Suffisant pour
+      # supprimer l'erreur « app endommagée » une fois la quarantaine retirée.
+      - name: Build (macOS, universal, ad-hoc)
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Linux — AppImage / deb / rpm + signature de MAJ
+  # ---------------------------------------------------------------------------
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev libayatana-appindicator3-dev
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build (Linux)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Publication — release GitHub + latest.json pour l'auto-updater
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.sig' -o -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+
+      # NOTE : `tauri build` génère `latest.json` (au format attendu par
+      # tauri-plugin-updater) dans le bundle. Publier ce fichier en tant qu'asset
+      # de release « latest » permet à l'endpoint
+      # https://github.com/hackville254/mira/releases/latest/download/latest.json
+      # de le servir. À compléter quand le premier build aura produit le fichier
+      # (son emplacement exact varie selon la plateforme/target).

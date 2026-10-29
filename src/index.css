@@ -8,6 +8,12 @@
   100% { content: ""; }
 }
 
+/* Rotation continue — spinner de tâche active (rail de tâches, multitasking). */
+@keyframes origin-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 @font-face {
   font-family: 'Geist Sans';
   src: url('./assets/fonts/GeistSans-Variable.woff2') format('woff2');
@@ -47,6 +53,31 @@
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+/* Onboarding : carrousel infini des logos de modèles. La piste contient la
+   liste dupliquée ; on translate de -50% pour boucler sans couture. */
+@keyframes mira-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@keyframes mira-marquee-rev {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+/* Source Control : n'affiche les actions (stage/discard) qu'au survol de la ligne. */
+.origin-scm-actions { opacity: 0; transition: opacity 0.1s ease; }
+.origin-scm-row:hover .origin-scm-actions { opacity: 1; }
+.origin-scm-row:hover { background-color: var(--origin-bg-hover); }
+.origin-scm-actions button:hover { background-color: var(--origin-bg-hover); color: var(--origin-fg-default); }
+
+/* Sélection épinglée (« Add to AI ») : surbrillance persistante, indépendante de
+   la sélection native de CodeMirror (qui disparaît au blur de l'éditeur). */
+.origin-pinned-selection {
+  background-color: color-mix(in srgb, var(--origin-accent-default) 28%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--origin-accent-default) 45%, transparent);
 }
 
 *, *::before, *::after {
@@ -125,4 +156,38 @@ html[data-density="compact"] [data-origin-tree-row] {
 }
 .cm-editor.cm-focused .cm-selectionBackground {
   background-color: var(--origin-bg-selection-focused) !important;
+}
+
+/* Occurrences de la sélection / du mot sous le curseur (highlightSelectionMatches).
+   VS Code utilise un simple encadré discret (editor.selectionHighlightBorder),
+   SANS fond : on réplique avec une fine bordure, sans remplissage, pour ne pas
+   agresser l'œil (surtout pour le mot sous le curseur). */
+.cm-selectionMatch {
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 40%, transparent);
+  border-radius: 2px;
+}
+/* Le mot sous le curseur : bordure un peu plus marquée mais toujours SANS fond. */
+.cm-selectionMatch-main {
+  outline: 1px solid color-mix(in srgb, var(--origin-accent-blue) 55%, transparent);
+  border-radius: 2px;
+}
+
+/* Tooltip hover LSP (signature / documentation au survol) — façon VS Code. */
+.cm-tooltip.cm-tooltip-hover {
+  max-width: 560px;
+  background: var(--origin-bg-overlay, var(--origin-bg-sidebar));
+  border: 1px solid var(--origin-border-default);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  color: var(--origin-fg-default);
+}
+.origin-lsp-hover {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
 }

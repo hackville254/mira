@@ -11,8 +11,9 @@
  *   - no `require` / `import` / filesystem
  *   - no `invoke` (so no Tauri command surface, no SSRF, no RCE)
  *
- * The only global we inject is a `vscode` object whose methods are host
- * functions marshalled onto the {@link HostBridge} interface. Every host
+ * The only functional global we inject is an `origin` object (Origin's own
+ * extension API, intentionally NOT the VS Code `vscode` API) whose methods are
+ * host functions marshalled onto the {@link HostBridge} interface. Every host
  * function runs through the permission mediator on the host side, so a
  * misbehaving extension cannot exceed what the user consented to.
  *
@@ -136,7 +137,7 @@ export interface ExtensionRuntime {
   evalModule: (source: string, filename?: string) => void;
   /**
    * Populate the in-VM extension metadata table read (synchronously) by
-   * `vscode.extensions.getExtension` / `.all`. MUST be called before
+   * `origin.extensions.getExtension` / `.all`. MUST be called before
    * {@link evalModule} — bundles read their own manifest at module load.
    */
   setExtensionsSnapshot: (entries: ExtensionSnapshotEntry[]) => void;
@@ -148,7 +149,7 @@ export interface ExtensionRuntime {
   dispose: () => void;
 }
 
-/** One entry of the `vscode.extensions.*` metadata snapshot. */
+/** One entry of the `origin.extensions.*` metadata snapshot. */
 export interface ExtensionSnapshotEntry {
   id: string;
   extensionPath: string;
@@ -173,7 +174,7 @@ export async function createExtensionRuntime(
 
   installConsole(ctx, onLog);
   installWebGlobals(ctx);
-  installVscodeShim(ctx, bridge, onLog);
+  installOriginApi(ctx, bridge, onLog);
   runSetup(ctx, `globalThis.__originModule = {};`);
   // Empty metadata table by default; the host fills it before eval so bundles
   // that read their own manifest at module load get a synchronous answer.
@@ -252,20 +253,20 @@ export async function createExtensionRuntime(
 // ── Module plumbing ───────────────────────────────────────────────────────────
 
 /**
- * Wrap extension source so it behaves like a CJS module with the `vscode` import.
+ * Wrap extension source so it behaves like a CJS module with the `origin` import.
  *
  * Real `.vsix` bundles are produced by webpack/esbuild targeting Node.js, so
  * their preamble calls `require("path")`, `require("fs")`, ... before any of our
  * shim runs. We therefore expose a small, deliberately inert `require`:
  *
- *   - `vscode` resolves to the injected shim;
+ *   - `origin` (and its legacy `vscode` alias) resolves to the injected API;
  *   - a tiny set of Node built-ins used at load time (`path`, `os`, `util`,
  *     `url`) resolve to minimal stubs so the bundle can initialise;
  *   - a webpack runtime (`__webpack_require__` + `__webpack_modules__` cache) is
  *     provided, because some bundles reference it from the entrypoint scope;
  *   - a missing, unneeded module resolves to `{}` (webpack `ignore` semantics)
  *     rather than throwing — a single `require("fs")` must not break an
- *     otherwise inert extension. The capability-gated `vscode` API remains the
+ *     otherwise inert extension. The capability-gated `origin` API remains the
  *     only *functional* surface; stubs never touch the host.
  */
 function wrapCommonJs(source: string, extensionPath: string): string {
@@ -335,14 +336,14 @@ __webpack_require__.r = function(exports){ try { Object.defineProperty(exports, 
 __webpack_require__.n = function(m){ var g = m && m.__esModule ? function(){ return m.default; } : function(){ return m; }; g.a = g(); return g; };
 __webpack_require__.o = function(o, k){ return Object.prototype.hasOwnProperty.call(o, k); };
 function __originRequire(name){
-  if (name === 'vscode') return globalThis.__originVscode;
+  if (name === 'origin' || name === 'vscode') return globalThis.__originApi;
   if (Object.prototype.hasOwnProperty.call(__originNodeShims, name)) return __originNodeShims[name];
   if (typeof name === 'string' && name.indexOf('node:') === 0) { var nn = name.slice(5); if (Object.prototype.hasOwnProperty.call(__originNodeShims, nn)) return __originNodeShims[nn]; }
   return {};
 }
 globalThis.__originRequire = __originRequire;
 `;
-  // Deliberately NO real `require`: only `vscode` is functional; unknown modules
+  // Deliberately NO real `require`: only `origin` is functional; unknown modules
   // resolve to an inert `{}` (webpack `ignore` semantics) so a stray Node
   // built-in never aborts loading. No dynamic host access is possible.
   return `(function(){
@@ -471,6 +472,81 @@ function installConsole(ctx: QuickJSContext, onLog: LogFn): void {
  */
 function installWebGlobals(ctx: QuickJSContext): void {
   runSetup(ctx, `
+    // process: Node.js bundles produced for the desktop extension host read
+    // process.platform / process.env / process.cwd() at module load. VS Code's
+    // web extension host does NOT expose process either (see VS Code "Web
+    // Extensions" docs: Node.js globals such as process, os, setImmediate,
+    // path, util, url are unavailable) — web extensions must polyfill it
+    // themselves. Origin's QuickJS sandbox sits in the same category, so we
+    // provide the same kind of inert polyfill: enough surface to let a bundle
+    // initialise, with ZERO host access (no real env/PATH, no stdin/stdout, no
+    // FS reads). Anything host-bound stays gated behind the origin bridge.
+    if (typeof globalThis.process === 'undefined') {
+      var __originNoop = function(){};
+      var __originEnv = { __proto__: null };
+      var __originProcess = {
+        platform: 'linux',
+        arch: 'x64',
+        type: 'extensionHost',
+        // Keep the shape features expect, without inventing a real runtime.
+        version: 'v20.0.0',
+        versions: { node: '20.0.0', v8: '0.0.0', electron: '0.0.0' },
+        env: __originEnv,
+        argv: ['node', 'extensionHost'],
+        execPath: '/usr/bin/node',
+        cwd: function(){ return __originExtDir || '/'; },
+        chdir: __originNoop,
+        nextTick: function(fn){ var a = Array.prototype.slice.call(arguments, 1); return Promise.resolve().then(function(){ fn.apply(null, a); }); },
+        hrtime: Object.assign(function(){ return [0, 0]; }, { bigint: function(){ return BigInt(0); } }),
+        memoryUsage: function(){ return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0 }; },
+        uptime: function(){ return 0; },
+        // EventEmitter surface: registration is accepted but never invoked, so a
+        // bundle registering shutdown hooks cannot observe the host.
+        on: __originNoop, once: __originNoop, off: __originNoop,
+        removeListener: __originNoop, removeAllListeners: __originNoop,
+        emit: function(){ return false; },
+        listeners: function(){ return []; },
+        // Explicitly absent host handles: accessed lazily so reading them is a
+        // no-op object rather than a crash.
+        stdin: { on: __originNoop, read: function(){ return null; } },
+        stdout: { write: function(){ return true; }, on: __originNoop },
+        stderr: { write: function(){ return true; }, on: __originNoop },
+      };
+      globalThis.process = __originProcess;
+    }
+    // global alias — Node bundles reference it directly.
+    if (typeof globalThis.global === 'undefined') {
+      globalThis.global = globalThis;
+    }
+    // setImmediate / clearImmediate — present in Node, absent in QuickJS.
+    if (typeof globalThis.setImmediate !== 'function') {
+      globalThis.setImmediate = function(fn){ var a = Array.prototype.slice.call(arguments, 1); return Promise.resolve().then(function(){ fn.apply(null, a); }); };
+      globalThis.clearImmediate = function(){};
+    }
+    // Buffer — minimal, pure-JS shim for the subset bundles touch at load time
+    // (from/alloc/concat + utf8 via TextEncoder). No host memory is referenced.
+    if (typeof globalThis.Buffer === 'undefined') {
+      var __originBuffer = {
+        from: function(value){
+          if (value && value.__originIsBuffer) return value;
+          var bytes = typeof value === 'string'
+            ? new TextEncoder().encode(value)
+            : (value && value.buffer ? new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength) : new Uint8Array(value || 0));
+          return { __originIsBuffer: true, data: bytes, length: bytes.length, toString: function(){ try { return new TextDecoder().decode(bytes); } catch(e){ return ''; } }, toJSON: function(){ return { type: 'Buffer', data: Array.prototype.slice.call(bytes) }; } };
+        },
+        alloc: function(size){ return globalThis.Buffer.from(new Uint8Array(size || 0)); },
+        concat: function(list){
+          var total = 0, i;
+          for (i = 0; i < list.length; i++) total += (list[i] && list[i].length) || 0;
+          var out = new Uint8Array(total), off = 0;
+          for (i = 0; i < list.length; i++) { var d = list[i] && list[i].data ? list[i].data : new Uint8Array(0); out.set(d, off); off += d.length; }
+          return globalThis.Buffer.from(out);
+        },
+        isBuffer: function(v){ return !!(v && v.__originIsBuffer); },
+        byteLength: function(s){ return (typeof s === 'string' ? new TextEncoder().encode(s) : s || []).length; },
+      };
+      globalThis.Buffer = __originBuffer;
+    }
     if (typeof globalThis.structuredClone !== 'function') {
       globalThis.structuredClone = globalThis.structuredClone || function(value, options) {
         if (value === null || typeof value !== 'object') return value;
@@ -518,75 +594,66 @@ function installWebGlobals(ctx: QuickJSContext): void {
   `);
 }
 
-// ── Shim: vscode.* ────────────────────────────────────────────────────────────
+// ── Shim: origin.* ────────────────────────────────────────────────────────────
 
-/** Build the `vscode` namespace object and attach it to the global. */
-function installVscodeShim(ctx: QuickJSContext, bridge: HostBridge, onLog: LogFn): void {
-  const vscode = ctx.newObject();
+/**
+ * Build the `origin` namespace — Origin's own extension API — and expose it
+ * both as a global and through `require("origin")`.
+ *
+ * This is deliberately a small, flat, Origin-native surface (`commands`,
+ * `workspace`, `editors`, `extensions`, `notify`, `log`) rather than a clone of
+ * the VS Code `vscode` API: our extensions are ours, and a narrower API is both
+ * easier to reason about and a smaller attack surface. Every method here maps
+ * 1:1 onto a capability-gated {@link HostBridge} call.
+ */
+function installOriginApi(ctx: QuickJSContext, bridge: HostBridge, onLog: LogFn): void {
+  const api = ctx.newObject();
 
-  const commands = buildCommands(ctx, bridge, onLog);
-  ctx.setProp(vscode, "commands", commands);
+  const commands = buildOriginCommands(ctx, bridge, onLog);
+  ctx.setProp(api, "commands", commands);
   commands.dispose();
 
-  const windowNs = buildWindow(ctx, bridge, onLog);
-  ctx.setProp(vscode, "window", windowNs);
-  windowNs.dispose();
-
-  const workspace = buildWorkspace(ctx, bridge);
-  ctx.setProp(vscode, "workspace", workspace);
+  const workspace = buildOriginWorkspace(ctx, bridge);
+  ctx.setProp(api, "workspace", workspace);
   workspace.dispose();
 
-  const uri = buildUri(ctx);
-  ctx.setProp(vscode, "Uri", uri);
-  uri.dispose();
+  const editors = buildOriginEditors(ctx, bridge);
+  ctx.setProp(api, "editors", editors);
+  editors.dispose();
 
-  const mode = buildExtensionMode(ctx);
-  ctx.setProp(vscode, "ExtensionMode", mode);
-  mode.dispose();
+  const extensions = buildOriginExtensions(ctx);
+  ctx.setProp(api, "extensions", extensions);
+  extensions.dispose();
 
-  const extNs = buildExtensions(ctx);
-  ctx.setProp(vscode, "extensions", extNs);
-  extNs.dispose();
+  const notify = buildOriginNotify(ctx, bridge, onLog);
+  ctx.setProp(api, "notify", notify);
+  notify.dispose();
 
-  const env = buildEnv(ctx);
-  ctx.setProp(vscode, "env", env);
-  env.dispose();
-
-  const emitter = buildEventEmitter(ctx);
-  ctx.setProp(vscode, "EventEmitter", emitter);
-  emitter.dispose();
-
-  ctx.setProp(vscode, "version", ctx.newString("1.90.0"));
-
-  const disposable = ctx.newObject();
-  const disposableCtor = ctx.newFunction("Disposable", (fn) => {
-    const call = fn;
-    const obj = ctx.newObject();
-    const disposeFn = ctx.newFunction("dispose", () => {
-      ctx.callFunction(call, ctx.undefined, []);
-    });
-    ctx.setProp(obj, "dispose", disposeFn);
-    disposeFn.dispose();
-    return obj;
+  const log = ctx.newFunction("log", (levelHandle, messageHandle) => {
+    const level = String(ctx.dump(levelHandle));
+    const message = String(ctx.dump(messageHandle));
+    const allowed = level === "debug" || level === "info" || level === "warn" || level === "error";
+    onLog(allowed ? (level as LogLevel) : "info", message);
   });
-  ctx.setProp(disposable, "Disposable", disposableCtor);
-  ctx.setProp(vscode, "Disposable", disposableCtor);
-  disposableCtor.dispose();
-  disposable.dispose();
+  ctx.setProp(api, "log", log);
+  log.dispose();
 
-  ctx.setProp(ctx.global, "__originVscode", vscode);
-  vscode.dispose();
+  ctx.setProp(api, "version", ctx.newString("0.1.0"));
+
+  // Export the API both as a global and as a required module.
+  ctx.setProp(ctx.global, "__originApi", api);
+  ctx.setProp(ctx.global, "origin", api);
+  api.dispose();
 }
 
 /**
- * `vscode.commands.*`
+ * `origin.commands.*` — register/execute commands.
  *
  * `registerCommand` stores the QuickJS handler and forwards a host-side
- * callback that no-ops here: the actual invocation is done by the host through
- * {@link RuntimeCommandInvoker}, because the host owns the command registry.
- * To keep the wiring simple and safe, the host passes a per-extension invoker.
+ * callback; the actual invocation is done by the host through the command
+ * registry, which enforces the `commands:register` capability at registration.
  */
-function buildCommands(
+function buildOriginCommands(
   ctx: QuickJSContext,
   bridge: HostBridge,
   onLog: LogFn,
@@ -596,7 +663,7 @@ function buildCommands(
   const register = ctx.newFunction("registerCommand", (idHandle, handler) => {
     const id = ctx.dump(idHandle);
     if (typeof id !== "string") {
-      throw new Error("commands.registerCommand expects a string id");
+      throw new Error("origin.commands.registerCommand expects a string id");
     }
     const key = bridge.registerCommand(id, () => {
       if (!ctx.runtime.alive) return null;
@@ -619,219 +686,86 @@ function buildCommands(
     return bridgeAsync(ctx, () => bridge.executeCommand(id, args));
   });
 
-  const getCommands = ctx.newFunction("getCommands", () =>
-    toVmValue(ctx, bridge.getCommandIds()),
-  );
+  const list = ctx.newFunction("getCommands", () => toVmValue(ctx, bridge.getCommandIds()));
 
   ctx.setProp(commands, "registerCommand", register);
   ctx.setProp(commands, "executeCommand", execute);
-  ctx.setProp(commands, "getCommands", getCommands);
+  ctx.setProp(commands, "getCommands", list);
   register.dispose();
   execute.dispose();
-  getCommands.dispose();
+  list.dispose();
   return commands;
 }
 
-/** `vscode.window.*` */
-function buildWindow(ctx: QuickJSContext, bridge: HostBridge, onLog: LogFn): QuickJSHandle {
-  const win = ctx.newObject();
-
-  const mk = (kind: "info" | "warning" | "error") =>
-    ctx.newFunction("show", (messageHandle) => {
-      const message = String(ctx.dump(messageHandle));
-      return bridgeAsync(ctx, () => bridge.showMessage(kind, message));
-    });
-
-  const showInfo = mk("info");
-  const showWarn = mk("warning");
-  const showError = mk("error");
-
-  ctx.setProp(win, "showInformationMessage", showInfo);
-  ctx.setProp(win, "showWarningMessage", showWarn);
-  ctx.setProp(win, "showErrorMessage", showError);
-  // Legacy alias still used by older extensions.
-  ctx.setProp(win, "showMessage", showInfo);
-
-  // Output channel: the extension's own log sink. Lines are routed to the host
-  // extension log (already captured from `console`); it never reaches a real
-  // terminal. Purely a logging convenience, not a privileged surface.
-  const createOutputChannel = ctx.newFunction("createOutputChannel", (nameHandle) => {
-    const name = String(ctx.dump(nameHandle));
-    const channel = ctx.newObject();
-    const append = ctx.newFunction("append", (v) => {
-      onLog("info", `[${name}] ${String(ctx.dump(v))}`);
-    });
-    const appendLine = ctx.newFunction("appendLine", (v) => {
-      onLog("info", `[${name}] ${String(ctx.dump(v))}`);
-    });
-    const noop = ctx.newFunction("__noop", () => ctx.undefined);
-    ctx.setProp(channel, "append", append);
-    ctx.setProp(channel, "appendLine", appendLine);
-    ctx.setProp(channel, "show", noop);
-    ctx.setProp(channel, "hide", noop);
-    ctx.setProp(channel, "clear", noop);
-    ctx.setProp(channel, "replace", appendLine);
-    ctx.setProp(channel, "dispose", noop);
-    ctx.setProp(channel, "name", ctx.newString(name));
-    append.dispose();
-    appendLine.dispose();
-    noop.dispose();
-    return channel;
-  });
-  ctx.setProp(win, "createOutputChannel", createOutputChannel);
-  createOutputChannel.dispose();
-
-  // A read-only view of the active editor, refreshed on each access.
-  const activeEditor = ctx.newFunction("__activeEditor", () => {
-    const doc = bridge.getActiveEditor();
-    if (!doc) return ctx.null;
-    return toVmValue(ctx, {
-      document: {
-        uri: { scheme: "file", fsPath: doc.uri, path: doc.uri },
-        languageId: doc.languageId,
-        fileName: doc.uri,
-        getText: undefined,
-      },
-    });
-  });
-  ctx.setProp(win, "__activeEditor", activeEditor);
-
-  for (const h of [showInfo, showWarn, showError, activeEditor]) h.dispose();
-  return win;
-}
-
-/** `vscode.workspace.*` and `vscode.workspace.fs` */
-function buildWorkspace(ctx: QuickJSContext, bridge: HostBridge): QuickJSHandle {
+/** `origin.workspace.*` — workspace root, file I/O, directory listing. */
+function buildOriginWorkspace(ctx: QuickJSContext, bridge: HostBridge): QuickJSHandle {
   const workspace = ctx.newObject();
 
-  const rootFn = ctx.newFunction("__workspaceRoot", () => {
+  const rootFn = ctx.newFunction("getWorkspaceRoot", () => {
     const root = bridge.getWorkspaceRoot();
     return root === null ? ctx.null : ctx.newString(root);
   });
-  ctx.setProp(workspace, "__workspaceRoot", rootFn);
+  ctx.setProp(workspace, "getWorkspaceRoot", rootFn);
   rootFn.dispose();
 
-  // vscode.workspace.fs — promises-based file API.
-  const fs = ctx.newObject();
-  const readFile = ctx.newFunction("readFile", (uriHandle) => {
-    const path = uriToPath(ctx, uriHandle);
-    return bridgeAsync(ctx, () => bridge.readFile(path).then((text) => encodeUtf8(text)));
+  const readFile = ctx.newFunction("readFile", (pathHandle) => {
+    const path = String(ctx.dump(pathHandle));
+    return bridgeAsync(ctx, () => bridge.readFile(path));
   });
-  const writeFile = ctx.newFunction("writeFile", (uriHandle, contentHandle) => {
-    const path = uriToPath(ctx, uriHandle);
-    const raw = ctx.dump(contentHandle);
-    const text = Array.isArray(raw) ? decodeUtf8(raw) : String(raw);
-    return bridgeAsync(ctx, () => bridge.writeFile(path, text));
+  const writeFile = ctx.newFunction("writeFile", (pathHandle, contentHandle) => {
+    const path = String(ctx.dump(pathHandle));
+    const content = String(ctx.dump(contentHandle));
+    return bridgeAsync(ctx, () => bridge.writeFile(path, content).then(() => null));
   });
-  const readDirectory = ctx.newFunction("readDirectory", (uriHandle) => {
-    const path = uriHandle === undefined ? undefined : uriToPath(ctx, uriHandle);
-    return bridgeAsync(ctx, async () => {
-      const entries = await bridge.listDirectory(path);
-      // VS Code FileType: File = 1, Directory = 2.
-      return entries.map((e) => [e.name, e.isDirectory ? 2 : 1]);
-    });
+  const listDirectory = ctx.newFunction("listDirectory", (pathHandle) => {
+    const path = pathHandle === undefined || ctx.typeof(pathHandle) === "undefined"
+      ? undefined
+      : String(ctx.dump(pathHandle));
+    return bridgeAsync(ctx, () => bridge.listDirectory(path));
   });
-  ctx.setProp(fs, "readFile", readFile);
-  ctx.setProp(fs, "writeFile", writeFile);
-  ctx.setProp(fs, "readDirectory", readDirectory);
+  ctx.setProp(workspace, "readFile", readFile);
+  ctx.setProp(workspace, "writeFile", writeFile);
+  ctx.setProp(workspace, "listDirectory", listDirectory);
   readFile.dispose();
   writeFile.dispose();
-  readDirectory.dispose();
-  ctx.setProp(workspace, "fs", fs);
-  fs.dispose();
-
-  // ── configuration ────────────────────────────────────────────────────────
-  // Inert, read-only settings surface. Almost every extension calls
-  // `getConfiguration(section).get(key, default)` in its activate; without it,
-  // a `not a function` error aborts activation. We deliberately do NOT persist
-  // or expose host state: `get` returns the caller's default, `inspect` reports
-  // nothing set, and `update` is a no-op — the sandbox cannot read or mutate
-  // real user configuration.
-  const getConfiguration = ctx.newFunction("getConfiguration", (sectionHandle) => {
-    const section = sectionHandle === undefined ? "" : String(ctx.dump(sectionHandle));
-    const config = ctx.newObject();
-    ctx.setProp(config, "section", ctx.newString(section));
-    const get = ctx.newFunction("get", (_key, defHandle) => {
-      // No host config is exposed; return the caller's default (or undefined).
-      if (defHandle === undefined || ctx.typeof(defHandle) === "undefined") return ctx.undefined;
-      return defHandle;
-    });
-    const has = ctx.newFunction("has", () => ctx.false);
-    const inspect = ctx.newFunction("inspect", () => ctx.undefined);
-    const update = ctx.newFunction("update", () =>
-      bridgeAsync(ctx, () => Promise.resolve(null)),
-    );
-    ctx.setProp(config, "get", get);
-    ctx.setProp(config, "has", has);
-    ctx.setProp(config, "inspect", inspect);
-    ctx.setProp(config, "update", update);
-    config.dispose();
-    get.dispose();
-    has.dispose();
-    inspect.dispose();
-    update.dispose();
-    return config;
-  });
-  ctx.setProp(workspace, "getConfiguration", getConfiguration);
-  getConfiguration.dispose();
-
-  const onDidChangeConfiguration = ctx.newFunction("onDidChangeConfiguration", () =>
-    buildDisposable(ctx, () => {}),
-  );
-  ctx.setProp(workspace, "onDidChangeConfiguration", onDidChangeConfiguration);
-  onDidChangeConfiguration.dispose();
-
+  listDirectory.dispose();
   return workspace;
 }
 
-/** `vscode.Uri` — a minimal file-uri factory. */
-function buildUri(ctx: QuickJSContext): QuickJSHandle {
-  const uri = ctx.newObject();
-  const file = ctx.newFunction("file", (pathHandle) => {
-    const p = String(ctx.dump(pathHandle));
-    return toVmValue(ctx, { scheme: "file", fsPath: p, path: p });
-  });
-  const parse = ctx.newFunction("parse", (valueHandle) => {
-    const value = String(ctx.dump(valueHandle));
-    const fsPath = value.startsWith("file://") ? value.slice("file://".length) : value;
-    return toVmValue(ctx, { scheme: "file", fsPath, path: fsPath });
-  });
-  ctx.setProp(uri, "file", file);
-  ctx.setProp(uri, "parse", parse);
-  file.dispose();
-  parse.dispose();
-  return uri;
-}
+/** `origin.editors.*` — read the active editor, replace a document's text. */
+function buildOriginEditors(ctx: QuickJSContext, bridge: HostBridge): QuickJSHandle {
+  const editors = ctx.newObject();
 
-/** `vscode.ExtensionMode` enum stub. */
-function buildExtensionMode(ctx: QuickJSContext): QuickJSHandle {
-  const mode = ctx.newObject();
-  ctx.setProp(mode, "Production", ctx.newNumber(1));
-  ctx.setProp(mode, "Development", ctx.newNumber(2));
-  ctx.setProp(mode, "Test", ctx.newNumber(3));
-  return mode;
+  const getActive = ctx.newFunction("getActive", () => {
+    const doc = bridge.getActiveEditor();
+    if (!doc) return ctx.null;
+    return toVmValue(ctx, { path: doc.path, uri: doc.uri, languageId: doc.languageId, text: doc.getText() });
+  });
+  const setText = ctx.newFunction("setText", (pathHandle, contentHandle) => {
+    const path = String(ctx.dump(pathHandle));
+    const content = String(ctx.dump(contentHandle));
+    return bridgeAsync(ctx, () => bridge.setDocumentText(path, content).then(() => null));
+  });
+  ctx.setProp(editors, "getActive", getActive);
+  ctx.setProp(editors, "setText", setText);
+  getActive.dispose();
+  setText.dispose();
+  return editors;
 }
 
 /**
- * `vscode.extensions.*`
+ * `origin.extensions.*` — installed-extension metadata.
  *
- * Many extensions probe for *other* extensions at load time (e.g. Material
- * Icon Theme checks whether its config helper is present). We expose a minimal,
- * host-backed namespace: `getExtension(id)` returns a descriptor for a known
- * extension (or `undefined`), and `all` lists the installed extensions.
- *
- * Only metadata is exposed — no cross-extension `exports` proxy, which would
- * let one sandbox reach into another's isolate.
+ * Metadata is snapshotted into the VM before evaluation (see
+ * `setExtensionsSnapshot`) because it is read synchronously at module load.
+ * Only metadata is exposed — never a cross-extension `exports` proxy, which
+ * would let one sandbox reach into another's isolate.
  */
-function buildExtensions(ctx: QuickJSContext): QuickJSHandle {
+function buildOriginExtensions(ctx: QuickJSContext): QuickJSHandle {
   const ns = ctx.newObject();
 
   const getExtension = ctx.newFunction("getExtension", (idHandle) => {
     const id = String(ctx.dump(idHandle));
-    // Synchronous, like VS Code: extensions routinely call
-    // `Object.keys(getExtension(id).packageJSON.contributes...)` at *module
-    // load*, before any await. The metadata is therefore snapshotted into the
-    // VM (see `setExtensionsSnapshot`) before the module is evaluated.
     const table = ctx.getProp(ctx.global, "__originExtensions");
     const entry = ctx.getProp(table, id);
     table.dispose();
@@ -866,87 +800,48 @@ function buildExtensions(ctx: QuickJSContext): QuickJSHandle {
   return ns;
 }
 
-/** `vscode.env.*` — inert metadata most extensions read at load time. */
-function buildEnv(ctx: QuickJSContext): QuickJSHandle {
-  const env = ctx.newObject();
-  ctx.setProp(env, "appName", ctx.newString("Origin"));
-  ctx.setProp(env, "appHost", ctx.newString("origin-desktop"));
-  ctx.setProp(env, "language", ctx.newString("en"));
-  ctx.setProp(env, "machineId", ctx.newString("origin"));
-  ctx.setProp(env, "sessionId", ctx.newString("origin-session"));
-  ctx.setProp(env, "uiKind", ctx.newNumber(1)); // UIKind.Desktop
-  const clipboard = ctx.newObject();
-  const noop = ctx.newFunction("__noop", () => ctx.undefined);
-  ctx.setProp(clipboard, "readText", noop);
-  ctx.setProp(clipboard, "writeText", noop);
-  ctx.setProp(env, "clipboard", clipboard);
-  noop.dispose();
-  clipboard.dispose();
-  return env;
-}
-
-/**
- * `vscode.EventEmitter` — a functional event source.
- *
- * This is pure in-isolate bookkeeping (no host access): `event` collects
- * listeners and `fire` invokes them. We expose it because it is a common
- * extension-composition primitive loaded at activation time (e.g. watches).
- */
-function buildEventEmitter(ctx: QuickJSContext): QuickJSHandle {
-  const ctor = ctx.newFunction("EventEmitter", () => {
-    const emitter = ctx.newObject();
-    const listeners = ctx.newArray();
-    ctx.setProp(emitter, "__listeners", listeners);
-    listeners.dispose();
-
-    const event = ctx.newFunction("event", (listener) => {
-      const arr = ctx.getProp(emitter, "__listeners");
-      const len = ctx.dump(ctx.getProp(arr, "length")) as number;
-      ctx.setProp(arr, len, listener);
-      arr.dispose();
-      // The returned Disposable removes just this listener.
-      return buildDisposable(ctx, () => {
-        const a = ctx.getProp(emitter, "__listeners");
-        const size = ctx.dump(ctx.getProp(a, "length")) as number;
-        for (let i = 0; i < size; i++) {
-          const h = ctx.getProp(a, i);
-          if (h === listener) ctx.setProp(a, i, ctx.undefined);
-          h.dispose();
-        }
-        a.dispose();
-      });
+/** `origin.notify.*` — user-facing notifications (info/warning/error). */
+function buildOriginNotify(ctx: QuickJSContext, bridge: HostBridge, onLog: LogFn): QuickJSHandle {
+  const notify = ctx.newObject();
+  const mk = (kind: "info" | "warning" | "error") =>
+    ctx.newFunction(kind, (messageHandle) => {
+      const message = String(ctx.dump(messageHandle));
+      return bridgeAsync(ctx, () => bridge.showMessage(kind, message));
     });
+  const info = mk("info");
+  const warning = mk("warning");
+  const error = mk("error");
+  ctx.setProp(notify, "info", info);
+  ctx.setProp(notify, "warning", warning);
+  ctx.setProp(notify, "error", error);
+  info.dispose();
+  warning.dispose();
+  error.dispose();
 
-    const fire = ctx.newFunction("fire", (value) => {
-      const arr = ctx.getProp(emitter, "__listeners");
-      const size = ctx.dump(ctx.getProp(arr, "length")) as number;
-      for (let i = 0; i < size; i++) {
-        const h = ctx.getProp(arr, i);
-        if (ctx.typeof(h) === "function") {
-          const r = ctx.callFunction(h, ctx.undefined, [value]);
-          if (r.error) r.error.dispose();
-          else r.value.dispose();
-        }
-        h.dispose();
-      }
-      arr.dispose();
+  // Output channel: the extension's own log sink. Lines go to the extension log
+  // (same as `console`); purely a logging convenience, never a real terminal.
+  const createOutputChannel = ctx.newFunction("createOutputChannel", (nameHandle) => {
+    const name = String(ctx.dump(nameHandle));
+    const channel = ctx.newObject();
+    const appendLine = ctx.newFunction("appendLine", (v) => {
+      onLog("info", `[${name}] ${String(ctx.dump(v))}`);
     });
-
-    const dispose = ctx.newFunction("dispose", () => {
-      const arr = ctx.getProp(emitter, "__listeners");
-      ctx.setProp(emitter, "__listeners", ctx.newArray());
-      arr.dispose();
-    });
-
-    ctx.setProp(emitter, "event", event);
-    ctx.setProp(emitter, "fire", fire);
-    ctx.setProp(emitter, "dispose", dispose);
-    event.dispose();
-    fire.dispose();
-    dispose.dispose();
-    return emitter;
+    const noop = ctx.newFunction("__noop", () => ctx.undefined);
+    ctx.setProp(channel, "append", appendLine);
+    ctx.setProp(channel, "appendLine", appendLine);
+    ctx.setProp(channel, "show", noop);
+    ctx.setProp(channel, "hide", noop);
+    ctx.setProp(channel, "clear", noop);
+    ctx.setProp(channel, "dispose", noop);
+    ctx.setProp(channel, "name", ctx.newString(name));
+    appendLine.dispose();
+    noop.dispose();
+    return channel;
   });
-  return ctor;
+  ctx.setProp(notify, "createOutputChannel", createOutputChannel);
+  createOutputChannel.dispose();
+
+  return notify;
 }
 
 /** Build an `{ dispose() }` object backed by a host callback. */
@@ -1030,18 +925,6 @@ function buildMemento(ctx: QuickJSContext): QuickJSHandle {
 
 // ── Small utilities ───────────────────────────────────────────────────────────
 
-/** Extract a filesystem path from a Uri-like QuickJS value. */
-function uriToPath(ctx: QuickJSContext, handle: QuickJSHandle): string {
-  const dumped = ctx.dump(handle);
-  if (typeof dumped === "string") return dumped;
-  if (dumped && typeof dumped === "object") {
-    const obj = dumped as Record<string, unknown>;
-    if (typeof obj.fsPath === "string") return obj.fsPath;
-    if (typeof obj.path === "string") return obj.path;
-  }
-  throw new Error("expected a Uri with a fsPath");
-}
-
 function stringifyArg(value: unknown): string {
   if (typeof value === "string") return value;
   try {
@@ -1061,14 +944,4 @@ function formatVmError(err: unknown): string {
     if (typeof o.name === "string") return o.name;
   }
   return stringifyArg(err);
-}
-
-/** Encode a string to a UTF-8 byte array (for `workspace.fs.readFile`). */
-function encodeUtf8(text: string): number[] {
-  return Array.from(new TextEncoder().encode(text));
-}
-
-/** Decode a UTF-8 byte array back to a string. */
-function decodeUtf8(bytes: number[]): string {
-  return new TextDecoder().decode(new Uint8Array(bytes));
 }

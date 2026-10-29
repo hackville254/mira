@@ -24,10 +24,10 @@ export interface FileIconTheme {
   relPath: string;
 }
 
-/** The built-in (no icon theme) entry — falls back to generic glyphs. */
+/** The built-in (no icon theme) entry — falls back to the native Material set. */
 export const BUILTIN_ICON_THEME: FileIconTheme = {
   id: "",
-  label: "Default (no icon theme)",
+  label: "Material Icons (built-in)",
   extensionId: "",
   relPath: "",
 };

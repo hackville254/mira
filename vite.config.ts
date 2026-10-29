@@ -27,7 +27,14 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      //
+      // `bench/**` est AUSSI ignoré : le harnais de benchmark clone de vrais
+      // dépôts sous `bench/coding/swebench/.envs/**`, dans l'arbre du projet.
+      // Sans cette exclusion, CHAQUE écriture de l'agent déclenche un
+      // full-reload Vite → la webview se recharge → l'auto-run redémarre et le
+      // run mesuré est détruit. Ce n'est pas une modification du moteur : juste
+      // le périmètre surveillé par le serveur de dev.
+      ignored: ["**/src-tauri/**", "**/bench/**"],
     },
   },
 }));

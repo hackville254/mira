@@ -1,36 +1,84 @@
 import { useState } from "react";
-import { ChevronDown, Check, Terminal, FileEdit, FileOutput, ShieldAlert } from "lucide-react";
+import { ChevronDown, Check, ShieldAlert, HelpCircle } from "lucide-react";
 import type { ToolCallDisplay } from "../../lib/aiTypes";
+import { toolTargetPath } from "../../lib/toolGroups";
+import { addAlwaysAllowCommand } from "../../lib/agent/permissions";
+import AskUserCard from "./AskUserCard";
+import SubAgentCard from "./SubAgentCard";
+import MarkdownMessage from "./MarkdownMessage";
 
 const TOOL_LABELS: Record<string, string> = {
+  // Noms du SDK Cline (moteur actuel).
+  read_files: "Read files",
+  search_codebase: "Search codebase",
+  codebase_search: "Search codebase index",
+  editor: "Edit file",
+  apply_patch: "Apply patch",
+  run_commands: "Run command",
+  fetch_web_content: "Fetch web content",
+  web_search: "Web search",
+  skills: "Skill",
+  ask_question: "Question",
+  // Outils d'orchestration d'équipe (mode IA) : sans libellé, ils afficheraient
+  // leur nom brut (`team_spawn_teammate`) — illisible pour l'utilisateur.
+  team_spawn_teammate: "Spawn teammate",
+  team_shutdown_teammate: "Shutdown teammate",
+  team_status: "Team status",
+  team_task: "Assign task",
+  team_run_task: "Run teammate task",
+  team_cancel_run: "Cancel teammate run",
+  team_list_runs: "List teammate runs",
+  team_await_runs: "Wait for teammates",
+  team_send_message: "Message teammate",
+  team_broadcast: "Broadcast to team",
+  team_read_mailbox: "Read teammate mailbox",
+  team_mission_log: "Team mission log",
+  team_cleanup: "Clean up team",
+  team_create_outcome: "Create outcome",
+  team_attach_outcome_fragment: "Attach outcome fragment",
+  team_review_outcome_fragment: "Review outcome fragment",
+  team_finalize_outcome: "Finalize outcome",
+  team_list_outcomes: "List outcomes",
+  // Noms du harness historique (conservés pour les tours déjà en base).
   read_file: "Read file",
   list_directory: "List directory",
   grep: "Search",
   glob: "List files",
   write_file: "Write file",
   edit: "Edit file",
+  multi_edit: "Edit file",
   bash_run: "Run command",
+  ask_user: "Question",
 };
 
 function toolLabel(name: string) { return TOOL_LABELS[name] ?? name; }
 
-function toolIcon(name: string) {
-  if (name === "bash_run") return <Terminal size={11} style={{ flexShrink: 0 }} />;
-  if (name === "edit") return <FileEdit size={11} style={{ flexShrink: 0 }} />;
-  if (name === "write_file") return <FileOutput size={11} style={{ flexShrink: 0 }} />;
-  return null;
-}
+/** Outils qui visent UN fichier : on affiche son nom de base en aperçu. */
+const FILE_TOOLS = new Set([
+  "read_file", "read_files", "list_directory", "write_file", "edit", "multi_edit",
+  "editor", "apply_patch", "write_to_file",
+]);
 
 function argsPreview(toolName: string, args: unknown): string {
   const a = args as Record<string, unknown>;
   if (!a) return "";
-  if (toolName === "read_file" || toolName === "list_directory" || toolName === "write_file" || toolName === "edit") {
-    const p = String(a.path ?? "");
+  if (FILE_TOOLS.has(toolName)) {
+    // Le SDK `editor` porte `path` ; `read_files` porte `paths` (tableau).
+    const raw = Array.isArray(a.paths) ? a.paths[0] : a.path;
+    const p = String(raw ?? "");
     return p.split(/[/\\]/).pop() ?? p;
   }
+  if (toolName === "search_codebase") return `"${String(a.query ?? a.pattern ?? "")}"`;
+  if (toolName === "codebase_search") return `"${String(a.query ?? "")}"`;
   if (toolName === "grep") return `"${a.query}"`;
-  if (toolName === "bash_run") return String(a.command ?? "").slice(0, 60);
+  if (toolName === "bash_run" || toolName === "run_commands") return String(a.command ?? "").slice(0, 60);
   if (toolName === "glob") return String(a.folder ?? "workspace");
+  // Outils web : on montre l'URL (récupération) ou la requête (recherche), pour
+  // que l'utilisateur voie CE QUE l'agent consulte — sinon la carte est muette.
+  if (toolName === "fetch_web_content" || toolName === "web_fetch") {
+    return String(a.url ?? a.query ?? "").slice(0, 80);
+  }
+  if (toolName === "web_search") return `"${String(a.query ?? a.search_query ?? "")}"`;
   return "";
 }
 
@@ -40,8 +88,22 @@ function resultSummary(result: unknown): string {
   const obj = result as Record<string, unknown>;
   if (obj.error) return `Error: ${obj.error}`;
   if (obj.cancelled) return "Cancelled";
-  if (obj.success) return `Written: ${obj.path}`;
-  if (obj.content && typeof obj.content === "string") return obj.content.slice(0, 300);
+  if (typeof obj.answer === "string") return obj.answer ? `Answer: ${obj.answer}` : "No answer provided";
+  // Forme du SDK Cline : `{ query, result, success }` — le texte exploitable est
+  // dans `result` (« File created successfully at: … », « Edited … »), jamais
+  // dans un champ `path`. On lit donc `result` en priorité pour éviter un
+  // « Written: undefined » quand un ancien champ `path` est absent.
+  if (typeof obj.result === "string" && obj.result.trim().length > 0) return obj.result.slice(0, 300);
+  // Harness historique : `{ success: true, path }`.
+  if (obj.success) return typeof obj.path === "string" ? `Written: ${obj.path}` : "Done";
+  if (obj.content && typeof obj.content === "string") {
+    // read_file renvoie une tranche : on annonce la plage et la troncature.
+    if (typeof obj.total_lines === "number") {
+      const range = `lines ${obj.start_line}–${obj.end_line} of ${obj.total_lines}`;
+      return obj.truncated ? `${range} (truncated) — ${obj.content.slice(0, 240)}` : `${range}\n${obj.content.slice(0, 240)}`;
+    }
+    return obj.content.slice(0, 300);
+  }
   if (obj.results && Array.isArray(obj.results)) return `${obj.results.length} result(s)`;
   if (obj.entries && Array.isArray(obj.entries)) return `${obj.entries.length} item(s)`;
   if (obj.files && Array.isArray(obj.files)) return `${obj.files.length} file(s)`;
@@ -53,10 +115,36 @@ function resultSummary(result: unknown): string {
   return JSON.stringify(result).slice(0, 200);
 }
 
-export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
+export default function ToolCallCard({
+  tc,
+  onOpenFile,
+}: {
+  tc: ToolCallDisplay;
+  onOpenFile?: (path: string, line?: number, col?: number) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
-  const baseStyle: React.CSSProperties = {
+  // Les sous-agents d'un `spawn_agent` sont rendus sous la carte du tool-call :
+  // le tool-call lui-même reste la « ligne » du délégateur, les cartes de
+  // sous-agent montrent le travail réellement effectué.
+  const children = tc.children ?? [];
+  const withChildren = (node: React.ReactNode) => (
+    <>
+      {node}
+      {children.map(child => <SubAgentCard key={child.spawnId} child={child} />)}
+    </>
+  );
+
+  // Les outils de plan (todo_write / todo_read) ne sont PAS des étapes de travail
+  // visibles : c'est l'état interne d'une checklist que l'UI affiche déjà sous
+  // forme de TodoList épinglée (pattern « Focus Chain » de Cline, où la todo est
+  // un état d'UI, pas un tool-call mis en avant). On les masque donc entièrement
+  // du fil — pas de ligne, pas d'accordéon — pour ne pas polluer la réponse.
+  if (tc.toolName === "todo_write" || tc.toolName === "todo_read") return null;
+
+  // Encadré réservé aux cas « sensibles » (approbation) : les états running et
+  // complete restent des accordéons nus, alignés sur le rendu Trae.
+  const boxedStyle: React.CSSProperties = {
     margin: "3px 0",
     borderRadius: "6px",
     border: "1px solid var(--origin-border-default)",
@@ -66,9 +154,9 @@ export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
   };
 
   if (tc.status === "running") {
-    return (
-      <div style={baseStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "5px 10px", color: "var(--origin-fg-muted)" }}>
+    return withChildren(
+      <div style={{ margin: "2px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0", color: "var(--origin-fg-subtle)", fontSize: "12px" }}>
           <div style={{
             width: 11, height: 11, flexShrink: 0,
             border: "1.5px solid var(--origin-fg-subtle)",
@@ -76,21 +164,45 @@ export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
             borderRadius: "50%",
             animation: "spin 0.8s linear infinite",
           }} />
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--origin-fg-muted)" }}>
-            {toolLabel(tc.toolName)}
-          </span>
+          <span>{toolLabel(tc.toolName)}</span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--origin-fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
             {argsPreview(tc.toolName, tc.args)}
           </span>
         </div>
-      </div>
+      </div>,
     );
   }
 
   if (tc.status === "approval-required" && tc.action) {
     const action = tc.action;
+
+    // Question interactive : la carte n'est PAS rendue dans le fil — la question
+    // est dockée au-dessus de l'input (là où l'utilisateur regarde). On garde
+    // seulement une ligne discrète pour la traçabilité.
+    if (action.type === "ask_user") {
+      if (tc.reject) {
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0", color: "var(--origin-fg-subtle)", fontSize: "12px" }}>
+            <HelpCircle size={12} style={{ flexShrink: 0, color: "var(--origin-accent-blue)" }} />
+            <span>Asked a question</span>
+          </div>
+        );
+      }
+      // Question déjà répondue : on garde une trace figée (question + réponse).
+      const answered = (tc.result as { answer?: string } | undefined)?.answer;
+      return (
+        <AskUserCard
+          question={action.question}
+          options={action.options}
+          allowFreeform={false}
+          answered={answered ?? ""}
+          onAnswer={() => {}}
+        />
+      );
+    }
+
     return (
-      <div style={{ ...baseStyle, border: "1px solid color-mix(in srgb, var(--origin-semantic-warning) 50%, transparent)", backgroundColor: "color-mix(in srgb, var(--origin-semantic-warning) 8%, transparent)" }}>
+      <div style={{ ...boxedStyle, border: "1px solid color-mix(in srgb, var(--origin-semantic-warning) 50%, transparent)", backgroundColor: "color-mix(in srgb, var(--origin-semantic-warning) 8%, transparent)" }}>
         <div style={{ padding: "8px 10px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "5px", marginBottom: "6px" }}>
             <ShieldAlert size={11} style={{ color: "var(--origin-semantic-warning)", flexShrink: 0 }} />
@@ -143,10 +255,64 @@ export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
               </>
             )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
-            <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", fontStyle: "italic" }}>
-              Review in the diff tab →
-            </span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            {/* Pour les écritures (write_file / edit), l'approbation se fait dans
+                l'onglet diff — pas besoin de boutons ici. Pour les actions SANS
+                diff (run command), la carte DOIT porter les boutons : sans eux le
+                run reste bloqué indéfiniment faute de moyen de décider. */}
+            {action.type === "bash_run" ? (
+              <>
+                <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)" }}>
+                  Allow this command to run?
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <button
+                    onClick={() => tc.reject?.()}
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-border-default)",
+                      background: "transparent", color: "var(--origin-fg-default)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                  >
+                    Reject
+                  </button>
+                  {/* « Always allow » : mémorise CETTE commande exacte (allowlist
+                      locale, survit au redémarrage) puis approuve. Ne contourne
+                      jamais la garde anti-catastrophe, évaluée en amont. */}
+                  <button
+                    onClick={() => { addAlwaysAllowCommand(action.command); tc.approve?.(); }}
+                    title="Always allow this exact command"
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-border-default)",
+                      background: "transparent", color: "var(--origin-fg-default)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                  >
+                    Always allow
+                  </button>
+                  <button
+                    onClick={() => tc.approve?.()}
+                    style={{
+                      padding: "3px 12px", borderRadius: "6px", cursor: "pointer",
+                      fontSize: "11px", border: "1px solid var(--origin-semantic-warning)",
+                      background: "var(--origin-semantic-warning)", color: "#1a1205", fontWeight: 600,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.opacity = "0.9"; }}
+                    onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
+                  >
+                    Approve
+                  </button>
+                </div>
+              </>
+            ) : (
+              <span style={{ fontSize: "11px", color: "var(--origin-fg-subtle)", fontStyle: "italic", marginLeft: "auto" }}>
+                Review in the diff tab →
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -157,13 +323,23 @@ export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
     const summary = resultSummary(tc.result);
     const isCancelled = (tc.result as Record<string, unknown> | undefined)?.cancelled;
     const isError = (tc.result as Record<string, unknown> | undefined)?.error;
-    return (
-      <div style={baseStyle}>
+    const targetPath = toolTargetPath(tc);
+    const clickable = !!targetPath && !!onOpenFile && !isError && !isCancelled;
+    // Une commande se raconte comme dans un terminal : la ligne `$ …` (ce que
+    // l'agent a lancé) PUIS sa sortie. Sinon l'utilisateur voit un bloc de texte
+    // orphelin sans savoir d'où il vient. `MarkdownMessage` rend la sortie comme
+    // un document (tableaux, listes, code) — c'est ce qui distingue un résultat
+    // lisible d'un mur de texte brut.
+    const command = tc.toolName === "run_commands" || tc.toolName === "bash_run"
+      ? String((tc.args as Record<string, unknown>)?.command ?? "").trim()
+      : "";
+    return withChildren(
+      <div style={{ margin: "2px 0" }}>
         <div
           onClick={() => setExpanded(e => !e)}
-          style={{ display: "flex", alignItems: "center", gap: "6px", padding: "5px 10px", cursor: "pointer" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.backgroundColor = "var(--origin-bg-hover)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = "transparent"; }}
+          style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0", cursor: "pointer", fontSize: "12px" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = "0.85"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
         >
           {isCancelled ? (
             <span style={{ fontSize: "9px", color: "var(--origin-fg-subtle)", flexShrink: 0 }}>✕</span>
@@ -172,34 +348,76 @@ export default function ToolCallCard({ tc }: { tc: ToolCallDisplay }) {
           ) : (
             <Check size={11} style={{ color: "var(--origin-semantic-success)", flexShrink: 0 }} />
           )}
-          {toolIcon(tc.toolName)}
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--origin-fg-muted)" }}>
-            {toolLabel(tc.toolName)}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--origin-fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-            {argsPreview(tc.toolName, tc.args)}
+          <span style={{ color: "var(--origin-fg-subtle)" }}>{toolLabel(tc.toolName)}</span>
+          {/* Le nom de fichier est cliquable : il ouvre le fichier dans l'éditeur,
+              sans déplier l'accordéon (stopPropagation). */}
+          <span
+            onClick={clickable ? (e) => { e.stopPropagation(); onOpenFile?.(targetPath); } : undefined}
+            title={targetPath || undefined}
+            style={{
+              fontFamily: "var(--font-mono)", fontSize: "11px", overflow: "hidden",
+              textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
+              color: clickable ? "var(--origin-fg-muted)" : "var(--origin-fg-subtle)",
+              cursor: clickable ? "pointer" : "inherit",
+              textDecoration: clickable ? "underline" : "none",
+              textDecorationColor: "var(--origin-border-default)",
+              textUnderlineOffset: "2px",
+            }}
+            onMouseEnter={e => { if (clickable) { e.currentTarget.style.color = "var(--origin-fg-default)"; e.currentTarget.style.textDecorationColor = "var(--origin-fg-muted)"; } }}
+            onMouseLeave={e => { if (clickable) { e.currentTarget.style.color = "var(--origin-fg-muted)"; e.currentTarget.style.textDecorationColor = "var(--origin-border-default)"; } }}
+          >
+            {targetPath || argsPreview(tc.toolName, tc.args)}
           </span>
           <ChevronDown
-            size={10}
+            size={11}
             style={{ flexShrink: 0, color: "var(--origin-fg-subtle)", transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.12s" }}
           />
         </div>
         {expanded && (
           <div style={{
-            padding: "6px 10px",
-            borderTop: "1px solid var(--origin-border-default)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "11px",
-            color: "var(--origin-fg-muted)",
-            maxHeight: "160px",
+            marginTop: 4,
+            borderRadius: 6,
+            border: "1px solid var(--origin-border-default)",
+            backgroundColor: "var(--origin-bg-editor)",
+            maxHeight: 220,
             overflowY: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
           }}>
-            {summary}
+            {command && (
+              <div style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "11.5px",
+                padding: "6px 10px",
+                borderBottom: "1px solid var(--origin-border-default)",
+                backgroundColor: "var(--origin-bg-hover)",
+                color: "var(--origin-fg-default)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}>
+                <span style={{ color: "var(--origin-fg-subtle)", marginRight: 6 }}>$</span>
+                {command}
+              </div>
+            )}
+            <div style={{ padding: "8px 12px" }}>
+              {/* Sortie rendue comme un document : l'agent renvoie souvent du
+                  markdown (tableaux, listes). En repli, on garde le rendu mono
+                  pour les sorties brutes (logs, JSON) qui ne sont pas du markdown. */}
+              {command ? (
+                <MarkdownMessage content={summary} />
+              ) : (
+                <div style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  color: "var(--origin-fg-subtle)",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}>
+                  {summary}
+                </div>
+              )}
+            </div>
           </div>
         )}
-      </div>
+      </div>,
     );
   }
 

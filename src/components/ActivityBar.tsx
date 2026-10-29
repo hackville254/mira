@@ -5,8 +5,8 @@ const items = [
   { id: "explorer",   icon: "lucide:files",          label: "Explorer" },
   { id: "search",     icon: "lucide:search",         label: "Search" },
   { id: "sourcetree", icon: "lucide:git-branch",     label: "Source Control" },
+  { id: "outline",    icon: "lucide:list-tree",      label: "Outline" },
   { id: "debug",      icon: "lucide:bug",            label: "Debug" },
-  { id: "extensions", icon: "lucide:puzzle",         label: "Extensions" },
 ];
 
 interface ActivityBarProps {
@@ -21,6 +21,7 @@ export default function ActivityBar({ active, onSelect }: ActivityBarProps) {
       style={{
         width: 44,
         backgroundColor: "var(--origin-bg-sidebar)",
+        borderRight: "1px solid var(--origin-border-strong)",
       }}
     >
       {items.map(({ id, icon, label }) => {

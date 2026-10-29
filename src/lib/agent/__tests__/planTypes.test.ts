@@ -80,4 +80,49 @@ describe("parsePlan", () => {
     const result = parsePlan(xml);
     expect(result!.title).toBe("First");
   });
+
+  it("accepte les attributs dans un ordre inversé (action avant file)", () => {
+    const xml = `<origin-plan><title>T</title><step action="create" file="new.ts">Do it</step></origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.steps[0]).toEqual({ file: "new.ts", action: "create", description: "Do it" });
+  });
+
+  it("ignore un <step> aux attributs malformés (file sans action)", () => {
+    const xml = `<origin-plan><title>T</title><step file="a.ts">oops</step>${step("b.ts", "edit", "ok")}</origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.steps).toHaveLength(1);
+    expect(result!.steps[0].file).toBe("b.ts");
+  });
+
+  it("retourne la description vide telle quelle si le corps du step est vide", () => {
+    const xml = `<origin-plan><title>T</title><step file="a.ts" action="edit"></step></origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.steps[0].description).toBe("");
+  });
+
+  it("preserve un titre vide en chaîne vide (pas de fallback)", () => {
+    const xml = `<origin-plan><title></title>${step("a.ts", "edit", "x")}</origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.title).toBe("");
+  });
+
+  it("ignore un <step> auto-fermant et n'avale PAS le step suivant", () => {
+    // `<step …/>` est ignoré (pas de corps fermé). Surtout, il ne doit pas
+    // « absorber » le `<step>` suivant dans son corps — sinon on perdrait b.ts.
+    const xml = `<origin-plan><title>T</title><step file="a.ts" action="edit"/>${step("b.ts", "edit", "b")}</origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.steps).toHaveLength(1);
+    expect(result!.steps[0].file).toBe("b.ts");
+  });
+
+  it("ignore un <step> sans aucun attribut", () => {
+    const xml = `<origin-plan><title>T</title><step>texte</step>${step("b.ts", "edit", "b")}</origin-plan>`;
+    const result = parsePlan(xml);
+    expect(result!.steps).toHaveLength(1);
+    expect(result!.steps[0].file).toBe("b.ts");
+  });
+
+  it("un <origin-plan> non fermé ne produit pas de plan", () => {
+    expect(parsePlan(`<origin-plan><title>T</title>${step("a.ts", "edit", "x")}`)).toBeNull();
+  });
 });

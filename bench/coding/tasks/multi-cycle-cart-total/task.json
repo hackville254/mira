@@ -1,0 +1,18 @@
+{
+  "id": "multi-cycle-cart-total",
+  "title": "Corriger en plusieurs cycles la totalisation d'un panier",
+  "kind": "multi-cycle",
+  "instruction": "src/cart.mjs expose totalCents(items, opts) qui calcule un total en centimes. Il contient PLUSIEURS bugs qui se masquent mutuellement : (1) la remise (discountPct) doit être appliquée AVANT la taxe (taxPct), alors qu'elle est appliquée après ; (2) le résultat doit être arrondi au centime le plus proche (arrondi au supérieur pour .5), alors qu'il est tronqué (Math.floor). Procède par itérations : exécute les tests (node --test), corrige un bug, relance, puis corrige le suivant jusqu'à ce que TOUS les tests passent. Ne modifie pas les fichiers de test.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "totalCents applies discount BEFORE tax",
+      "totalCents rounds to nearest cent (half up)"
+    ],
+    "passToPass": [
+      "totalCents sums line totals"
+    ]
+  },
+  "agentTimeoutMs": 240000,
+  "testTimeoutMs": 30000
+}

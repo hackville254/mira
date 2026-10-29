@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements Mira.
+
+      IMPORTANT — contexte « auto-signature » (pas de compte Apple Developer) :
+      ces entitlements sont valides pour une signature ad-hoc / self-signed
+      (hardened runtime SANS notarisation). Le binaire ne peut PAS être notarié
+      tant qu'il n'est pas signé avec un certificat « Developer ID » Apple.
+
+      Principe de moindre privilège : on ne déclare QUE ce dont l'app a besoin.
+      Les capacités « risky » (allow-unsigned-executable-memory,
+      disable-library-validation) sont volontairement ABSENTES : le runtime
+      (Wry/WKWebView, sidecar Node, LSP) n'en a pas besoin en release, et leur
+      présence affaiblirait la posture de sécurité.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Le sidecar Node (bun/node embarqué) et les serveurs LSP téléchargés sont
+         des exécutables tiers non signés à la même identité que l'app : sans
+         cette clé, macOS refuse de les lancer sous hardened runtime. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- Accès réseau sortant (appels IA, device flow, mises à jour). -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Écriture des fichiers de travail (projets, ~/.mira, caches, journaux).
+         Les projets sont hors du conteneur bac à sable : on reste donc NON
+         sandboxé (pas de com.apple.security.app-sandbox) — c'est requis pour un
+         IDE qui édite des fichiers partout et lance des terminaux/process. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Terminal intégré (portable-pty) : exécution de processus externes
+         (shell, git, lsp, node). Comportement par défaut d'un binaire non
+         sandboxé ; déclaré ici pour expliciter l'intention. -->
+    <key>com.apple.security.inherit</key>
+    <false/>
+
+    <!-- Trousseau (keychain.rs / keyring) : lecture du secret machine et
+         stockage du coffre. -->
+    <key>keychain-access-groups</key>
+    <array/>
+</dict>
+</plist>

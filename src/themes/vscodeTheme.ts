@@ -39,6 +39,7 @@ const COLOR_MAP: Record<string, string[]> = {
   "bg.active":   ["list.activeSelectionBackground"],
   "bg.selection": ["editor.selectionBackground"],
   "bg.selection-focused": ["editor.selectionBackground", "list.activeSelectionBackground"],
+  "bg.editor-line-highlight": ["editor.lineHighlightBackground"],
 
   "fg.default": ["editor.foreground", "foreground"],
   "fg.muted":   ["descriptionForeground", "editor.foreground"],
@@ -46,6 +47,9 @@ const COLOR_MAP: Record<string, string[]> = {
 
   "border.default": ["panel.border", "editorGroup.border", "sideBar.border", "contrastBorder"],
   "border.subtle":  ["editorWidget.border", "panel.border", "editorGroup.border"],
+  // Séparations structurelles (entre panneaux) : on privilégie les bordures
+  // d'activité/panneau, mieux contrastées que le trait générique.
+  "border.strong":  ["activityBar.border", "sideBar.border", "panel.border", "editorGroup.border"],
 
   "accent.blue":   ["focusBorder", "button.background", "editorInfo.foreground", "#007acc"],
   "accent.pink":   ["terminal.ansiMagenta", "editorError.foreground"],

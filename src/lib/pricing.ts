@@ -14,8 +14,8 @@ type PricingMap = Record<string, PricingEntry>;
 
 // Keys to try in order for each model ID (first hit wins)
 const MODEL_KEY_MAP: Record<string, string[]> = {
-  "claude-sonnet-4-6":        ["claude-sonnet-4-6", "anthropic/claude-sonnet-4-6", "claude-3-5-sonnet-20241022"],
-  "claude-opus-4-8":          ["claude-opus-4-8",   "anthropic/claude-opus-4-8",   "claude-opus-4", "claude-3-opus-20240229"],
+  "claude-sonnet-4-5":        ["claude-sonnet-4-5", "anthropic/claude-sonnet-4-5", "claude-3-5-sonnet-20241022"],
+  "claude-opus-4-1":          ["claude-opus-4-1",   "anthropic/claude-opus-4-1",   "claude-opus-4", "claude-3-opus-20240229"],
   "claude-haiku-4-5":         ["claude-haiku-4-5",  "claude-haiku-4-5-20251001",   "claude-3-5-haiku-20241022"],
   "gpt-4o":                   ["gpt-4o"],
   "gpt-4o-mini":              ["gpt-4o-mini"],

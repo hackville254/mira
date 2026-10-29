@@ -1,0 +1,17 @@
+{
+  "id": "diagnose-config-parse",
+  "title": "Diagnostiquer un parseur de configuration défaillant (via tests)",
+  "kind": "terminal",
+  "instruction": "src/config.mjs expose parseConfig(text) qui transforme un fichier de configuration « clé=valeur » en objet. Il est buggé : (1) les lignes vides et les lignes de commentaire commençant par # ne sont pas ignorées ; (2) les espaces autour des clés et des valeurs ne sont pas retirés ; (3) les valeurs numériques doivent être converties en nombre (3 -> 3, 1.5 -> 1.5) et non rester des chaînes. Diagnostique le comportement en exécutant les tests (node --test), puis corrige src/config.mjs pour que TOUS les tests passent. Ne modifie pas les fichiers de test.",
+  "testCommand": "node --test",
+  "criteria": {
+    "failToPass": [
+      "parseConfig ignores blank lines and comments",
+      "parseConfig trims keys and values",
+      "parseConfig returns numeric values as numbers"
+    ],
+    "passToPass": []
+  },
+  "agentTimeoutMs": 180000,
+  "testTimeoutMs": 30000
+}

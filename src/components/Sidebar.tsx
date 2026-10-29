@@ -4,7 +4,7 @@ import FileTree from "./FileTree";
 import SearchPanel from "./SearchPanel";
 import SourceTreePanel from "./SourceTreePanel";
 import DebugPanel from "./DebugPanel";
-import ExtensionsPanel from "./ExtensionsPanel";
+import OutlinePanel from "./outline/OutlinePanel";
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 500;
@@ -13,29 +13,44 @@ const DEFAULT_WIDTH = 240;
 interface Props {
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
+  onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
+  defaultCollapsed?: boolean;
+  activePath?: string;
+  activeContent?: string;
+  rootPath?: string;
+  /** Recharge depuis le disque des fichiers modifiés à l'extérieur (replace in files). */
+  onFilesChanged?: (paths: string[]) => void;
+  /** Notifie l'éditeur qu'un fichier a été supprimé (ferme l'onglet, style VS Code). */
+  onExternalFileChanges?: (paths: string[]) => void;
 }
 
-function ActivePanel({ id, onFileOpen, onFileOpenAtLine, fileTreeKey }: {
+function ActivePanel({ id, onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, activePath, activeContent, rootPath, onFilesChanged, onExternalFileChanges }: {
   id: string;
   onFileOpen: (path: string) => void;
   onFileOpenAtLine: (path: string, line: number, col: number) => void;
+  onMarkdownPreview?: (path: string) => void;
   fileTreeKey?: number;
+  activePath?: string;
+  activeContent?: string;
+  rootPath?: string;
+  onFilesChanged?: (paths: string[]) => void;
+  onExternalFileChanges?: (paths: string[]) => void;
 }) {
   switch (id) {
-    case "explorer":   return <FileTree onFileOpen={onFileOpen} refreshKey={fileTreeKey} />;
-    case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} />;
+    case "explorer":   return <FileTree onFileOpen={onFileOpen} onMarkdownPreview={onMarkdownPreview} refreshKey={fileTreeKey} onExternalFileChanges={onExternalFileChanges} />;
+    case "search":     return <SearchPanel onFileOpenAtLine={onFileOpenAtLine} onFilesChanged={onFilesChanged} />;
     case "sourcetree": return <SourceTreePanel />;
+    case "outline":    return <OutlinePanel activePath={activePath} content={activeContent} rootPath={rootPath} onFileOpenAtLine={onFileOpenAtLine} />;
     case "debug":      return <DebugPanel onFileOpenAtLine={onFileOpenAtLine} />;
-    case "extensions": return <ExtensionsPanel />;
     default:           return null;
   }
 }
 
-export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: Props) {
+export default function Sidebar({ onFileOpen, onFileOpenAtLine, onMarkdownPreview, fileTreeKey, defaultCollapsed = false, activePath, activeContent, rootPath, onFilesChanged, onExternalFileChanges }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [active, setActive] = useState("explorer");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const isResizing = useRef(false);
 
   const handleSelect = useCallback((id: string) => {
@@ -68,7 +83,13 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: P
   }, []);
 
   return (
-    <div className="relative flex shrink-0 gap-1" style={{ width: collapsed ? 44 : width + 44 + 4 }}>
+    <div
+      className="relative flex shrink-0"
+      style={{
+        width: collapsed ? 44 : width + 44,
+        borderRight: "1px solid var(--origin-border-strong)",
+      }}
+    >
       <ActivityBar active={collapsed ? "" : active} onSelect={handleSelect} />
       <div
         className="relative flex flex-col shrink-0 overflow-hidden"
@@ -81,7 +102,13 @@ export default function Sidebar({ onFileOpen, onFileOpenAtLine, fileTreeKey }: P
         id={active}
         onFileOpen={onFileOpen}
         onFileOpenAtLine={onFileOpenAtLine}
+        onMarkdownPreview={onMarkdownPreview}
         fileTreeKey={fileTreeKey}
+        activePath={activePath}
+        activeContent={activeContent}
+        rootPath={rootPath}
+        onFilesChanged={onFilesChanged}
+        onExternalFileChanges={onExternalFileChanges}
       />
 
       {/* Resize handle */}

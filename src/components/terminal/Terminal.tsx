@@ -1,10 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { Sparkles } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import {
   terminalCreate,
+  terminalCreateTask,
   terminalWrite,
   terminalResize,
   terminalClose,
@@ -12,14 +14,31 @@ import {
   onTerminalExit,
 } from "../../lib/terminal";
 import { useTheme } from "../../themes/ThemeContext";
+import { appendOutput, appendOutputSystem, startOutputChannel } from "../../lib/outputStore";
 
 interface Props {
   cwd: string;
   active: boolean;
   clearKey?: number;
   pendingInput?: string;
+  /**
+   * Texte à INJECTER dans le PTY sans l'exécuter : la commande apparaît sur la
+   * ligne courante, l'utilisateur garde le dernier mot (il peut l'éditer puis
+   * valider avec Entrée). Distinct de `pendingInput`, qui envoie un `\r`.
+   * `nonce` change à chaque demande : le texte peut être identique d'une fois à
+   * l'autre, c'est le nonce qui déclenche la réinjection.
+   */
+  insertRequest?: { text: string; nonce: number };
+  /** Lancement d'une tâche « Run » : spawn direct (argv), sans shell interactif. */
+  task?: { program: string; args: string[] } | null;
   onCwdChange?: (cwd: string) => void;
   onShellState?: (state: 'idle' | 'running', exitCode?: number) => void;
+  /**
+   * Envoi de la SÉLECTION du terminal vers l'input du chat (« Add to AI »).
+   * Fourni par le parent : le terminal ne connaît pas le chat, il se contente de
+   * remonter le texte sélectionné. Absent → pas de bouton flottant.
+   */
+  onAddSelectionToAi?: (text: string) => void;
 }
 
 function cssVar(name: string): string {
@@ -52,7 +71,7 @@ function buildTheme() {
   };
 }
 
-export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdChange, onShellState }: Props) {
+export default function Terminal({ cwd, active, clearKey, pendingInput, insertRequest, task, onCwdChange, onShellState, onAddSelectionToAi }: Props) {
   const { theme } = useTheme();
   const containerRef    = useRef<HTMLDivElement>(null);
   const xtermRef        = useRef<XTerm | null>(null);
@@ -61,15 +80,37 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
   const fitAddonRef     = useRef<FitAddon | null>(null);
   const onCwdChangeRef  = useRef(onCwdChange);
   const onShellStateRef = useRef(onShellState);
+  const onAddSelectionRef = useRef(onAddSelectionToAi);
   // eslint-disable-next-line react-hooks/refs
   onCwdChangeRef.current  = onCwdChange;
   // eslint-disable-next-line react-hooks/refs
   onShellStateRef.current = onShellState;
+  // eslint-disable-next-line react-hooks/refs
+  onAddSelectionRef.current = onAddSelectionToAi;
+
+  // Bouton flottant « Add to AI » affiché en haut à DROITE du terminal dès
+  // qu'une sélection existe. On ne le positionne PAS au-dessus de la sélection :
+  // il recouvrirait la ligne de texte précédente (rendu non professionnel). Une
+  // barre d'action ancrée au bord droit ne masque jamais le contenu.
+  const [hasSelection, setHasSelection] = useState(false);
 
   useEffect(() => {
     if (!clearKey) return;
     xtermRef.current?.clear();
   }, [clearKey]);
+
+  // Insertion sans exécution : on écrit le texte tel quel dans le PTY (sans `\r`).
+  // Déclenché par le `nonce` (et non par le texte), sinon deux insertions
+  // successives du MÊME bloc ne produiraient qu'un seul effet.
+  const lastInsertNonceRef = useRef(0);
+  useEffect(() => {
+    if (!insertRequest) return;
+    if (insertRequest.nonce === lastInsertNonceRef.current) return;
+    lastInsertNonceRef.current = insertRequest.nonce;
+    if (termIdRef.current !== null) {
+      terminalWrite(termIdRef.current, insertRequest.text).catch(() => { /* terminal fermé */ });
+    }
+  }, [insertRequest]);
 
   // Create the xterm instance once on mount
   useEffect(() => {
@@ -165,26 +206,57 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
     let cleanupOutput: (() => void) | null = null;
     let cleanupExit: (() => void) | null = null;
 
-    terminalCreate(cwdRef.current, cols, rows)
-      .then(async (id) => {
-        termIdRef.current = id;
-        cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
-        cleanupExit = await onTerminalExit(id, () => {
-          xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+    // Mode tâche « Run » : on spawn le programme directement (argv), sans shell.
+    // On ne crée PAS de shell interactif ici.
+    if (task) {
+      const channel = `${task.program} ${task.args.join(' ')}`;
+      startOutputChannel(channel, `$ ${channel}`);
+      xterm.write(`\x1b[90m$ ${task.program} ${task.args.join(' ')}\x1b[0m\r\n`);
+      terminalCreateTask(cwdRef.current, task.program, task.args, cols, rows)
+        .then(async (id) => {
+          termIdRef.current = id;
+          cleanupOutput = await onTerminalOutput(id, (data) => {
+            xterm.write(data);
+            appendOutput(channel, data);
+          });
+          cleanupExit = await onTerminalExit(id, () => {
+            xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+            appendOutputSystem(channel, '[process exited]');
+          });
+        })
+        .catch((err: unknown) => {
+          xterm.write(`\r\n\x1b[31mFailed to run task: ${String(err)}\x1b[0m\r\n`);
+          appendOutput(channel, `Failed to run task: ${String(err)}`, 'stderr');
         });
-        // pendingInput is captured from props at mount time (effect deps are intentionally [])
-        if (pendingInput) {
-          terminalWrite(id, pendingInput + '\r').catch(() => {});
-        }
-      })
-      .catch((err: unknown) => {
-        xterm.write(`\r\n\x1b[31mFailed to start terminal: ${String(err)}\x1b[0m\r\n`);
-      });
+    } else {
+      terminalCreate(cwdRef.current, cols, rows)
+        .then(async (id) => {
+          termIdRef.current = id;
+          cleanupOutput = await onTerminalOutput(id, (data) => xterm.write(data));
+          cleanupExit = await onTerminalExit(id, () => {
+            xterm.write("\r\n\x1b[90m[process exited]\x1b[0m\r\n");
+          });
+          // pendingInput is captured from props at mount time (effect deps are intentionally [])
+          if (pendingInput) {
+            terminalWrite(id, pendingInput + '\r').catch(() => {});
+          }
+        })
+        .catch((err: unknown) => {
+          xterm.write(`\r\n\x1b[31mFailed to start terminal: ${String(err)}\x1b[0m\r\n`);
+        });
+    }
 
     const dataDisposable = xterm.onData((data: string) => {
       if (termIdRef.current !== null) {
         terminalWrite(termIdRef.current, data).catch(() => {});
       }
+    });
+
+    // Suivi de la sélection : on affiche/masque la barre « Add to AI ». Un simple
+    // booléen suffit — le bouton est ancré au bord droit, pas collé au texte.
+    const selectionDisposable = xterm.onSelectionChange(() => {
+      const sel = xterm.getSelection();
+      setHasSelection(!!sel && !!sel.trim());
     });
 
     const observer = new ResizeObserver(() => {
@@ -204,6 +276,7 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
       cleanupOutput?.();
       cleanupExit?.();
       dataDisposable.dispose();
+      selectionDisposable.dispose();
       observer.disconnect();
       if (termIdRef.current !== null) {
         terminalClose(termIdRef.current).catch(() => {});
@@ -242,6 +315,7 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
   return (
     <div
       style={{
+        position: "relative",
         width: "100%",
         height: "100%",
         padding: "8px 12px",
@@ -250,6 +324,44 @@ export default function Terminal({ cwd, active, clearKey, pendingInput, onCwdCha
       }}
     >
       <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />
+      {/* Barre « Add to AI » — ancrée en HAUT À DROITE, jamais sur le texte.
+          `onMouseDown` + `preventDefault` : on lit la sélection AVANT que le clic
+          ne la vide (sinon `getSelection()` serait déjà vide au moment de l'envoi). */}
+      {hasSelection && onAddSelectionToAi && (
+        <button
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sel = xtermRef.current?.getSelection();
+            if (sel && sel.trim()) onAddSelectionRef.current?.(sel);
+            setHasSelection(false);
+            xtermRef.current?.clearSelection();
+          }}
+          title="Add terminal selection to AI"
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 14,
+            zIndex: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            height: 24,
+            padding: "0 10px",
+            borderRadius: 6,
+            border: "1px solid var(--origin-border-default)",
+            background: "var(--origin-bg-elevated, var(--origin-bg-panel))",
+            color: "var(--origin-fg-default)",
+            fontSize: 11.5,
+            fontFamily: "var(--font-mono)",
+            cursor: "pointer",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+          }}
+        >
+          <Sparkles size={12} style={{ color: "var(--origin-accent-blue, #4a9eff)" }} />
+          Add to AI
+        </button>
+      )}
     </div>
   );
 }

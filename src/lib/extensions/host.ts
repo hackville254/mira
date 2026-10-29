@@ -22,6 +22,9 @@ import {
   consentStatus,
   requiredCapabilities,
 } from "./permissions";
+import { resolveEntry, type ResolvedEntry } from "./entry";
+import { checkPrerequisites } from "./guard";
+import { binaryConsentStatus } from "./binaryConsent";
 import {
   registerCommand as registerInRegistry,
   unregisterAllForExtension,
@@ -69,7 +72,13 @@ export interface ExtensionDescriptor {
 
 // ── Activation state ──────────────────────────────────────────────────────────
 
-export type ActivationState = "inactive" | "active" | "error";
+export type ActivationState =
+  | "inactive"
+  | "active"
+  | "error"
+  | "unsupported"
+  | "prerequisites-missing"
+  | "binary-consent-required";
 
 export interface ExtensionHostRecord {
   extensionId: string;
@@ -144,6 +153,33 @@ export class ExtensionHost {
     if (rec.log.length > MAX_LOG_LINES) rec.log.splice(0, rec.log.length - MAX_LOG_LINES);
   }
 
+  /**
+   * Teste l'existence d'un asset d'extension **sans** lever : on tente une
+   * lecture confinée (les chemins restent relatifs au dossier de l'extension
+   * côté backend) ; toute erreur signifie « absent ». Sert à la résolution des
+   * fallbacks d'entrypoint (`.js`, `index.js`).
+   */
+  private async assetExists(extensionId: string, relPath: string): Promise<boolean> {
+    try {
+      await readExtensionAsset(extensionId, relPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Trace structurée de la résolution d'entrypoint (root, main, chemin, état). */
+  private logEntryResolution(ext: ExtensionInfo, resolved: ResolvedEntry): void {
+    this.log(
+      ext.id,
+      "debug",
+      `entrypoint: root=${ext.path} main=${JSON.stringify(ext.main)} ` +
+        `resolved=${JSON.stringify(resolved.path)} declared=${JSON.stringify(resolved.declared)} ` +
+        `kind=${resolved.kind}`,
+    );
+    this.emit();
+  }
+
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   /**
@@ -151,8 +187,46 @@ export class ExtensionHost {
    * has been consented to; otherwise this throws and nothing is executed.
    */
   async activate(ext: ExtensionInfo): Promise<void> {
-    if (!ext.main) {
-      throw new Error(`${ext.display_name} does not ship executable code.`);
+    const rec = this.ensureRecord(ext);
+
+    // Résolution de l'entrypoint en 3 états (voir `entry.ts`) : un webpack/tsc
+    // peut déclarer `main` sans `.js` (cas réel : ms-python.python →
+    // "./out/client/extension" alors que le fichier est "extension.js").
+    // Ne JAMAIS échouer sur une extension purement déclarative (thème, grammaire).
+    const resolved: ResolvedEntry = await resolveEntry(ext.main, (rel) => this.assetExists(ext.id, rel));
+    this.logEntryResolution(ext, resolved);
+
+    if (resolved.kind === "declarative") {
+      // Pas de code : statut normal, rien à exécuter en mode léger.
+      rec.state = "inactive";
+      rec.error = undefined;
+      this.emit();
+      return;
+    }
+
+    if (resolved.kind === "missing") {
+      // `main` déclaré mais fichier absent → « code non supporté en mode léger »,
+      // pas une « error » bloquante : l'extension reste utilisable pour ses
+      // contributions passives (thèmes, grammaires, snippets).
+      rec.state = "unsupported";
+      rec.error = `Code not supported in light mode (entrypoint not found: ${resolved.declared ?? "?"}).`;
+      this.emit();
+      return;
+    }
+
+    const entryPath = resolved.path!;
+
+    // Guard de prérequis (`extensionDependencies`) : on refuse d'activer tant
+    // qu'une dépendance déclarée n'est pas installée. État explicable
+    // (« prerequisites-missing »), jamais une « error » : l'extension reste
+    // installée et deviendra activable dès que la dépendance sera présente.
+    const installed = await this.delegate.getInstalledExtensions();
+    const prereq = checkPrerequisites(ext, installed.map((e) => e.id));
+    if (!prereq.satisfied) {
+      rec.state = "prerequisites-missing";
+      rec.error = `Requires: ${prereq.missing.join(", ")}`;
+      this.emit();
+      throw new Error(rec.error);
     }
 
     const required = requiredCapabilities({
@@ -167,10 +241,21 @@ export class ExtensionHost {
       );
     }
 
+    // Consentement des binaires tiers : l'extension déclare `origin.binaries`
+    // des exécutables qu'elle embarque/lance. On refuse d'activer tant que
+    // l'utilisateur ne les a pas approuvés explicitement — jamais de lancement
+    // silencieux d'un binaire tiers (état explicable, pas une « error »).
+    const binStatus = binaryConsentStatus(ext.id, ext.binaries ?? []);
+    if (!binStatus.granted) {
+      rec.state = "binary-consent-required";
+      rec.error = `Third-party binaries to approve: ${binStatus.missing.join(", ")}`;
+      this.emit();
+      throw new Error(rec.error);
+    }
+
     // Already active → no-op.
     if (this.runtimes.has(ext.id)) return;
 
-    const rec = this.ensureRecord(ext);
     rec.state = "inactive";
     rec.error = undefined;
     rec.log = [];
@@ -184,10 +269,10 @@ export class ExtensionHost {
 
     let source: string;
     try {
-      source = await readExtensionAsset(ext.id, stripLeadingDotSlash(ext.main));
+      source = await readExtensionAsset(ext.id, entryPath);
     } catch (e) {
       rec.state = "error";
-      rec.error = `cannot read entrypoint: ${String(e)}`;
+      rec.error = `cannot read entrypoint (${entryPath}): ${String(e)}`;
       this.emit();
       throw new Error(rec.error, { cause: e });
     }
@@ -203,7 +288,7 @@ export class ExtensionHost {
       // manifest (and `vscode.extensions.all`) synchronously at module load.
       const snapshot = await this.delegate.getInstalledExtensions();
       runtime.setExtensionsSnapshot(snapshot);
-      runtime.evalModule(source, ext.main);
+      runtime.evalModule(source, entryPath);
       await runtime.activate(ext.id, ext.path);
     } catch (e) {
       runtime?.dispose();
@@ -362,10 +447,6 @@ export class ExtensionHost {
 }
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
-
-function stripLeadingDotSlash(p: string): string {
-  return p.replace(/^\.\//, "");
-}
 
 function isAbsolute(p: string): boolean {
   return p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p);

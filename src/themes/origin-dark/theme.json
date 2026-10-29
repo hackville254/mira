@@ -1,5 +1,5 @@
 {
-  "name": "Origin Dark",
+  "name": "Mira Dark",
   "type": "dark",
   "colors": {
     "bg.base":     "#000000",
@@ -10,8 +10,9 @@
     "bg.hover":               "#ffffff1a",
     "bg.active":              "#ffffff1a",
     "bg.input":               "#000000",
-    "bg.selection":           "#ffffff10",
-    "bg.selection-focused":   "#ffffff22",
+    "bg.selection":           "#1d3e5e",
+    "bg.selection-focused":   "#264f78",
+    "bg.editor-line-highlight": "#ffffff0d",
 
     "fg.default": "#ededed",
     "fg.muted":   "#a1a1a1",
@@ -19,6 +20,7 @@
 
     "border.default": "#242424",
     "border.subtle":  "#333333",
+    "border.strong":  "#3a3a3a",
 
     "accent.blue":   "#62a6ff",
     "accent.pink":   "#f05b8d",

@@ -1,35 +1,59 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Info, Infinity as InfinityIcon, Check } from "lucide-react";
-import { PROVIDERS } from "./providers";
-import { useTheme } from "../../themes/ThemeContext";
+import { Check } from "lucide-react";
+import { loadCustomModels, subscribeCustomModels, type StoredCustomModel } from "../../lib/agent/customModels";
+import { loadMiraModels, type MiraModel } from "../../lib/agent/miraModels";
+import { AUTO_MODEL_KEY } from "../../lib/agent/autoModel";
 
 interface Props {
+  /** Élément auquel le menu s'ancre (le bouton du sélecteur de modèle). */
   anchorEl: HTMLElement | null;
+  /** Clé du modèle actif (clé Mira ou clé custom) */
   selectedModelId: string;
-  onSelect: (providerId: string, modelId: string) => void;
+  onSelect: (modelKey: string, modelId: string) => void;
   onClose: () => void;
 }
 
 const MENU_WIDTH = 260;
-const MENU_MAX_HEIGHT = 440;
+const MENU_MAX_HEIGHT = 340;
+
+/** Entrée unifiée du sélecteur : un modèle Mira ou un modèle du client. */
+interface Row {
+  key: string;
+  displayName: string;
+  subtitle: string;
+  /** Modèle fourni par Mira (fourni par l'éditeur). */
+  fromMira: boolean;
+  /** Entrée spéciale « Auto » : bascule automatique entre les modèles Mira. */
+  isAuto?: boolean;
+}
 
 // ── Main dropdown (model list) ────────────────────────────────────────────────
 
 export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelect, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [models, setModels] = useState<StoredCustomModel[]>(() => loadCustomModels());
+  /** Modèles fournis par Mira (catalogue de l'éditeur), chargés une fois. */
+  const [miraModels, setMiraModels] = useState<MiraModel[]>([]);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const { theme } = useTheme();
-  const isDark = theme.type === "dark";
 
+  // Source unique de vérité : le magasin de modèles, rafraîchi à chaque changement.
+  useEffect(() => subscribeCustomModels(() => setModels(loadCustomModels())), []);
+
+  useEffect(() => {
+    let alive = true;
+    loadMiraModels().then(list => { if (alive) setMiraModels(list); });
+    return () => { alive = false; };
+  }, []);
+
+  // Position calculée depuis le bouton : le menu est rendu dans `document.body`
+  // (portal) pour échapper au `overflow: hidden` du panneau de chat, qui sinon
+  // le clipperait et le coincerait sous le contenu voisin.
   useEffect(() => {
     if (!anchorEl) return;
     const r = anchorEl.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - r.bottom;
-    let top = spaceBelow < MENU_MAX_HEIGHT + 10 ? r.top - MENU_MAX_HEIGHT - 6 : r.bottom + 6;
-    top = Math.max(8, Math.min(top, window.innerHeight - MENU_MAX_HEIGHT - 8));
     // eslint-disable-next-line react-hooks/set-state-in-effect -- position portal from measured anchor rect
-    setPos({ top, left: Math.max(8, r.right - MENU_WIDTH) });
+    setPos({ left: r.left, top: r.top - 6 });
   }, [anchorEl]);
 
   useEffect(() => {
@@ -42,74 +66,121 @@ export default function PreferencesDropdown({ anchorEl, selectedModelId, onSelec
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
   }, [onClose]);
 
-  if (!anchorEl) return null;
+  const rows: Row[] = [
+    // « Auto » : bascule automatique dans l'ordre quand un modèle est saturé.
+    // Proposé en tête — c'est le défaut de Mira (le client n'a rien à choisir
+    // pour que ça fonctionne), mais un modèle précis reste sélectionnable.
+    {
+      key: AUTO_MODEL_KEY,
+      displayName: "Auto",
+      subtitle: "",
+      fromMira: true,
+      isAuto: true,
+    },
+    ...miraModels.map((m): Row => ({
+      key: m.key,
+      displayName: m.displayName,
+      subtitle: m.modelId,
+      fromMira: true,
+    })),
+    ...models.map((m): Row => ({
+      key: m.key,
+      displayName: m.displayName,
+      subtitle: m.modelId,
+      fromMira: false,
+    })),
+  ];
 
   const hoverOn = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "var(--origin-bg-hover)"; };
   const hoverOff = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.backgroundColor = "transparent"; };
+
+  if (!anchorEl) return null;
 
   return createPortal(
     <div
       ref={menuRef}
       style={{
-        position: "fixed", top: pos.top, left: pos.left, width: MENU_WIDTH, maxHeight: MENU_MAX_HEIGHT,
+        position: "fixed",
+        top: pos.top,
+        left: pos.left,
+        transform: "translateY(-100%)",
+        width: MENU_WIDTH,
+        maxWidth: "calc(100vw - 24px)",
+        maxHeight: MENU_MAX_HEIGHT,
         display: "flex", flexDirection: "column",
-        background: "color-mix(in srgb, var(--origin-bg-base) 90%, transparent)",
+        background: "color-mix(in srgb, var(--origin-bg-base) 92%, transparent)",
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: "1px solid var(--origin-border-default)", borderRadius: 10,
         boxShadow: "0 8px 32px rgba(0,0,0,0.35)", overflow: "hidden", zIndex: 9999,
       }}
     >
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px 6px", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 12px 6px", flexShrink: 0 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--origin-fg-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          Built-in Models
+          Models
         </span>
-        <Info size={12} style={{ color: "var(--origin-fg-subtle)" }} />
       </div>
 
       {/* Scrollable list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 6px" }}>
-        {/* Auto Mode — UI only */}
-        <button
-          onClick={onClose}
-          onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-          style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
-        >
-          <span style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5e5e5", flexShrink: 0 }}>
-            <InfinityIcon size={18} />
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 500, color: "var(--origin-fg-default)" }}>Auto Mode</span>
-        </button>
+        {rows.length === 0 && (
+          <div style={{ padding: "10px 8px", fontSize: 12, color: "var(--origin-fg-subtle)", lineHeight: 1.5 }}>
+            No model available yet. Add one to get started.
+          </div>
+        )}
 
-        {PROVIDERS.flatMap(p => p.models.map(m => ({ provider: p, model: m }))).map(({ provider, model }) => {
-          const isSelected = model.id === selectedModelId;
-          const icon = model.icon ?? provider.icon;
-          const invert = model.iconInvert ?? provider.invert;
+        {rows.map((row) => {
+          const isSelected = row.key === selectedModelId;
+          // La ligne « Auto » affiche toujours un sous-titre explicatif (elle
+          // n'a pas d'id technique à montrer) ; pour les modèles, le sous-titre
+          // est masqué quand il duplique le titre (catalogue cloud sans libellé).
+          const showSubtitle = row.isAuto
+            ? true
+            : row.subtitle.trim() !== "" && row.subtitle !== row.displayName;
+          const subtitle = row.isAuto
+            ? "Picks the best available model"
+            : row.subtitle;
           return (
             <button
-              key={`${provider.id}/${model.id}`}
-              onMouseDown={(e) => { e.stopPropagation(); onSelect(provider.id, model.id); onClose(); }}
+              key={row.key}
+              onMouseDown={(e) => { e.stopPropagation(); onSelect(row.key, row.subtitle); onClose(); }}
               onMouseEnter={hoverOn} onMouseLeave={hoverOff}
-              style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
+              title={showSubtitle && !row.isAuto ? `${row.displayName} · ${row.subtitle}` : row.displayName}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", textAlign: "left", transition: "background 0.1s" }}
             >
-              <span style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                {icon
-                  ? <img src={icon} alt={model.name} style={{ width: 18, height: 18, objectFit: "contain", filter: invert ? (isDark ? "brightness(0) invert(1)" : "none") : "none" }} />
-                  : <span style={{ fontSize: 9, fontWeight: 700, color: "var(--origin-fg-muted)" }}>{provider.initial}</span>
-                }
+              <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {row.displayName}
+                </span>
+                {showSubtitle && (
+                  <span style={{ fontSize: 11, color: "var(--origin-fg-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {subtitle}
+                  </span>
+                )}
               </span>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: isSelected ? 600 : 400, color: "var(--origin-fg-default)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {model.name}
-              </span>
+              {row.fromMira && !row.isAuto && (
+                <span style={{
+                  flexShrink: 0, fontSize: 9, fontWeight: 600, letterSpacing: "0.03em",
+                  padding: "1px 5px", borderRadius: 4,
+                  color: "var(--origin-accent-blue, #3b82f6)",
+                  background: "color-mix(in srgb, var(--origin-accent-blue, #3b82f6) 15%, transparent)",
+                }}>
+                  MIRA
+                </span>
+              )}
               {isSelected && <Check size={15} style={{ color: "var(--origin-accent-blue)", flexShrink: 0 }} />}
             </button>
           );
         })}
 
-        {/* Add Model — after all models, inside scroll (UI only) */}
+        {/* Add Model — ouvre les Settings sur la section Models */}
         <div style={{ borderTop: "1px solid var(--origin-border-default)", marginTop: 6, paddingTop: 6 }}>
           <button
-            onClick={onClose}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(new CustomEvent("origin-open-settings", { detail: { section: "models" } }));
+              onClose();
+            }}
             onMouseEnter={hoverOn} onMouseLeave={hoverOff}
             style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: "8px", borderRadius: 7, border: "none", cursor: "pointer", background: "transparent", fontSize: 13, fontWeight: 500, color: "var(--origin-fg-muted)", transition: "background 0.1s" }}
           >

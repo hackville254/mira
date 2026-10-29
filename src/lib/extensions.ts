@@ -34,6 +34,16 @@ export interface ExtensionInfo {
   commands?: DeclaredCommand[];
   /** Raw `activationEvents` strings. */
   activation_events?: string[];
+  /** Ids of extensions this one requires (`extensionDependencies`). */
+  extension_dependencies?: string[];
+  /** Ids bundled by this one (`extensionPack`). Informational. */
+  extension_pack?: string[];
+  /**
+   * Executables tiers embarqués/lancés par l'extension (`origin.binaries`),
+   * chemins relatifs au dossier de l'extension. Chaque binaire exige un
+   * consentement explicite de l'utilisateur au premier usage.
+   */
+  binaries?: string[];
 }
 
 /** Root folder where extensions are installed. */
@@ -86,46 +96,4 @@ export async function readExtensionManifest(id: string): Promise<Record<string, 
   } catch {
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Open VSX marketplace (Level 1 — passive assets only)
-// ---------------------------------------------------------------------------
-
-/** A search hit from the Open VSX registry. */
-export interface MarketExtension {
-  namespace: string;
-  name: string;
-  /** `namespace.name` */
-  id: string;
-  display_name: string;
-  description: string;
-  version: string;
-  download_count: number;
-  average_rating: number;
-  verified: boolean;
-  icon_url?: string | null;
-  url: string;
-}
-
-export interface MarketSearchResult {
-  total: number;
-  offset: number;
-  extensions: MarketExtension[];
-}
-
-/**
- * Search the Open VSX registry. The backend validates/encodes the query and
- * locks the host to open-vsx.org — the webview never supplies a URL.
- */
-export async function marketSearch(query: string, size = 30, offset = 0): Promise<MarketSearchResult> {
-  return invoke<MarketSearchResult>('market_search', { query, size, offset });
-}
-
-/**
- * Download a `.vsix` for `namespace.name@version` from Open VSX and install it.
- * Returns the installed extension metadata.
- */
-export async function marketInstall(namespace: string, name: string, version: string): Promise<ExtensionInfo> {
-  return invoke<ExtensionInfo>('market_install', { namespace, name, version });
 }

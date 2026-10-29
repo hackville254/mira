@@ -86,6 +86,20 @@ pub struct ExtensionInfo {
     /// Raw `activationEvents` strings (e.g. `onCommand:foo.bar`).
     #[serde(default)]
     pub activation_events: Vec<String>,
+    /// Ids of extensions this one *requires* (`extensionDependencies`). The
+    /// extension must not be activated until every id here is installed.
+    #[serde(default)]
+    pub extension_dependencies: Vec<String>,
+    /// Ids this one *bundles* (`extensionPack`). Informational: installing the
+    /// pack does not auto-install members here, but the UI can surface them.
+    #[serde(default)]
+    pub extension_pack: Vec<String>,
+    /// Third-party executables the extension ships or runs (declared under the
+    /// non-standard `origin.binaries` key). Every entry is a path relative to
+    /// the extension folder. The host requires the user's explicit consent at
+    /// first use — never silently runs a third-party binary.
+    #[serde(default)]
+    pub binaries: Vec<String>,
 }
 
 /// Subset of the VS Code `package.json` manifest we care about.
@@ -103,8 +117,24 @@ struct Manifest {
     main: Option<String>,
     #[serde(default, rename = "activationEvents")]
     activation_events: Vec<String>,
+    #[serde(default, rename = "extensionDependencies")]
+    extension_dependencies: Vec<String>,
+    #[serde(default, rename = "extensionPack")]
+    extension_pack: Vec<String>,
+    #[serde(default)]
+    origin: OriginSection,
     #[serde(default)]
     contributes: Contributes,
+}
+
+/// Origin-specific (non-standard) manifest section. Kept separate from the VS
+/// Code `contributes` block so an Origin field can never be mistaken for a
+/// standard one.
+#[derive(serde::Deserialize, Default)]
+struct OriginSection {
+    /// Executables the extension ships/runs, relative to its folder.
+    #[serde(default)]
+    binaries: Vec<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -339,6 +369,9 @@ fn read_installed_extension(dir: &Path) -> Result<ExtensionInfo, String> {
         main: manifest.main.clone(),
         commands: collect_commands(&manifest),
         activation_events: manifest.activation_events.clone(),
+        extension_dependencies: manifest.extension_dependencies.clone(),
+        extension_pack: manifest.extension_pack.clone(),
+        binaries: manifest.origin.binaries.clone(),
     })
 }
 
@@ -501,6 +534,9 @@ pub fn inspect_extension(source_path: String) -> Result<ExtensionInfo, String> {
         main: manifest.main.clone(),
         commands: collect_commands(&manifest),
         activation_events: manifest.activation_events.clone(),
+        extension_dependencies: manifest.extension_dependencies.clone(),
+        extension_pack: manifest.extension_pack.clone(),
+        binaries: manifest.origin.binaries.clone(),
     })
 }
 
@@ -619,5 +655,43 @@ mod tests {
     #[test]
     fn rejects_non_zip() {
         assert!(read_manifest_from_vsix(b"not a zip").is_err());
+    }
+
+    #[test]
+    fn parses_extension_dependencies_and_pack() {
+        let manifest = r#"{
+            "name": "pylance-like",
+            "publisher": "acme",
+            "version": "1.0.0",
+            "extensionDependencies": ["acme.core", "acme.langpack"],
+            "extensionPack": ["acme.extra-a", "acme.extra-b"]
+        }"#;
+        let vsix = build_vsix(manifest, &[]);
+        let m = read_manifest_from_vsix(&vsix).expect("manifest parses");
+        assert_eq!(m.extension_dependencies, vec!["acme.core", "acme.langpack"]);
+        assert_eq!(m.extension_pack, vec!["acme.extra-a", "acme.extra-b"]);
+    }
+
+    #[test]
+    fn extension_dependencies_default_to_empty() {
+        let manifest = r#"{"name":"bare","version":"1.0.0"}"#;
+        let vsix = build_vsix(manifest, &[]);
+        let m = read_manifest_from_vsix(&vsix).expect("manifest parses");
+        assert!(m.extension_dependencies.is_empty());
+        assert!(m.extension_pack.is_empty());
+        assert!(m.origin.binaries.is_empty());
+    }
+
+    #[test]
+    fn parses_origin_declared_binaries() {
+        let manifest = r#"{
+            "name": "tool-shipper",
+            "publisher": "acme",
+            "version": "1.0.0",
+            "origin": { "binaries": ["bin/mytool", "bin/helper"] }
+        }"#;
+        let vsix = build_vsix(manifest, &[]);
+        let m = read_manifest_from_vsix(&vsix).expect("manifest parses");
+        assert_eq!(m.origin.binaries, vec!["bin/mytool", "bin/helper"]);
     }
 }

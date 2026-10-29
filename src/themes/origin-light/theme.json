@@ -1,5 +1,5 @@
 {
-  "name": "Origin Light",
+  "name": "Mira Light",
   "type": "light",
   "colors": {
     "bg.base":     "#fafafa",
@@ -10,8 +10,9 @@
     "bg.hover":               "#0000001a",
     "bg.active":              "#0000001a",
     "bg.input":               "#fafafa",
-    "bg.selection":           "#00000012",
-    "bg.selection-focused":   "#00000022",
+    "bg.selection":           "#add6ff80",
+    "bg.selection-focused":   "#add6ff",
+    "bg.editor-line-highlight": "#0000000d",
 
     "fg.default": "#171717",
     "fg.muted":   "#666666",
@@ -19,6 +20,7 @@
 
     "border.default": "#ebebeb",
     "border.subtle":  "#cccccc",
+    "border.strong":  "#d4d4d4",
 
     "accent.blue":   "#005ee9",
     "accent.pink":   "#b32c62",

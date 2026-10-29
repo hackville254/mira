@@ -12,6 +12,15 @@ dist
 dist-ssr
 *.local
 
+# Local AI/dev config (contains secrets — never commit)
+.env
+.env.*
+!.env.example
+
+# pnpm local store/tmp (used to keep installs inside the workspace)
+.pnpm-store
+.pnpm-tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -26,3 +35,12 @@ dist-ssr
 
 # Tauri signing keys (never commit the literal ~ folder npx created here)
 ~/
+
+# ── Benchmarks (artefacts volumineux / régénérables — jamais commités) ──
+# Clones de dépôts réels + environnements Docker préparés (plusieurs Go).
+bench/coding/.envs/
+bench/coding/swebench/.envs/
+# Datasets téléchargés/extraits (LiveCodeBench : >2 Go en brut).
+bench/coding/datasets/
+# Résultats bruts volumineux (les rapports/summaries restent commitables).
+bench/coding/results/*-payload.json

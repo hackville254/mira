@@ -4,7 +4,8 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default tseslint.config(
-  { ignores: ['dist', 'src-tauri', 'node_modules'] },
+  // `.envs` = dépôts réels clonés par le banc SWE-bench (code tiers, non lintable ici).
+  { ignores: ['dist', 'src-tauri', 'node_modules', 'bench/coding/swebench/.envs'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

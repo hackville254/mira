@@ -6,7 +6,6 @@ import {
 import { getGitChanges, type GitChanges } from "../lib/git";
 import { getMemory, type MemoryInfo } from "../lib/system";
 import { readUsage, resetUsage, type UsageStore } from "../lib/usage";
-import { PROVIDERS } from "./ai/providers";
 import { useWorkspace } from "../context/WorkspaceContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,9 +41,8 @@ interface PillProps {
 }
 
 function modelChartColor(modelId: string): string {
-  const model = PROVIDERS.flatMap(p => p.models).find(m => m.id === modelId);
-  if (model) return model.color;
-  // Hash fallback for unknown models (e.g. OpenRouter pass-through)
+  // Plus de catalogue de providers : chaque modèle (déclaré par le client) est
+  // identifié par une teinte stable dérivée de sa clé.
   const palette = ['#f97316','#ef4444','#22c55e','#3b82f6','#a855f7','#ec4899','#eab308','#06b6d4','#84cc16','#f43f5e'];
   let h = 0;
   for (let i = 0; i < modelId.length; i++) h = Math.imul(31, h) + modelId.charCodeAt(i) | 0;
