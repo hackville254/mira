@@ -5,6 +5,51 @@
 
 ---
 
+### [2026-10-29T17:06] | Auto-updater macOS/Linux : génération du manifeste `latest.json`
+
+- **Contexte :** `tauri build` produit les archives de mise à jour
+  (`.app.tar.gz`, `.AppImage`) et leurs `.sig`, mais **pas** le manifeste
+  statique que `tauri-plugin-updater` interroge
+  (`/releases/latest/download/latest.json`). Sans ce fichier, l'endpoint
+  répond 404, l'application conclut « à jour » et **ne se met jamais à jour**
+  — panne silencieuse, sans erreur visible côté utilisateur.
+- **Modifications effectuées :**
+  - Nouveau `scripts/gen-latest-json.py` (stdlib uniquement) : construit le
+    manifeste au format documenté (version/notes/pub_date/platforms) depuis les
+    artefacts du dossier `dist/`, et **échoue explicitement** si une archive ou
+    une signature manque, si plusieurs archives sont ambiguës, si le `--repo`
+    est mal formé ou si la version du tag ≠ version de `tauri.conf.json`.
+  - `.github/workflows/release.yml` : `actions/checkout` ajouté au job
+    `publish` (nécessaire pour lire `tauri.conf.json`), puis étape
+    « Generate latest.json » conditionnée aux tags `v*`, avant la création de
+    la release (le fichier entre donc dans `dist/*`).
+- **Décisions Techniques :**
+  - **Résolution des plateformes par nom de fichier** (et non par OS du runner) :
+    `darwin-{aarch64,x86_64}` pointent vers la **même** archive universelle
+    (le build CI est `universal-apple-darwin`) ; l'AppImage fournit
+    `linux-x86_64`. C'est le comportement attendu par l'updater, qui exige une
+    entrée complète par cible.
+  - **Échec dur plutôt que manifeste partiel** : la doc stipule que Tauri
+    valide tout le fichier avant la comparaison de version. Un manifeste
+    silencieusement incomplet casserait l'update pour tous les utilisateurs
+    d'une plateforme.
+  - **URLs en `releases/download/<tag>/...`** (et non `latest`) : l'asset reste
+    valable même après la publication d'une release ultérieure.
+  - Script Python plutôt que `tauri-action` : aucune dépendance nouvelle,
+    logique vérifiable localement, et pas de couplage à un changement d'action.
+- **Impacts & Dépendances :** `release.yml` (job `publish`),
+  `scripts/gen-latest-json.py`. La release reste `draft: true` : elle ne devient
+  « latest » (donc servie à l'updater) qu'après publication manuelle.
+- **Prochaines étapes :**
+  1. secrets GitHub `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` (sans eux, le
+     build macOS/Linux échoue avant même cette étape) ;
+  2. premier tag `v*` réel pour valider le parcours complet (artefacts → draft
+     → publish → update) ;
+  3. incrémenter la version dans `tauri.conf.json` **et** `Cargo.toml` à chaque
+     release (le script refuse une incohérence tag/config).
+
+---
+
 ### [2026-10-29T18:10] | Windows Store : paquet MSIX correct + workflow CI dédié
 
 - **Contexte :** le premier jet de `build-msix.ps1` empaquetait l'installeur NSIS
