@@ -26,7 +26,16 @@
 
 name: Release
 
+# Déclencheurs :
+#   - pull_request -> main : VÉRIFICATION uniquement (les builds macOS/Linux
+#     doivent compiler avant merge). Le job `publish` est explicitement désactivé
+#     hors tags, donc aucune release n'est créée depuis une PR.
+#   - push d'un tag v* : release complète (artefacts + latest.json).
+#   - workflow_dispatch : build manuel, sans publication (ref = branche).
 on:
+  pull_request:
+    branches:
+      - main
   push:
     tags:
       - "v*"
@@ -131,9 +140,13 @@ jobs:
   # Publication — release GitHub + latest.json pour l'auto-updater
   # ---------------------------------------------------------------------------
   publish:
+    # Uniquement sur tag : une PR ne doit JAMAIS publier de release.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [macos, linux]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -144,16 +157,25 @@ jobs:
           find artifacts -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.sig' -o -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
           ls -la dist
 
+      # `tauri build` produit les archives de MAJ + `.sig`, mais PAS le manifeste
+      # statique interrogé par l'updater. Sans lui, l'endpoint
+      #   https://github.com/hackville254/mira/releases/latest/download/latest.json
+      # renvoie 404 et l'app se croit à jour pour toujours.
+      # Le script échoue si une archive/signature manque ou si la version du tag
+      # ne correspond pas à tauri.conf.json (manifeste partiel = updater cassé).
+      - name: Generate latest.json
+        run: |
+          python3 scripts/gen-latest-json.py \
+            --repo "${{ github.repository }}" \
+            --tag "${{ github.ref_name }}" \
+            --dist dist
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          # draft: la release ne devient « latest » (donc visible par l'updater)
+          # qu'après publication manuelle depuis l'UI GitHub. Volontaire pour
+          # garder un contrôle humain avant de pousser une MAJ à tous les users.
           draft: true
           generate_release_notes: true
-
-      # NOTE : `tauri build` génère `latest.json` (au format attendu par
-      # tauri-plugin-updater) dans le bundle. Publier ce fichier en tant qu'asset
-      # de release « latest » permet à l'endpoint
-      # https://github.com/hackville254/mira/releases/latest/download/latest.json
-      # de le servir. À compléter quand le premier build aura produit le fichier
-      # (son emplacement exact varie selon la plateforme/target).

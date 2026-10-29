@@ -26,7 +26,15 @@
 
 name: Windows MSIX
 
+# Déclencheurs :
+#   - pull_request -> main : vérifie que le paquet MSIX se construit (artefact
+#     téléchargeable depuis le run, utile pour tester une install avant merge).
+#   - push d'un tag v* : artefact pour la soumission Partner Center.
+#   - workflow_dispatch : build manuel.
 on:
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
   push:
     tags:
