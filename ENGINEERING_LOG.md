@@ -5,6 +5,32 @@
 
 ---
 
+### [2026-11-08T23:35] | Fix compilation : tauri-plugin-deep-link 2.6.2 → 2.6.3
+
+- **Contexte :** le job `linux` (et donc le job `publish`, qui en dépend) échouait
+  à la compilation : `error[E0063]: missing fields ... in initializer of
+  ParseOption` dans `tauri-plugin-deep-link-2.6.2/src/lib.rs:539`. Cause racine :
+  `rust-ini 0.21.3` a ajouté deux champs (`enabled_indented_mutiline_value`,
+  `enabled_preserve_key_leading_whitespace`) à `ParseOption`, sans bump majeur,
+  alors que le code du plugin 2.6.2 n'en passait que deux.
+- **Modifications effectuées :**
+  - `src-tauri/Cargo.toml` : `tauri-plugin-deep-link` épinglé `"2.6.3"` (au lieu
+    de `"2"`), avec commentaire expliquant la contrainte.
+  - `src-tauri/Cargo.lock` : `cargo update -p tauri-plugin-deep-link --precise 2.6.3`.
+- **Décisions Techniques :** la version 2.6.3 (publiée le 28/10/2026) corrige
+  précisément ce point — son code utilise `..Default::default()` avec le
+  commentaire `// rust-ini 0.21.3 added new struct fields`. On met à jour plutôt
+  que de rétrograder `rust-ini` : `0.21.2` est **yanked** sur crates.io, donc
+  rétrograder serait fragile et non reproductible. Mettre à jour le plugin suit
+  le canal supporté par Tauri.
+- **Impacts & Dépendances :** débloque les builds Linux ET le job `publish`.
+  Aucune cible macOS/Windows affectée (le code fautif est `#[cfg(target_os =
+  "linux")]`), mais la cohérence du lock impose la mise à jour partout.
+- **Prochaines étapes :** reste à configurer `TAURI_SIGNING_PRIVATE_KEY` (absent
+  des secrets GitHub) pour débloquer les `.sig` de l'updater.
+
+---
+
 ### [2026-11-08T23:20] | CI Linux : retrait du paquet appindicator conflictuel
 
 - **Contexte :** la PR vers `main` a déclenché `release.yml` et le job `linux` a
