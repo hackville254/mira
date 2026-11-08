@@ -237,9 +237,13 @@ jobs:
       - name: Install Linux system deps
         run: |
           sudo apt-get update
+          # `libappindicator3-dev` et `libayatana-appindicator3-dev` sont en
+          # CONFLIT sur Ubuntu 22.04 (paquets mutuellement exclusifs) : les
+          # demander ensemble casse `apt-get`. Tauri v2 utilise Ayatana, on
+          # n'installe donc QUE celui-ci.
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf libssl-dev libayatana-appindicator3-dev
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libssl-dev
 
       - name: Install deps
         run: npm ci

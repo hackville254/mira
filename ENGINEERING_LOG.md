@@ -5,6 +5,28 @@
 
 ---
 
+### [2026-11-08T23:20] | CI Linux : retrait du paquet appindicator conflictuel
+
+- **Contexte :** la PR vers `main` a déclenché `release.yml` et le job `linux` a
+  échoué en ~20 s sur `apt-get install`. Cause : `libappindicator3-dev` et
+  `libayatana-appindicator3-dev` sont **mutuellement exclusifs** sur Ubuntu 22.04
+  (`libayatana-appindicator3-dev : Conflicts: libappindicator3-dev`), d'où
+  `E: Unable to correct problems, you have held broken packages`.
+- **Modifications effectuées :**
+  - `.github/workflows/release.yml` — la liste des dépendances système Linux ne
+    conserve plus que `libayatana-appindicator3-dev` (celle utilisée par Tauri v2) ;
+    `libappindicator3-dev` est retiré. Commentaire explicatif ajouté.
+- **Décisions Techniques :** Tauri v2 s'appuie sur Ayatana AppIndicator ; le
+  paquet historique `libappindicator3` est un vestige GTK3/Ubuntu ancien, inutile
+  ici et source de conflit. Ne garder qu'un seul des deux est la seule
+  configuration installable.
+- **Impacts & Dépendances :** aucun impact sur macOS/Windows ni sur le canal MSIX.
+  Débloque le job `linux` (donc `needs` du job `publish`, sans quoi aucune
+  release ne pourrait être publiée sur tag).
+- **Prochaines étapes :** relancer la PR pour vérifier que `linux` passe.
+
+---
+
 ### [2026-11-08T23:05] | macOS Intel + Apple Silicon séparés (fin du build universel)
 
 - **Contexte :** le site et l'updater doivent exposer **deux téléchargements macOS
