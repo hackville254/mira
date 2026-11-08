@@ -35,6 +35,9 @@ dist-ssr
 
 # Tauri signing keys (never commit the literal ~ folder npx created here)
 ~/
+# Tauri updater signing keys — jamais commitées (le .key est la clé privée).
+*.key
+*.key.pub
 
 # ── Benchmarks (artefacts volumineux / régénérables — jamais commités) ──
 # Clones de dépôts réels + environnements Docker préparés (plusieurs Go).

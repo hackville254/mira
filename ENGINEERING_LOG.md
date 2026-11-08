@@ -5,6 +5,37 @@
 
 ---
 
+### [2026-11-08T23:50] | Secrets updater : nouvelle paire minisign + secrets GitHub
+
+- **Contexte :** les 4 jobs de build échouaient tous sur `failed to decode secret
+  key: incorrect updater private key password: Missing comment in secret key`.
+  Cause : le secret `TAURI_SIGNING_PRIVATE_KEY` **n'existait pas** dans le repo,
+  et la `pubkey` de `tauri.conf.json` était **orpheline** (aucune clé privée
+  correspondante, introuvable localement).
+- **Modifications effectuées :**
+  - Nouvelle paire minisign générée (`npx tauri signer generate`).
+  - `src-tauri/tauri.conf.json` : `plugins.updater.pubkey` remplacée par la
+    nouvelle clé publique (`8B12BD4D217C404A`).
+  - Secrets GitHub créés sur `hackville254/mira` :
+    `TAURI_SIGNING_PRIVATE_KEY` (clé privée) + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+    (vide — clé générée sans password).
+  - `.gitignore` : ajout de `*.key` / `*.key.pub` (ceinture + bretelles).
+  - Clé privée sauvegardée hors-repo dans `~/.tauri/mira_updater.key` (chmod 600).
+- **Décisions Techniques :** la régénération est **sans risque** : `gh release
+  list` confirme **0 release publiée** — aucun utilisateur n'a jamais installé
+  une version dont l'updater s'appuie sur l'ancienne pubkey. Régénérer plutôt que
+  « retrouver » une clé inexistante est la seule option. Clé sans password pour
+  limiter le nombre de secrets à gérer (le secret password vide est toléré).
+  Signature validée localement (`tauri signer sign`) avant commit.
+- **Impacts & Dépendances :** débloque les `.sig` de l'updater sur macOS,
+  Windows ET Linux. La nouvelle `pubkey` rend les futures releases
+  auto-compatibles. À surveiller : conserver `~/.tauri/mira_updater.key` — sa
+  perte imposerait une nouvelle rotation de clé.
+- **Prochaines étapes :** relancer les workflows, vérifier les 4 plateformes dans
+  `latest.json`, puis merger.
+
+---
+
 ### [2026-11-08T23:35] | Fix compilation : tauri-plugin-deep-link 2.6.2 → 2.6.3
 
 - **Contexte :** le job `linux` (et donc le job `publish`, qui en dépend) échouait
