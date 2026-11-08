@@ -5,6 +5,125 @@
 
 ---
 
+### [2026-11-08T23:05] | macOS Intel + Apple Silicon séparés (fin du build universel)
+
+- **Contexte :** le site et l'updater doivent exposer **deux téléchargements macOS
+  distincts** (Apple Silicon et Intel) plutôt qu'un seul DMG universel. Or le
+  build universel produisait UNE archive `Mira.app.tar.gz` et une seule entrée
+  Tauri valable pour les deux archs. Il fallait séparer les builds et servir
+  `darwin-aarch64` / `darwin-x86_64` comme deux entrées **indépendantes**,
+  chacune avec son fichier et sa signature.
+- **Modifications effectuées :**
+  - `.github/workflows/release.yml` — job `macos` transformé en **matrice**
+    (`arch: aarch64|x86_64` → `target: *-apple-darwin`, `fail-fast: false`) :
+    deux builds natifs au lieu d'un `universal-apple-darwin`.
+    - **Étape `Rename macOS updater artifacts by arch`** : Tauri nomme l'archive
+      `Mira.app.tar.gz` **sans arch ni version** (doc officielle) → les deux
+      builds produiraient le même nom et s'écraseraient. On renomme AVANT upload
+      en `Mira_<version>_<arch>.app.tar.gz` (+ `.sig`) pour qu'ils coexistent.
+    - Étape `Verify macOS <arch> updater artifacts` : échec si l'archive ou sa
+      `.sig` manque (build bloquant).
+    - `name: macos-<arch>` pour deux artefacts d'upload distincts.
+  - `scripts/gen-latest-json.py` : nouveau helper `macos_archive(dist, arch)` qui
+    associe **chaque arch à SON archive** `*_<arch>.app.tar.gz` (repli sur une
+    archive unique non renommée pour ne pas casser un build universel hérité) ;
+    la boucle macOS déclare désormais `darwin-aarch64` **et** `darwin-x86_64`
+    avec deux URLs/signatures différentes (avant : un seul `entry` partagé).
+- **Décisions Techniques :** on quitte le build universel car il empêchait toute
+  distinction de téléchargement par arch, alors que c'est une demande explicite
+  du produit. Le renommage côté CI (et non un second `productName`) évite de
+  toucher `tauri.conf.json` et donc l'identité de bundle/updater. Le helper
+  conserve un **repli unique** pour la robustesse locale, mais refuse toute
+  ambiguïté (deux archives pour la même arch = échec).
+- **Impacts & Dépendances :** `latest.json` reste valide pour l'updater (clés
+  `darwin-aarch64` / `darwin-x86_64` inchangées) — **aucune réinstallation** pour
+  les utilisateurs existants. Le temps de CI macOS double (deux builds), compensé
+  par un cache Rust keyé par arch (`key: macos-<arch>`). Le site (repo
+  `mira-site`) pointe vers `releases/latest` avec détection OS/mac-arch.
+- **Prochaines étapes :** pousser un tag `v*` pour valider les deux jobs macOS
+  verts et vérifier que `latest.json` contient bien les quatre plateformes. Un
+  jour envisager `windows-aarch64` (le script le supporte déjà, aucun runner
+  natif aujourd'hui).
+
+---
+
+### [2026-11-08T22:40] | Distribution directe : Windows hors-Store + auto-update complet
+
+- **Contexte :** la chaîne de release (`release.yml`) ne produisait des binaires
+  que pour macOS (ad-hoc) et Linux. Windows n'existait QUE via le Microsoft Store
+  (MSIX). Or le canal principal — GitHub Releases + auto-update Tauri — était donc
+  **incomplet sur Windows**, et `latest.json` ne déclarait que `darwin-*` /
+  `linux-*` : un utilisateur Windows hors Store ne pouvait ni installer ni se
+  mettre à jour. Deux trous à combler : (a) produire des binaires Windows hors
+  Store, (b) déclarer la clé `windows-*` dans le manifeste de MAJ.
+- **Modifications effectuées :**
+  - `.github/workflows/release.yml` :
+    - nouveau job **`windows`** (`windows-latest`) : build **non signé** (aucun
+      certificat), produit `.msi` + installeur NSIS `.exe` + signatures de MAJ
+      (`.msi.sig`, `.exe.sig`) via `TAURI_SIGNING_PRIVATE_KEY` ; étape de
+      **vérification bloquante** (`Verify Windows updater artifacts`) qui échoue
+      si l'installeur NSIS ou sa `.sig` manquent.
+    - `publish` : `needs: [macos, windows, linux]` ; aplatissement des artefacts
+      étendu à `*.exe`, `*.msi`, `*.nsis.zip` ; **`draft: false`** (une release en
+      draft n'est PAS « latest » — l'updater ne la verrait jamais).
+    - Ajout d'une étape **`Build sidecar`** (`npm run build:sidecar`) dans LES
+      TROIS jobs : le sidecar Cline est une ressource déclarée de `tauri.conf.json`,
+      mais ni `beforeBuildCommand` ni `build.rs` ne le construisent → `tauri build`
+      échouait (ou embarquerait une ressource absente) sur toute plateforme.
+    - `if-no-files-found: warn` → **`error`** sur les uploads : un artefact manquant
+      doit faire échouer le job, pas produire une release silencieusement incomplète.
+  - `scripts/gen-latest-json.py` :
+    - nouvelle option `--windows-archs` (défaut `x86_64`, chaîne vide = canal
+      désactivé) ; ajout de la clé **`windows-x86_64`** (format Tauri v2 `OS-ARCH`,
+      vérifié dans https://v2.tauri.app/plugin/updater/).
+    - helper `windows_updater_archive()` : préfère `*.nsis.zip`, retombe sur
+      `*-setup.exe` (les deux formes sont documentées selon
+      `createUpdaterArtifacts`), échec explicite si ambigu ou absent.
+  - **`DISTRIBUTION.md`** (nouveau) : (a) comment ouvrir l'app malgré
+    Gatekeeper (macOS, clic droit / `xattr`) et SmartScreen (Windows,
+    « Informations supplémentaires » > « Exécuter quand même ») ; (b) procédure —
+    non implémentée — de bascule future vers un vrai Developer ID Apple +
+    notarisation et un certificat Authenticode Windows.
+- **Décisions Techniques :**
+  - **Politique de signature inchangée** (identique au projet Electron de
+    référence) : aucune signature Apple, aucune notarisation, aucun code-signing
+    Windows, aucun secret `APPLE_*` / `WINDOWS_*`. Le build passe **sans aucun
+    certificat**. Seule la signature **minisign de l'updater** est conservée
+    (obligatoire pour l'auto-update) ; le `pubkey` de `tauri.conf.json` reste
+    inchangé pour ne pas casser les installations existantes.
+  - **Windows en `.exe`, pas forcément `.nsis.zip`** : la doc Tauri v2 indique
+    qu'avec `createUpdaterArtifacts: true` l'installeur NSIS `.exe` **est**
+    l'archive de MAJ (`.exe.sig`) ; le `*.nsis.zip` n'apparaît qu'en mode
+    `"v1Compatible"`. Plutôt que de coder en dur un nom, le script accepte les
+    deux → robuste à un changement de mode. On ne passe PAS en `v1Compatible`
+    (mode de migration, retiré en v3).
+  - **`draft: false`** : le canal d'update repose sur
+    `/releases/latest/download/latest.json`, qui ne résout que les releases
+    publiées. Le contrôle humain devient le **tag** (`push tag v*`), pas un clic
+    de publication dans l'UI.
+  - **Canal Store préservé** : `windows-msix.yml` et la feature `msstore` ne sont
+    pas touchés ; le MSIX n'embarque toujours PAS l'updater (le Store gère les MAJ).
+  - **Pas de `upload-artifact` pour la transit pondéreuse** : les artefacts
+    restent légers et ne transitent que dans la release ; `publish` s'appuie sur
+    `download-artifact` puis publie directement les assets (pas d'archive
+    intermédiaire committée).
+- **Impacts & Dépendances :**
+  - Fichiers touchés : `.github/workflows/release.yml`, `scripts/gen-latest-json.py`,
+    `DISTRIBUTION.md` (nouveau).
+  - Prérequis CI (déjà en place) : secrets `TAURI_SIGNING_PRIVATE_KEY` +
+    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Aucun secret de signature OS.
+  - Les runs `pull_request` exécutent désormais aussi le build Windows (validation
+    avant merge) ; `publish` reste désactivé hors tag.
+  - `latest.json` publié contiendra, selon les cibles buildées :
+    `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, `linux-x86_64`.
+- **Prochaines étapes :** pousser un tag `v*` et confirmer de bout en bout :
+  3 jobs verts → release non-draft → `latest.json` complet → installeur Windows
+  présent avec sa `.sig`. Envisager plus tard `windows-aarch64` (runner/natif arm64
+  non buildé aujourd'hui ; le script le supporte déjà). La bascule vers une vraie
+  signature OS est préparée dans `DISTRIBUTION.md` §4.
+
+---
+
 ### [2026-10-29T18:35] | Store : nom d'affichage réservé + logo 300×300 de la fiche
 
 - **Contexte :** soumission Partner Center rejetée —
