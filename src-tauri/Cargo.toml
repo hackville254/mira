@@ -40,7 +40,9 @@ tauri-plugin-dialog = "2.8.2"
 # Deep links `mira://` (retour du navigateur après un device flow) : le plugin
 # single-instance réémet la seconde instance vers l'app déjà ouverte, et le
 # plugin deep-link décode l'URL. Desktop uniquement (pas de cible mobile ici).
-tauri-plugin-deep-link = "2"
+# Épinglé >= 2.6.3 : 2.6.2 ne compile pas avec `rust-ini 0.21.3` (champs
+# `ParseOption` ajoutés → E0063 côté Linux).
+tauri-plugin-deep-link = "2.6.3"
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
