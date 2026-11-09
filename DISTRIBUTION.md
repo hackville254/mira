@@ -91,8 +91,19 @@ Aucun avertissement de ce type. AppImage : rendre le fichier exécutable
 | `TAURI_SIGNING_PRIVATE_KEY` | Clé privée minisign (contenu ou chemin) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Mot de passe de la clé |
 
-Le `pubkey` public correspondant est déjà dans `src-tauri/tauri.conf.json` et
-**ne doit pas changer** (le modifier casserait les installations existantes).
+Le `pubkey` public correspondant est déjà dans `src-tauri/tauri.conf.json`.
+**Il doit rester synchronisé avec `TAURI_SIGNING_PRIVATE_KEY`** : si l'un des
+deux est régénéré sans l'autre, toutes les installations existantes cessent de
+recevoir les mises à jour (la signature du manifeste ne correspond plus).
+
+> ⚠️ **Perte de clé = fin de l'auto-update** pour les installations existantes.
+> La clé privée **doit** être sauvegardée hors CI (gestionnaire de secrets /
+> coffre d'équipe). Une copie locale existe dans `~/.tauri/mira_updater.key`
+> (+ `.key.pub`) — jamais committée (exclue par `.gitignore`). Si elle est
+> réellement perdue, il faut **régénérer la paire, mettre à jour `pubkey` et
+> republier** : les anciennes installations devront alors être réinstallées
+> manuellement (elles ne pourront pas se mettre à jour seules vers la nouvelle
+> clé).
 
 ---
 

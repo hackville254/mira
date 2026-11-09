@@ -5,6 +5,42 @@
 
 ---
 
+### [2026-11-09T00:20] | Merge vers main + première release v0.1.4 (updater opérationnel)
+
+- **Contexte :** les correctifs (apt Linux, deep-link 2.6.3, rotation de la clé
+  minisign) étaient validés sur `dev` (PR #5 / site PR #1), tous les checks verts.
+  Le site pointait déjà vers `/releases/latest`, mais **aucune release publiée**
+  n'existait → l'auto-update et les liens du site auraient renvoyé 404.
+- **Modifications effectuées :**
+  - Merge des deux PR (`mira#5`, `mira-site#1`) sur `main` (merge commit,
+    branches `dev` supprimées). `main` locales réalignées sur `origin/main`.
+  - Tag annoté **`v0.1.4`** poussé (aligné sur `tauri.conf.json` `version`) →
+    déclenche le workflow `Release` avec le job `publish` **actif**.
+  - `DISTRIBUTION.md` : section « Signature de l'updater » corrigée — avertissement
+    explicite sur la **non-régénération isolée** du `pubkey`/secret, procédure de
+    sauvegarde de la clé privée, conséquence d'une perte de clé.
+- **Décisions Techniques :** taguer `v0.1.4` (et non une nouvelle version) car
+  c'est la version réellement embarquée dans les binaires buildés ; aucune release
+  antérieure n'existe, donc aucune collision. La release est publiée en
+  **non-draft** — indispensable : l'updater interroge `/releases/latest`, qui ne
+  résout jamais une draft.
+- **Impacts & Dépendances :** `release.yml` produit désormais 16 assets et un
+  `latest.json` complet (`darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`,
+  `linux-x86_64`). Le canal Windows MSIX (`.github/workflows/windows-msix.yml`)
+  reste indépendant et non impacté.
+- **Vérifications :**
+  - Run `42538418682` (Release, `push` tag) : **5/5 jobs verts** (macos aarch64,
+    macos x86_64, windows, linux, publish).
+  - `latest.json` servi en **HTTP 200** ; les 4 URLs d'assets répondent en **206**
+    (redirect S3 OK).
+  - Aucun fichier `.key` suivi par git ; `~/.tauri/mira_updater.key` présent (600).
+- **Prochaines étapes :** conserver `~/.tauri/mira_updater.key` (+ coffre
+  d'équipe) ; pour toute future version, **bumper `version` dans
+  `tauri.conf.json` puis pousser le tag correspondant**. Ne jamais régénérer la
+  clé sans plan de migration des installations existantes.
+
+---
+
 ### [2026-11-08T23:50] | Secrets updater : nouvelle paire minisign + secrets GitHub
 
 - **Contexte :** les 4 jobs de build échouaient tous sur `failed to decode secret
